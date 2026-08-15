@@ -1,0 +1,59 @@
+name: Promote Harness v4
+
+on:
+  push:
+    branches: [harness-v4-final]
+    paths:
+      - '.github/workflows/promote-harness-v4.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote-harness-v4
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q
+          python -m compileall -q worldforge scripts
+          node --check frontend/app.js
+          grep -q '执行任务' frontend/index.html
+          test -f worldforge/harness/executor.py
+          test -f worldforge/harness/model_loop.py
+          test -f worldforge/harness/mcp_bridge.py
+          test -f worldforge/realtime.py
+          test -f migrations/versions/20260815_0003_worker_fleet.py
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          data=yaml.safe_load(Path('docker-compose.prod.yml').read_text())
+          assert {'postgres','minio','minio-init','migrate','api','worker'} <= set(data['services'])
+          print('release gate ok')
+          PY
+      - name: Promote verified branch to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/promote-harness-v4.yml
+          git commit -m 'Promote verified WorldForge Harness v4'
+          git push origin HEAD:harness-v4-final
+          git push origin HEAD:main
