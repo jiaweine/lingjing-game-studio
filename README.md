@@ -1,64 +1,98 @@
 <div align="center">
 
-# 灵境 · Game Studio Cloud
+# 灵境 · WorldForge Harness
 
-### 对话式游戏研发分析工作台
+### 面向游戏世界的可执行 Agent Harness Runtime
 
-**把录像、截图、日志、配置与连续追问留在同一个 Workspace。**  
-从“问一次 AI”升级为可持续追问、可回到证据、可恢复进度、可团队隔离的研发任务。
+**World State · Counterfactual Planning · Recursive Multi-Agent · Tool Execution · Verifier · Self-Play · Skill Bank · MCP · GRPO**
+
+它不是“给游戏文件加一个聊天框”。WorldForge Harness 的主链路是：接收长期目标，建立可验证世界状态，规划候选策略，在隔离任务工作区调用工具和命令，派生并行 Agent，执行反事实分支，经 Verifier 决定提交、回滚或继续探索，并把完整 Episode 留给后续策略演进。
 
 <p>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/API-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white">
-  <img alt="Realtime" src="https://img.shields.io/badge/Realtime-WebSocket-6F5CF1?style=flat-square">
+  <img alt="Harness" src="https://img.shields.io/badge/Runtime-Executable%20Harness-17181C?style=flat-square">
+  <img alt="Realtime" src="https://img.shields.io/badge/Realtime-Durable%20Events-6F5CF1?style=flat-square">
   <img alt="Data" src="https://img.shields.io/badge/Data-PostgreSQL%20%2B%20S3-336791?style=flat-square&logo=postgresql&logoColor=white">
-  <img alt="CI" src="https://img.shields.io/badge/CI-passing-169A70?style=flat-square">
+  <img alt="CI" src="https://img.shields.io/badge/CI-27%20tests-169A70?style=flat-square">
 </p>
 
 <p>
-  <a href="#真实产品界面"><b>真实界面</b></a>
+  <a href="#真实执行界面"><b>真实执行界面</b></a>
   &nbsp;·&nbsp;
-  <a href="#功能全景"><b>功能全景</b></a>
+  <a href="#harness-能力全景"><b>Harness 能力</b></a>
   &nbsp;·&nbsp;
-  <a href="#30-秒启动"><b>快速启动</b></a>
+  <a href="#高并发与生产运行"><b>高并发</b></a>
   &nbsp;·&nbsp;
-  <a href="#生产级-saas-基座"><b>SaaS 基座</b></a>
+  <a href="#benchmark--grpo"><b>Benchmark / GRPO</b></a>
   &nbsp;·&nbsp;
-  <a href="#测试与验收"><b>测试验收</b></a>
+  <a href="#快速开始"><b>快速开始</b></a>
 </p>
 
 </div>
 
-<img src="docs/assets/readme/cover.png" alt="灵境 Game Studio Cloud 真实产品封面" width="100%">
+<img src="docs/assets/readme/cover.png" alt="WorldForge Harness 真实执行界面封面" width="100%">
 
-> [!NOTE]
-> README 中的 **7 张产品图均由 GitHub Actions 运行当前前端后自动截图并提交**，使用原生 PNG，不再使用英文概念图、人物素材、低码率拼图或重新绘制的 mockup。前端发生变化时，`README Gallery` workflow 会重新生成截图。
+> [!IMPORTANT]
+> README 中的产品图由仓库当前前端通过 Playwright 自动生成。截图使用 **1920×1200 viewport + deviceScaleFactor 2**；完整状态图为 **3840×2400 PNG**。源文件保持 PNG，**不降采样、不转 WebP / JPEG、不做有损像素压缩**。`README Gallery` workflow 会对尺寸和格式做门禁。
 
 ---
 
-# 真实产品界面
+# 真实执行界面
 
-## 对话是产品主界面，不是附属功能
+## 任务执行，而不是只对话
 
-<img src="docs/assets/readme/workspace.png" alt="灵境中文对话式游戏研发工作台" width="100%">
+<img src="docs/assets/readme/workspace.png" alt="WorldForge Harness 完整执行任务界面" width="100%">
 
-<p align="center"><sub><b>完整任务态</b> · 左侧管理研发任务，中间持续对话，消息中保留素材，底部继续追问，右侧同步任务进度与下一步建议。</sub></p>
+<p align="center"><sub><b>Executable Task Workspace</b> · 中间区域展示长期任务、Agent 执行结果与最终 Episode；右侧展示执行轨迹、Agent 树、证据与素材。对话分析保留为辅助模式，但不再是 Harness 的主入口。</sub></p>
 
-灵境的核心不是“一次性问答”。一个 Conversation 会持续保存 **Messages、Assets、Task Events、Scene 与 Provider 上下文**。因此第二轮、第三轮问题可以直接沿用第一轮的录像、截图与日志，不需要重新上传，也不用重复解释背景。
-
-### 任务开始与分析完成
+### 从目标到运行中任务
 
 <table>
 <tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/workspace-empty.png" alt="灵境新任务入口" width="100%">
+<img src="docs/assets/readme/workspace-empty.png" alt="WorldForge Harness 新建执行任务" width="100%">
 <br>
-<sub><b>新任务入口</b> · 战斗复盘、数值诊断、版本回归、NPC 分析与多素材对比都从同一工作台进入。</sub>
+<sub><b>任务入口</b> · 选择审批模式、Agent 并发预算与游戏场景，然后提交可持续执行的 Harness Task。</sub>
 </td>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/workspace-saas.png" alt="灵境分析完成状态" width="100%">
+<img src="docs/assets/readme/task-running.png" alt="WorldForge Harness 任务运行状态" width="100%">
 <br>
-<sub><b>分析完成态</b> · Assistant 结论、证据、建议与实时进度留在同一个 Conversation。</sub>
+<sub><b>运行状态</b> · Planner、World Observer、执行 Agent、Counterfactual 与 Verifier 的事件持续进入 Durable Trace。</sub>
+</td>
+</tr>
+</table>
+
+### 多模态输入与人工审批
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/upload.png" alt="WorldForge Harness 多模态任务输入" width="100%">
+<br>
+<sub><b>Task Context</b> · 图片、视频、音频、日志、配置与代码素材可以持续挂在同一任务上下文中。</sub>
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/approval.png" alt="WorldForge Harness 审批暂停与恢复" width="100%">
+<br>
+<sub><b>Human Approval</b> · 中高风险工具可进入 waiting_approval，批准后从同一个 ToolCall 精确恢复，避免重复执行写操作。</sub>
+</td>
+</tr>
+</table>
+
+### 执行 Trace 与 Recursive Agent
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/execution-trace.png" alt="WorldForge Harness 执行轨迹" width="100%">
+<br>
+<sub><b>Execution Trace</b> · World State、Checkpoint、ToolCall、Counterfactual Branch、Decision Commit、Verification 都有可审计事件。</sub>
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/agents.png" alt="WorldForge Harness 并行 Agent 树" width="100%">
+<br>
+<sub><b>Recursive Multi-Agent</b> · Observer、Execution、Regression、Population、Coding、MCP 与 Verifier Agent 可以按 Planner 结果并行执行。</sub>
 </td>
 </tr>
 </table>
@@ -68,220 +102,502 @@
 <table>
 <tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/evidence.png" alt="灵境关键发现与证据面板" width="100%">
+<img src="docs/assets/readme/evidence.png" alt="WorldForge Harness 验证证据" width="100%">
 <br>
-<sub><b>关键发现</b> · 日志片段、素材证据与 Replay / Verifier 结果直接挂到结论旁边。</sub>
+<sub><b>Evidence / Verifier</b> · 工具结果、Replay、Runtime 验证、测试结果和关键素材进入统一证据面板。</sub>
 </td>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/providers.png" alt="灵境模型服务面板" width="100%">
+<img src="docs/assets/readme/providers.png" alt="WorldForge Harness 模型服务" width="100%">
 <br>
-<sub><b>Model Gateway</b> · 自动路由与 Provider 状态都由服务端决定，未配置模型明确不可选。</sub>
+<sub><b>Model Gateway</b> · Harness 与模型解耦；模型负责提出结构化 action，权限、预算、工具执行和验证由 Harness Runtime 控制。</sub>
 </td>
 </tr>
 </table>
 
-### 登录与 Workspace
+### SaaS 身份与 Workspace
 
-<img src="docs/assets/readme/auth.png" alt="灵境真实登录与 Workspace 创建界面" width="100%">
+<img src="docs/assets/readme/auth.png" alt="WorldForge Harness 登录与 Workspace" width="100%">
 
-<p align="center"><sub><b>Production Auth Gate</b> · 登录、创建 Workspace、HttpOnly Session 与租户边界是产品界面的一部分，不只存在于 API 文档。</sub></p>
-
----
-
-# 功能全景
-
-下面列的是**仓库当前已实现能力**，不是路线图。
-
-## 01 · 对话与任务
-
-| 能力 | 当前实现 |
-|---|---|
-| **持续多轮对话** | User / Assistant 消息保存在同一 Conversation，可继续追问 |
-| **任务上下文延续** | 后续消息自动恢复历史消息与当前任务累计素材，不要求重复挂载 |
-| **历史任务恢复** | 左侧最近任务可以重新打开，消息、素材和 Task Events 一并恢复 |
-| **任务深链接** | 支持 `?conversation=<id>` 定位并分享指定 Conversation |
-| **场景化入口** | 战斗录像复盘、数值平衡诊断、版本回归、角色 / NPC、多素材对比 |
-| **快捷追问** | 分析完成后返回下一步建议，可直接回填输入框继续分析 |
-| **结构化回答** | 支持标题、强调、编号结论、证据与复制回复 |
-
-## 02 · 多模态素材
-
-| 素材 | 当前处理 |
-|---|---|
-| **图片** | PNG / JPG / WEBP 上传与预览；Pillow 解码、尺寸与轻量图像特征 |
-| **视频** | MP4 / MOV / WEBM；FFprobe 元数据 + FFmpeg 关键帧 |
-| **日志 / 文本** | LOG / TXT / JSON / CSV / YAML / XML；文本预览与证据关联 |
-| **音频** | 作为任务素材持续保存，并可路由给具备音频能力的 Provider |
-| **其他文件** | 作为 binary object + metadata 保存到当前任务 |
-| **拖拽与持续追加** | 素材可以在任务进行中继续补充，不需要新建 Conversation |
-
-> 当前**没有**内置 OCR、ASR、PDF / Office 正文深度解析与完整 RAG Pipeline；README 不把“模型理论上支持”写成“产品已经实现”。
-
-## 03 · 实时进度与证据复核
-
-| 能力 | 当前实现 |
-|---|---|
-| **实时任务进度** | 素材整理、定位问题、场景复核、交叉核对、形成结论等阶段实时展示 |
-| **WebSocket** | Conversation 级 Progress / Answer 实时推送 |
-| **Durable Event** | Task Event 落库，页面刷新或 WebSocket 重连后可恢复 |
-| **关键发现面板** | 结论可绑定图片、视频关键帧、日志与复核结果 |
-| **本次素材面板** | 当前 Conversation 累计素材始终可见 |
-| **Verifier / Replay** | WorldForge Runtime 的复核结果可以进入产品证据链 |
-
-## 04 · Model Gateway
-
-| Provider | 当前适配 |
-|---|---|
-| **Auto Router** | 根据任务类型、媒体能力与服务端配置自动选择 |
-| **Demo** | 无 Key 时用于本地产品体验、API 与 E2E 的确定性演示链路 |
-| **OpenAI** | OpenAI-compatible；图像输入，视频可转换为关键帧 |
-| **Anthropic** | Claude 图像输入；视频使用关键帧策略 |
-| **Gemini** | 图像 / 视频 / 音频 inline 输入（受当前 Adapter 文件大小边界约束） |
-| **DeepSeek** | 文本推理为主 |
-| **Qwen / DashScope** | 图像与多模态；视频关键帧策略 |
-| **Doubao / Ark** | 图像与多模态；视频关键帧策略 |
-| **Custom OpenAI-compatible** | 自定义 Base URL / Model |
-
-API Key 只从服务端环境变量读取，浏览器只看到 Provider 的能力与 `configured` 状态。
-
-## 05 · 游戏研发场景
-
-<table>
-<tr>
-<td width="33%" valign="top"><b>战斗录像复盘</b><br><sub>定位异常时间段、资源衔接、技能窗口与复现路径。</sub></td>
-<td width="33%" valign="top"><b>数值平衡诊断</b><br><sub>检查极端组合、资源陷阱、难度曲线与高风险配置。</sub></td>
-<td width="33%" valign="top"><b>版本回归验证</b><br><sub>整理稳定复现步骤、差异点和发布前检查项。</sub></td>
-</tr>
-<tr>
-<td width="33%" valign="top"><b>角色 / NPC 分析</b><br><sub>检查行为跳变、目标切换、连续对话和角色一致性。</sub></td>
-<td width="33%" valign="top"><b>多素材对比</b><br><sub>把图片、视频、音频、日志和配置放进同一任务核对。</sub></td>
-<td width="33%" valign="top"><b>持续追问</b><br><sub>同一证据上下文中继续缩小问题范围，而不是每轮重新开始。</sub></td>
-</tr>
-</table>
+<p align="center"><sub><b>Production Control Plane</b> · User、Workspace、Membership、HttpOnly Session、JWT、Audit 与 Tenant Guard 是真实数据模型的一部分。</sub></p>
 
 ---
 
-# 生产级 SaaS 基座
+# Harness 能力全景
 
-灵境不是只给 FastAPI 套一层 Docker。仓库已经包含可继续扩展的 SaaS 控制面与生产基础设施。
+## 01 · World-State Runtime
+
+任务不是一串临时 Prompt。Harness 维护可恢复的任务状态、Goal、Belief、Game State、Agent Assignment、Checkpoint、ToolResult 与 Verification Report，并把关键事件写入 Durable Event Store。
+
+| 能力 | 当前实现 |
+|---|---|
+| **Task State Machine** | `queued / planning / running / waiting_approval / verifying / completed / failed / cancelled` |
+| **Goal / World State** | Planner 与 Runtime 持续维护任务目标、世界状态与可验证结果 |
+| **Checkpoint** | 执行前后保存 Workspace 快照，用于失败恢复和回滚 |
+| **Durable Trace** | Task Event 持久化，页面刷新、WebSocket 重连和 Worker 重启后可继续恢复 |
+| **Episode Package** | 每个任务生成 `episode.json`、`trace.jsonl`、`summary.md`，作为回放和策略演进输入 |
+
+核心实现：`worldforge/harness/schemas.py`、`executor.py`、`worldforge/runtime/engine.py`。
+
+## 02 · Autonomous Planner
+
+Planner 不只决定“下一句回答什么”，而是根据目标、任务场景、风险与工具集合构造执行计划。
+
+当前可派生角色包括：
+
+- **WorldObserver**：读取环境与素材，形成 World State；
+- **ExecutionAgent**：执行游戏 Runtime / Scenario / Tool；
+- **RegressionAgent**：执行回归检查与失败复现；
+- **PopulationAgent**：运行 Population / Self-Play 相关任务；
+- **CodingAgent**：读取、搜索、修改项目文件并运行测试；
+- **MCPAgent**：通过管理员白名单 MCP Server 调用外部能力；
+- **VerifierAgent**：最后独立验证结果，决定是否允许完成任务。
+
+Agent ID 由 Task + Role 确定性生成，保证 Worker retry / approval resume 不会重新生成另一棵不可对应的 Agent 树。
+
+## 03 · Counterfactual Branching
+
+WorldForge Runtime 可以基于 Checkpoint 派生多个候选分支，分别执行不同策略，再由 Verifier 对候选结果评分并提交最优分支。
+
+| 阶段 | Runtime 行为 |
+|---|---|
+| **Snapshot** | 保存当前可恢复世界状态 |
+| **Branch** | 按 Budget 限制生成多个候选策略 |
+| **Parallel Rollout** | 分支可并行试演，避免只沿单一路径贪心执行 |
+| **Verification** | 比较约束、得分、风险和可验证状态 |
+| **Commit / Rollback** | 提交优胜分支；失败分支不污染主任务工作区 |
+
+`ExecutionBudget` 对 `max_branch_width`、`max_rollouts_per_branch`、任务时限和 Agent 数量做硬约束。
+
+## 04 · Coding Agent 与真实工具执行
+
+Harness v4 增加了真正的任务工作区与 Coding Tools，因此可以执行“检查仓库、修改代码、运行测试、验证 diff”这类工作，而不是只生成文本建议。
+
+当前工作区工具：
+
+```text
+workspace.list_files
+workspace.search_text
+workspace.read_file
+workspace.snapshot
+workspace.replace_text
+workspace.write_file
+workspace.delete_file
+workspace.diff
+workspace.run_command
+workspace.restore
+```
+
+`TaskWorkspace` 为每个任务复制独立 source worktree，并提供：
+
+- Path confinement，禁止逃出任务根目录；
+- 命令 allowlist / denylist；
+- Tool timeout；
+- Task wall-clock budget；
+- Output byte cap；
+- Environment sanitization；
+- Snapshot / Restore；
+- Diff / Test evidence；
+- 高风险工具进入 Approval Gate。
+
+默认允许的命令族包含 Python、pytest、Node、npm、git、ripgrep、grep 等；默认拒绝 `curl / wget / ssh / scp / nc / docker / podman / mount / sudo` 等高风险命令。
+
+> [!CAUTION]
+> `TaskWorkspace` 是应用层隔离，不是 Linux namespace、gVisor、Firecracker 或独立 VM。对于不可信代码的公网任意执行，生产部署仍应把 Worker 放到容器沙箱 / microVM / 专用执行集群中。README 不把应用层路径隔离包装成内核级安全边界。
+
+## 05 · Model Action Loop
+
+模型输出受限的结构化 Decision，而不是获得无限制 Shell 权限：
+
+```json
+{
+  "type": "tool",
+  "summary": "检查失败测试并定位实现",
+  "tool": "workspace.search_text",
+  "arguments": {"query": "failed assertion"}
+}
+```
+
+Harness 负责校验：
+
+1. Tool 是否在 Agent 的 Allowed Tools 中；
+2. Tool Risk 是否需要审批；
+3. Task / Agent / Tool Budget 是否超限；
+4. Tool 执行是否成功；
+5. Tool Result 是否进入 Trace；
+6. 最终结果是否通过 Verifier。
+
+Provider 不支持或未配置时可以使用确定性 fallback，用于 Harness / UI / CI 验证；真实模型通过 Model Gateway 接入。
+
+## 06 · Human Approval 与精确恢复
+
+支持三种 Approval Mode：
+
+| Mode | 行为 |
+|---|---|
+| **review** | 写入、命令等操作更积极进入人工审批 |
+| **safe_auto** | 低风险内部操作自动执行；高风险和外部副作用暂停 |
+| **full_auto** | 尽可能自动，但仍受 Harness Sandbox、Tool Policy 与硬 Budget 限制 |
+
+审批暂停后，数据库保存原 ToolCall。批准后重放的是**同一个 deterministic call**；已完成 ToolResult 会复用，从而降低 retry 时重复修改文件的风险。
+
+## 07 · Verifier Gate
+
+任务不是“模型说完成了就 completed”。Verifier 会检查：
+
+- Runtime 是否真正执行；
+- Event / Trace hash chain 是否完整；
+- Counterfactual 是否执行并提交；
+- Tool Result 是否有错误；
+- Benchmark / Regression 是否达到任务约束；
+- CodingAgent 是否存在 inspect / change / test evidence；
+- 是否存在未解决 Approval；
+- 是否需要回滚或再次规划。
+
+Runtime 同时发出规范化 `verification.result`，便于产品层和评测层统一消费。
+
+## 08 · MCP
+
+WorldForge 同时支持 MCP Server 与 MCP Client Bridge。
+
+**Server** 可以向外暴露：
+
+- Scenario list / inspect；
+- Runtime run；
+- Benchmark；
+- Self-Play；
+- Skill 查询。
+
+**Client Bridge** 只允许调用运维人员通过 `WORLDFORGE_MCP_SERVERS_JSON` 配置的命名 Server。Task 本身不能注入任意 URL、任意命令或任意环境变量，避免把 MCP 变成绕过 Sandbox 的后门。
+
+项目使用官方 MCP Python SDK v2 依赖：`mcp>=2,<3`。
+
+## 09 · Self-Play / Memory / Skill Bank / Strategy Evolution
+
+WorldForge Runtime 保留游戏原生的长期策略演进能力：
+
+- Population Self-Play；
+- Episodic Memory；
+- Skill Bank；
+- 成功 Episode 蒸馏；
+- 失败归因；
+- Regression Gate；
+- Planner 参数更新；
+- Group Relative Policy Optimization。
+
+这些能力和 Coding Harness 并存：Coding Agent 解决“仓库与工具执行”，WorldForge Runtime 解决“游戏世界状态与长期决策”。
+
+## 10 · GRPO
+
+`worldforge/harness/grpo.py` 实现 NumPy Group Relative Optimizer，包括：
+
+- Group-relative advantage；
+- Masked softmax；
+- Policy-gradient update；
+- Frozen-reference penalty；
+- 两层参数反向传播；
+- Gradient clipping。
+
+训练入口：
+
+```bash
+python scripts/train_worldforge_grpo.py --seeds 2 --epochs 1
+```
+
+当前 smoke run 用于验证训练闭环可运行，不把单次小样本结果包装成 benchmark 提升。
+
+---
+
+# 高并发与生产运行
+
+单机 `asyncio` 并发不是生产高并发方案。v4 将 API、Durable Queue、Worker Fleet、Event Fanout 和 Workspace Admission 分开处理。
+
+## Durable Job Queue
+
+`analysis_jobs` 当前包含：
+
+- `kind`；
+- `priority`；
+- `idempotency_key`；
+- `lease_expires_at`；
+- `heartbeat_at`；
+- `cancel_requested`；
+- `result`；
+- retry / pause / approval 状态。
+
+PostgreSQL Worker claim 使用：
+
+```sql
+FOR UPDATE SKIP LOCKED
+```
+
+避免多个 Worker 抢同一任务时互相串行阻塞。
+
+## Tenant Admission Control
+
+只做全局 Worker 并发容易让一个超大 Workspace 把队列吃满。当前 PostgreSQL admission 会：
+
+1. 对候选 Workspace 做事务级 advisory lock；
+2. 统计该 Workspace 已运行且未取消 Job；
+3. 根据 `WORLDFORGE_WORKSPACE_CONCURRENCY` 控制租户并发；
+4. over-scan 候选队列，降低头部大租户饱和导致的 head-of-line blocking。
+
+相关配置：
+
+```bash
+WORLDFORGE_WORKER_CONCURRENCY=8
+WORLDFORGE_WORKSPACE_CONCURRENCY=3
+WORLDFORGE_JOB_LEASE_SECONDS=90
+WORLDFORGE_JOB_BATCH_SIZE=8
+```
+
+## Worker Fleet
+
+`worker_heartbeats` 表记录：
+
+- worker id；
+- hostname / pid；
+- started / heartbeat time；
+- advertised concurrency；
+- active jobs；
+- runtime version。
+
+API 的 Harness Scheduler 视图返回 healthy workers、advertised capacity、queue stats 和 admission 策略，而不是只展示一个进程内 Queue 长度。
+
+## Lease / Heartbeat / Recovery
+
+Worker 执行任务期间续租。如果进程崩溃导致 lease 过期，任务可以回到可 claim 状态；Approval / Retry 也由 Durable Store 恢复，而不是依赖原 Python 进程仍然存活。
+
+## Realtime Fanout
+
+旧实现如果每个 WebSocket 客户端各自轮询数据库，在并发连接增大时会造成无意义查询放大。v4 使用进程级 `TaskEventFanoutHub`：
+
+- 一个 global durable event cursor；
+- 按 Conversation 订阅；
+- bounded subscriber queue；
+- overflow 时触发 `resync.required`；
+- 客户端从 Durable Event Store 增量补齐；
+- WebSocket 仍提供 heartbeat 与断线恢复。
+
+这使实时 UI 和 Durable Store 解耦，同时不把内存广播当作唯一事实来源。
+
+## 多 Worker 部署
+
+生产 Compose 包含：
+
+```text
+PostgreSQL
+MinIO
+MinIO bootstrap
+Alembic migrate
+FastAPI API
+Harness Worker
+```
+
+单机可横向增加 Worker：
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml up --build --scale worker=4
+```
+
+> [!NOTE]
+> 当前 Compose 使用共享 named volume 作为单机任务 worktree。真正跨主机 Worker Fleet 需要 RWX / distributed filesystem，或者把 Task Workspace 改造成 object-backed / remote execution worktree。这个边界在设计上明确保留，没有把“单机多容器”误称为“无限水平扩展”。
+
+---
+
+# Benchmark / GRPO
+
+## 内部 BalanceLab Ablation
+
+仓库包含确定性场景、Planner / Verifier / Harness 组合评测。它用于验证 Runtime 机制，不等同于外部公开 Benchmark。
+
+最近一次内部固定预算运行：
+
+| Variant | Success | Avg Score | Recovery | Invalid Action |
+|---|---:|---:|---:|---:|
+| M1 direct | 0.6562 | 63.068 | 0.0000 | 0 |
+| M1 + Planner | 0.7188 | 65.284 | 0.0000 | 0 |
+| M1 + Verifier | 0.7500 | 68.389 | 0.5556 | 0 |
+| WorldForge Harness | 0.8750 | 90.889 | 0.5000 | 0 |
+
+**这些数字只代表仓库内置 BalanceLab 场景，不应替代 Orak、BALROG 或 lmgame-Bench 的公开结果。**
+
+## 外部 Benchmark Runner
+
+仓库提供 `worldforge/benchmarks/external.py` 与：
+
+```bash
+python scripts/benchmark_external.py
+```
+
+默认只 dry-run。真正执行必须显式 `--execute`，并由运维人员提前安装 Benchmark：
+
+```bash
+WORLDFORGE_ORAK_ROOT=...
+WORLDFORGE_BALROG_ROOT=...
+WORLDFORGE_LMGAME_ROOT=...
+```
+
+Runner 会记录 benchmark repository revision，并把外部执行视为 HIGH risk Tool，需要 Approval。
+
+> [!WARNING]
+> 简历中如果写“Orak / BALROG / lmgame-Bench 成功率提升 5.6 个百分点、无效动作下降 12.8%、恢复率提升 7.4 个百分点”，这些数字必须来自**相同模型、相同动作接口、相同推理预算、可复现 seed 的真实对比跑分**。当前仓库已经具备 Runner 和 Harness 机制，但 README 不声称这些外部增益已经在本次仓库环境复现。
+
+---
+
+# 与通用 Coding Harness 的定位
+
+v4 的目标已经从“聊天式游戏分析 SaaS”升级为 **execution-first Agent Harness**：模型可以在受控 Worktree 中检查文件、修改代码、运行命令、派生 Agent、暂停审批、恢复任务、验证结果，并把 Episode 持久化。
+
+WorldForge 与通用 Coding Agent 的核心差异在于它额外关注游戏世界：
+
+| 通用执行 Harness 责任 | WorldForge v4 |
+|---|---|
+| Task / Workspace | Durable Harness Task + per-task TaskWorkspace |
+| Tool use | Workspace / Runtime / Benchmark / MCP tools |
+| Code execution | allowlisted command runner + time/output budget |
+| Parallel agent | TaskGroup + Worker Scheduler + deterministic assignments |
+| Human approval | risk-aware pause / exact-call resume |
+| Verification | Verifier Gate + regression / runtime evidence |
+| Durable task | SQL Job lease / heartbeat / retry / event store |
+| Game world state | Goal / Belief / Game State / Replay |
+| Counterfactual | Snapshot / parallel branch / commit / rollback |
+| Strategy evolution | Self-Play / Memory / Skill Bank / GRPO |
+
+这里不写“已经客观超过某个 Harness”。**是否超过 Codex、DeepSeek Harness 或其他系统必须用同模型、同工具、同预算、同任务集做独立 benchmark。** 当前可以准确说的是：仓库已经从聊天 UI 进入可执行 Harness 的职责范围，并加入了游戏场景特有的 World State、Counterfactual、Replay、Self-Play 与 Strategy Evolution。
+
+---
+
+# SaaS Control Plane
+
+执行 Runtime 上层仍然保留生产 SaaS 能力：
 
 <table>
 <tr>
 <td width="50%" valign="top">
-<h3>身份与租户</h3>
+<h3>Identity / Tenant</h3>
 <ul>
-<li>Argon2 密码哈希</li>
+<li>Argon2 password hashing</li>
 <li>JWT Bearer Token</li>
-<li>HttpOnly Session Cookie</li>
+<li>HttpOnly Session</li>
 <li>User / Workspace / Membership</li>
-<li>服务端 Principal 解析</li>
-<li>Workspace 强制数据隔离</li>
-<li>关键操作 Audit Trail</li>
+<li>Store-level workspace_id guard</li>
+<li>Audit Trail</li>
 </ul>
 </td>
 <td width="50%" valign="top">
-<h3>数据与任务</h3>
+<h3>Data / Object</h3>
 <ul>
-<li>SQLAlchemy 数据层</li>
-<li>SQLite 开发模式 / PostgreSQL 生产模式</li>
-<li>Alembic Schema Migration</li>
-<li>持久化 analysis_jobs</li>
-<li>In-process / 独立 Worker</li>
-<li>DB-backed Task Event Store</li>
+<li>SQLAlchemy</li>
+<li>SQLite development</li>
+<li>PostgreSQL production</li>
+<li>Alembic migrations</li>
+<li>Local / S3 / MinIO</li>
+<li>Presigned object access</li>
 </ul>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
-<h3>对象存储</h3>
-<ul>
-<li>Local / S3 双后端</li>
-<li>MinIO 兼容部署</li>
-<li>Workspace 级对象路径隔离</li>
-<li>Presigned 下载 URL</li>
-</ul>
-</td>
-<td width="50%" valign="top">
-<h3>安全与运维</h3>
+<h3>Security / Ops</h3>
 <ul>
 <li>Request ID</li>
 <li>Security Headers / CSP</li>
-<li>CORS Allowlist</li>
+<li>CORS allowlist</li>
 <li>Trusted Hosts</li>
-<li>基础 Rate Limit</li>
+<li>Rate Limit</li>
 <li>Liveness / Readiness</li>
-<li>Database + Object Storage Readiness</li>
+</ul>
+</td>
+<td width="50%" valign="top">
+<h3>Realtime / Worker</h3>
+<ul>
+<li>Durable Job Queue</li>
+<li>Worker Fleet heartbeat</li>
+<li>Lease recovery</li>
+<li>Tenant admission</li>
+<li>TaskEventFanoutHub</li>
+<li>WebSocket resync</li>
 </ul>
 </td>
 </tr>
 </table>
 
-### 租户边界
-
-客户端不能通过自由填写 Workspace Header 来切换租户。服务端从认证 Principal 解析当前 Workspace，并在 Store 层对 Conversation、Asset、Event、Audit 等查询强制应用 `workspace_id` 条件。即使拿到其他 Workspace 的 Conversation ID，也不会直接读到对应任务。
-
 ---
 
-## WorldForge Runtime
+# 快速开始
 
-产品对话层下方保留了结构化运行时，用于更严格的场景复核与实验：
-
-- Adaptive Planner
-- State Verifier
-- Event Store
-- Counterfactual Brancher
-- Episodic Memory
-- Skill Bank
-- Replay / Self-play / Evolution
-- Benchmark / Scenario Evaluation
-
-Runtime 的目标不是替代对话，而是让对话结论能够落到可复核的状态、事件和实验结果上。
-
----
-
-# 30 秒启动
-
-### 1 · 创建环境
+## 本地启动
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+uvicorn worldforge.api.app:app --host 0.0.0.0 --port 8765 --reload
 ```
 
 Windows PowerShell：
 
 ```powershell
 .venv\Scripts\Activate.ps1
-```
-
-### 2 · 启动
-
-```bash
 uvicorn worldforge.api.app:app --host 0.0.0.0 --port 8765 --reload
 ```
 
-浏览器打开：
+浏览器访问：
 
 ```text
 http://localhost:8765
 ```
 
-开发模式默认提供本地 Demo Workspace，不要求 PostgreSQL、S3 或模型 Key，适合先验证完整交互。
+开发模式默认提供 Demo Workspace 和 deterministic provider，可以先完整体验 Task / Tool / Event / Verifier 交互。
 
----
+## 创建执行任务
 
-# 生产部署
+前端主入口是 **执行任务**。API 也可以直接创建 Harness Task：
 
-仓库提供 `docker-compose.prod.yml`：
+```http
+POST /api/conversations/{conversation_id}/execute
+Content-Type: application/json
+```
 
-| Service | 职责 |
-|---|---|
-| **PostgreSQL** | User / Workspace / Conversation / Event / Job / Audit 持久数据 |
-| **MinIO** | S3-compatible 素材与大对象存储 |
-| **Migrate** | 应用启动前执行 `alembic upgrade head` |
-| **API** | FastAPI、Auth、Tenant Guard、Upload、WebSocket |
-| **Worker** | 独立消费 durable analysis jobs |
+任务规范包含：
+
+```json
+{
+  "objective": "复现这个战斗异常，检查相关代码并运行回归测试",
+  "scene": "battle_review",
+  "provider": "auto",
+  "approval_mode": "safe_auto",
+  "budget": {
+    "max_steps": 24,
+    "max_parallel_agents": 4,
+    "max_tool_seconds": 60,
+    "max_task_seconds": 900,
+    "max_branch_width": 3
+  }
+}
+```
+
+Harness 状态与调度信息：
+
+```text
+GET /api/harness
+GET /api/harness/tools
+GET /api/harness/scheduler
+```
+
+## MCP 配置
+
+```bash
+WORLDFORGE_MCP_SERVERS_JSON='{
+  "studio-tools": {
+    "url": "http://mcp.internal.example/mcp"
+  }
+}'
+```
+
+只允许管理员配置的命名 Server；Task 不能临时传入任意 endpoint。
+
+## Production
 
 ```bash
 cp .env.production.example .env.production
@@ -299,126 +615,137 @@ GET /api/health/live
 GET /api/health/ready
 ```
 
-<details>
-<summary><b>展开生产配置矩阵</b></summary>
+---
 
-| 变量 | 开发默认 | 生产建议 |
-|---|---|---|
-| `WORLDFORGE_ENV` | `development` | `production` |
-| `WORLDFORGE_AUTH_MODE` | `dev` | `required` |
-| `DATABASE_URL` | SQLite | PostgreSQL |
-| `WORLDFORGE_STORAGE_BACKEND` | `local` | `s3` |
-| `WORLDFORGE_QUEUE_MODE` | `inprocess` | `external` |
-| `WORLDFORGE_AUTO_CREATE_SCHEMA` | `1` | `0` + Alembic |
-| `WORLDFORGE_SECURE_COOKIES` | `0` | `1` under HTTPS |
-| `WORLDFORGE_CORS_ORIGINS` | localhost | 精确前端域名 |
-| `WORLDFORGE_TRUSTED_HOSTS` | localhost | 精确业务域名 |
-| `WORLDFORGE_JWT_SECRET` | 开发临时密钥 | Secret Manager 中的高熵固定密钥 |
+# 仓库结构
 
-</details>
+```text
+Lingjing-Game-Studio/
+├── frontend/                         execution-first Harness UI
+├── worldforge/
+│   ├── harness/
+│   │   ├── executor.py               durable task execution
+│   │   ├── model_loop.py             structured model action loop
+│   │   ├── planner.py                agent / tool planning
+│   │   ├── scheduler.py              in-process agent scheduler
+│   │   ├── tools.py                  runtime / workspace / MCP tools
+│   │   ├── sandbox.py                per-task TaskWorkspace
+│   │   ├── approvals.py              risk / approval policy
+│   │   ├── mcp_bridge.py             MCP client whitelist
+│   │   ├── mcp_server.py             WorldForge MCP server
+│   │   ├── grpo.py                   group-relative optimizer
+│   │   └── schemas.py                task / plan / result contracts
+│   ├── runtime/                      World State / Planner / Replay / Verifier
+│   ├── product/                      SaaS store / media / analysis
+│   ├── providers/                    model gateway
+│   ├── benchmarks/                   internal + external runner
+│   ├── realtime.py                   durable event fanout hub
+│   ├── storage.py                    Local / S3 object storage
+│   ├── security.py                   Auth / JWT / Principal
+│   └── worker.py                     durable Harness worker
+├── migrations/                       SaaS / Harness / Worker Fleet schema
+├── scripts/                          E2E / benchmark / GRPO training
+├── tests/                            runtime / API / tenant / harness tests
+├── docker-compose.prod.yml           PostgreSQL + MinIO + API + Worker
+└── .github/workflows/                CI + lossless high-res README gallery
+```
 
 ---
 
 # 测试与验收
 
-### Unit / API
+## Python / Runtime / SaaS / Harness
 
 ```bash
 pytest -q
 ```
 
-当前主测试集：
+当前全量结果：
 
 ```text
-16 passed
+27 passed
 ```
 
-### SaaS UI E2E
+同时执行：
+
+```bash
+python -m compileall -q worldforge scripts
+node --check frontend/app.js
+```
+
+## Harness UI E2E
 
 ```bash
 python scripts/product_ui_e2e.py
 ```
 
-覆盖：
+当前自动检查覆盖：
 
 ```text
 auth_gate
 register_workspace
-upload_interaction
-realtime_answer
+execute_is_primary
+multimodal_upload
+task_running_state
+approval_pause
+parallel_agents
+counterfactual_trace
+approval_resume
+verifier_gate
+episode_answer
+tool_trace
+agent_results
 evidence_panel
-suggestions
 provider_modal
-page_errors = 0
+lossless_high_res_gallery
 ```
 
-### README Gallery
+JavaScript page errors：`0`。
 
-`.github/workflows/readme-gallery.yml` 会在前端或截图脚本变化后：
+## Backend Product E2E
 
-1. 安装 Playwright Chromium；
-2. 用当前 `frontend/` 运行真实 UI 状态；
-3. 生成 `cover / workspace / workspace-empty / workspace-saas / evidence / providers / auth` 七张 PNG；
-4. 校验图片可读；
-5. 自动提交回 README 资源目录。
+```bash
+python scripts/product_backend_e2e.py
+```
 
-这保证 GitHub 首页展示的不是另一套概念设计。
+覆盖 Health、Conversation、Asset、Durable Event、WebSocket History、Answer 与 Follow-up Context，当前主链路检查 `7 / 7 PASS`。
 
----
+## Migration
 
-## Production Gate
-
-当前仓库已经具备**生产 SaaS 架构骨架**，但“可按生产拓扑运行”不等于“所有企业治理已经完成”。正式公网部署前仍建议补齐：
-
-- SSO / MFA / SCIM；
-- 邮件验证、邀请与找回密码；
-- 全局分布式限流；
-- WAF / DDoS 防护；
-- PostgreSQL backup / PITR；
-- S3 lifecycle / encryption policy；
-- Metrics / Tracing / 集中日志与告警；
-- 文件病毒扫描与内容安全；
-- Secret Manager / KMS；
-- 数据保留、删除与合规策略。
-
----
-
-## 仓库结构
+Fresh DB 已验证依次执行：
 
 ```text
-lingjing-game-studio/
-├── frontend/                  对话工作台 / Auth / Realtime UI
-├── worldforge/
-│   ├── api/                   FastAPI / Auth / Tenant Guard / WebSocket
-│   ├── product/               分析编排 / 媒体处理 / SaaS Store
-│   ├── providers/             Model Gateway
-│   ├── runtime/               Planner / Verifier / Replay / Evolution
-│   ├── security.py            Argon2 / JWT Principal
-│   ├── storage.py             Local / S3 Object Storage
-│   └── worker.py              Durable Analysis Worker
-├── migrations/                Alembic migrations
-├── tests/                     Runtime / API / Tenant isolation
-├── scripts/                   Product E2E / UI E2E / Benchmark
-├── docs/                      Architecture / Runbook / Frontend notes
-├── docker-compose.prod.yml    PostgreSQL + MinIO + API + Worker
-└── .env.production.example    Production configuration template
+0001 SaaS schema
+0002 executable Harness queue / lease
+0003 Worker Fleet heartbeat
 ```
 
-## 文档
+---
 
-| 文档 | 内容 |
-|---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | SaaS 数据模型、API、Worker、事件与存储边界 |
-| [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | 部署与运行维护 |
-| [`docs/FRONTEND.md`](docs/FRONTEND.md) | 前端交互结构 |
-| [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) | Benchmark 方法 |
-| [`SECURITY.md`](SECURITY.md) | 安全模型与漏洞反馈 |
+# Production Gate
 
-<br>
+当前仓库已经具备执行型 Harness 和生产 SaaS 基座，但以下项目仍属于正式大规模上线前的基础设施工作：
+
+- untrusted code 的 microVM / gVisor / Kata / Firecracker 级隔离；
+- 多主机共享 Task Workspace 或 Remote Execution filesystem；
+- Redis / NATS / Kafka 等独立事件总线（当单 DB Event Store 达到吞吐瓶颈时）；
+- Kubernetes HPA / PDB / topology spread；
+- OpenTelemetry + Prometheus + distributed tracing；
+- SSO / MFA / SCIM；
+- Secret Manager / KMS；
+- Object malware scanning；
+- PostgreSQL HA、PITR、跨区备份；
+- WAF / API Gateway / egress policy；
+- 公共 Orak / BALROG / lmgame-Bench 的固定模型、动作接口、预算与 seed 的正式对比报告。
+
+这些边界不会在 README 中被包装成已经完成。
+
+---
 
 <div align="center">
 
-**Lingjing Game Studio Cloud**  
-让一次问题排查留下可继续使用的上下文、证据和结论。
+**WorldForge Harness**
+
+不是让模型“多说一点”，而是让模型在边界明确、状态可恢复、动作可验证的 Runtime 中真正完成游戏世界任务。
 
 </div>
