@@ -1,0 +1,1 @@
+README 产品图策略：仅使用当前中文对话式产品真实运行截图；禁止使用人物素材、英文示意图、概念 mockup 或缓存拼图。当前 README 真实截图集：cover、workspace、workspace-empty、workspace-saas、evidence、providers、auth。
