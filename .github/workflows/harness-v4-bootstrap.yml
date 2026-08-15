@@ -4,7 +4,7 @@ on:
   push:
     branches: [harness-v4-final]
     paths:
-      - '.v4payload/**'
+      - '.v4payload/READY'
       - '.github/workflows/harness-v4-bootstrap.yml'
 
 permissions:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && hashFiles('.v4payload/READY') != ''
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
