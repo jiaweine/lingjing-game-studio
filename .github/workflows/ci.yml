@@ -23,5 +23,4 @@ jobs:
         run: pytest -q
       - name: JavaScript syntax check
         run: node --check frontend/app.js
-
-# Clean-install CI: requirements.txt is the source of truth for runtime and test dependencies.
+      # README gallery is validated by .github/workflows/readme-gallery.yml
