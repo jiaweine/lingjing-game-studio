@@ -1,0 +1,31 @@
+[project]
+name = "lingjing-game-studio"
+version = "2.0.0"
+description = "Production-oriented multi-tenant conversational game analysis workspace."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "httpx>=0.27",
+  "python-multipart>=0.0.9",
+  "pillow>=10",
+  "SQLAlchemy>=2.0",
+  "alembic>=1.13",
+  "PyJWT>=2.9",
+  "argon2-cffi>=23.1",
+  "boto3>=1.35",
+  "psycopg[binary]>=3.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+worldforge = "worldforge.cli:main"
+lingjing-worker = "worldforge.worker:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
