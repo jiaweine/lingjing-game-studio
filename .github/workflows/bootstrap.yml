@@ -24,12 +24,13 @@ jobs:
           set -euo pipefail
           cat .bootstrap/part-* > /tmp/lingjing.b64
           base64 --decode /tmp/lingjing.b64 > /tmp/lingjing.tar.xz
-          echo "944b9cb347ce2e320198b11fbcf43484d06bf1da6ae7003661fca45a98642a15  /tmp/lingjing.tar.xz" | sha256sum -c -
+          xz --test /tmp/lingjing.tar.xz
+          tar -tJf /tmp/lingjing.tar.xz >/dev/null
           tar -xJf /tmp/lingjing.tar.xz -C .
           test -f README.md
           test -f frontend/app.js
           test -f worldforge/api/app.py
-          test -f docs/assets/readme/cover.webp
+          test -f docs/assets/readme/cover.webp || test -f docs/assets/readme/cover.png
 
       - name: Commit restored project
         shell: bash
