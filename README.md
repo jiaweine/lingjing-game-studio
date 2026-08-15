@@ -55,7 +55,7 @@
 <table>
 <tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/auth.png" alt="灵境登录与 Workspace 创建" width="100%">
+<img src="docs/assets/readme/auth.svg" alt="灵境登录与 Workspace 创建" width="100%">
 <br>
 <sub><b>Production Auth Gate</b> · 登录和 Workspace 创建是产品界面的一部分，不只存在于 API 文档。</sub>
 </td>
