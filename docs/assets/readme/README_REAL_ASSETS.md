@@ -1,1 +1,0 @@
-Real README screenshots are generated from the current Chinese Lingjing conversational UI. Do not replace them with illustrative SVG mockups.

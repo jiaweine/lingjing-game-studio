@@ -1,30 +1,29 @@
 <div align="center">
 
-<img src="docs/assets/readme/cover.svg" alt="Lingjing Game Studio Cloud" width="100%">
-
 # 灵境 · Game Studio Cloud
 
-### 面向游戏研发团队的多模态分析、证据复核与持续任务工作空间
+### 对话式游戏研发分析工作台
 
-把录像、截图、日志、配置和连续追问留在同一个 Workspace。  
-不是一次性聊天，而是一条可恢复、可审计、可隔离、可继续执行的研发任务。
+**把录像、截图、日志、配置和连续追问放进同一个 Workspace。**  
+AI 不只回答一次，而是围绕同一任务持续保留素材、证据、上下文与结论。
 
 <p>
-  <img alt="SaaS" src="https://img.shields.io/badge/SaaS-Production%20Architecture-17181C?style=flat-square">
+  <img alt="Conversational" src="https://img.shields.io/badge/UX-对话式工作台-6F5CF1?style=flat-square">
+  <img alt="Multimodal" src="https://img.shields.io/badge/Input-多模态素材-20242B?style=flat-square">
+  <img alt="SaaS" src="https://img.shields.io/badge/SaaS-Workspace%20Isolation-17181C?style=flat-square">
   <img alt="FastAPI" src="https://img.shields.io/badge/API-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white">
   <img alt="PostgreSQL" src="https://img.shields.io/badge/Data-PostgreSQL%20%2B%20S3-336791?style=flat-square&logo=postgresql&logoColor=white">
-  <img alt="Realtime" src="https://img.shields.io/badge/Realtime-WebSocket-6F5CF1?style=flat-square">
   <img alt="Tests" src="https://img.shields.io/badge/tests-16%20passed-169A70?style=flat-square">
 </p>
 
 <p>
-  <a href="#30-秒启动"><b>30 秒启动</b></a>
+  <a href="#真实产品界面"><b>真实界面</b></a>
   &nbsp;·&nbsp;
-  <a href="#产品体验"><b>产品体验</b></a>
+  <a href="#功能全景"><b>功能全景</b></a>
   &nbsp;·&nbsp;
-  <a href="#生产部署"><b>生产部署</b></a>
+  <a href="#30-秒启动"><b>快速启动</b></a>
   &nbsp;·&nbsp;
-  <a href="#安全与租户隔离"><b>安全模型</b></a>
+  <a href="#生产级-saas-基座"><b>SaaS 基座</b></a>
   &nbsp;·&nbsp;
   <a href="#测试与验收"><b>测试验收</b></a>
 </p>
@@ -33,63 +32,215 @@
 
 <br>
 
-## 产品体验
+> [!NOTE]
+> README 中的产品图均来自当前 **中文对话式 v3 产品实际运行截图**，只做尺寸与 WebP 压缩；不再使用英文概念图、示意 UI 或重新绘制的 mockup。
 
-灵境把 AI 分析组织成一个真正的研发工作台：左侧管理任务，中间持续对话，右侧固定呈现进度、证据和素材。上下文保存在服务端，页面刷新或继续追问都不会退化成“重新上传一次”。
+## 真实产品界面
+
+<img src="docs/assets/readme/workspace-real.webp" alt="灵境中文对话式游戏研发工作台真实截图" width="100%">
+
+<p align="center"><sub><b>真实对话工作台</b> · 左侧任务，中间持续对话，底部多模态输入，右侧任务进度 / 关键发现 / 本次素材。</sub></p>
+
+这就是灵境的核心交互：**素材先进入任务，对话围绕任务持续发生**。第二轮、第三轮追问不需要重新上传同一批素材，也不用重新解释背景。
+
+<img src="docs/assets/readme/feature-gallery-real.webp" alt="灵境真实产品功能状态：登录、证据、模型服务与任务入口" width="100%">
+
+<p align="center"><sub><b>真实功能状态</b> · 登录与 Workspace、证据复核、模型服务、对话任务入口均来自当前产品。</sub></p>
+
+---
+
+## 它解决什么
 
 <table>
 <tr>
-<td width="58%" valign="top">
-<img src="docs/assets/readme/workspace-empty.svg" alt="灵境空任务工作台" width="100%">
-<br>
-<sub><b>任务入口</b> · 把常见研发问题变成有主次的工作入口，不再使用模板化 2×2 AI 卡片。</sub>
+<td width="33%" valign="top">
+<h3>🎮 研发问题放进一个任务</h3>
+<p>录像、截图、日志、配置、音频和持续追问不再散落在聊天窗口、群聊和本地文件夹。</p>
 </td>
-<td width="42%" valign="top">
-<img src="docs/assets/readme/evidence.svg" alt="灵境证据面板" width="100%">
-<br>
-<sub><b>证据视图</b> · 日志片段、复核结果和结论保持在同一任务上下文里。</sub>
+<td width="33%" valign="top">
+<h3>🔎 结论必须能回到证据</h3>
+<p>任务进度、关键发现、日志片段、截图与复核结果集中显示，避免“AI 说了但不知道依据在哪”。</p>
+</td>
+<td width="33%" valign="top">
+<h3>🏢 从 Demo 延伸到团队 SaaS</h3>
+<p>登录、Workspace、租户隔离、审计、PostgreSQL、S3、Worker 与健康检查已经进入真实代码结构。</p>
 </td>
 </tr>
 </table>
 
+---
+
+# 功能全景
+
+下面列的是**仓库当前已经实现的能力**，不是路线图。
+
+### 01 · 对话与任务
+
+| 功能 | 当前实现 |
+|---|---|
+| **持续多轮对话** | 用户消息、Assistant 回复和任务素材保存在同一 Conversation |
+| **上下文延续** | 后续追问自动恢复此前消息和当前任务全部素材，不要求重复挂载 |
+| **任务场景** | 战斗录像复盘、数值平衡诊断、版本回归、角色 / NPC、多素材对比 |
+| **历史任务** | 左侧最近任务列表，可重新进入旧 Conversation |
+| **任务深链接** | URL 支持 `?conversation=<id>`，分享后可定位到指定任务 |
+| **快捷追问** | 分析完成后根据结果给出下一步建议，可一键回填输入框 |
+| **Markdown 风格回答** | 支持标题、强调、编号结论以及复制回复 |
+
+### 02 · 多模态素材
+
+| 素材 | 产品能力 |
+|---|---|
+| **图片** | PNG / JPG / WEBP；上传、预览、Pillow 解码、尺寸与轻量图像特征 |
+| **视频** | MP4 / MOV / WEBM；FFprobe 元数据、FFmpeg 关键帧、任务内预览 |
+| **日志 / 文本** | LOG / TXT / JSON / CSV / YAML / XML；文本预览与证据关联 |
+| **音频** | 可作为任务素材持续保留；支持具备音频能力的 Provider 路由 |
+| **其他文件** | 以二进制对象 + metadata 进入任务上下文 |
+| **拖拽上传** | 页面支持拖入文件并加入当前 Conversation |
+| **持续追加** | 同一任务分析过程中可以继续增加新素材 |
+
+> 当前没有内置 OCR、ASR、PDF / Office 正文深度解析与完整 RAG Pipeline；README 不把“模型理论上支持”包装成“产品已经实现”。
+
+### 03 · 证据、进度与实时反馈
+
+| 功能 | 当前实现 |
+|---|---|
+| **任务进度** | 素材整理、定位问题、场景复核、交叉核对、形成结论等阶段实时展示 |
+| **WebSocket** | Conversation 级实时进度与结果推送 |
+| **Durable Event** | Task Event 写入数据库，可在刷新 / 重连后恢复 |
+| **关键发现** | Assistant 结论可以绑定图片、视频关键帧、日志和复核结果 |
+| **本次素材** | 右侧面板持续展示当前任务已挂载资产 |
+| **Verifier / Replay** | WorldForge Runtime 支持场景复核、状态验证与 Replay 结果进入分析证据 |
+
+### 04 · Model Gateway
+
+当前 Provider Gateway 支持：
+
+| Provider | 当前适配 |
+|---|---|
+| **Auto Router** | 按任务与可用能力自动选择 |
+| **Demo** | 无 Key 时用于本地交互 / API / E2E 的确定性 Demo Provider |
+| **OpenAI** | OpenAI-compatible，多模态图像；视频可转关键帧 |
+| **Anthropic** | Claude 图像输入；视频走关键帧策略 |
+| **Gemini** | 图像 / 视频 / 音频 inline 输入（当前 Adapter 的文件大小边界内） |
+| **DeepSeek** | 文本推理为主 |
+| **Qwen / DashScope** | 图像、多模态；视频关键帧策略 |
+| **Doubao / Ark** | 图像、多模态；视频关键帧策略 |
+| **Custom OpenAI-compatible** | 自定义 Base URL / Model |
+
+前端只允许选择服务端判定为 **configured** 的真实 Provider；API Key 不下发到浏览器。
+
+---
+
+## 对话为什么不是“一次性聊天”
+
+Conversation 在服务端保存四类状态：
+
+| 状态 | 用途 |
+|---|---|
+| **Messages** | 保存用户 / Assistant 历史消息 |
+| **Assets** | 保存当前任务累计素材，不只保存本轮附件 |
+| **Task Events** | 保存实时分析进度与结果事件 |
+| **Scene / Provider** | 保存任务场景和模型选择上下文 |
+
+因此像下面这样的第二轮问题：
+
+```text
+那减伤覆盖和技能冷却是不是撞在同一个时间窗？
+```
+
+可以直接沿用第一轮 Boss 战录像、截图和日志，不需要重新上传。
+
+---
+
+## 登录、Workspace 与团队边界
+
+<img src="docs/assets/readme/auth-real.webp" alt="灵境真实中文登录与 Workspace 界面" width="100%">
+
+<p align="center"><sub><b>Production Auth Gate</b> · 登录 / 创建 Workspace 是真实产品界面，不只是 API 文档中的接口。</sub></p>
+
+---
+
+# 生产级 SaaS 基座
+
+灵境当前不是只把一个 FastAPI 服务套上 Docker。仓库已经落下以下 SaaS 控制面与生产基础设施：
+
 <table>
 <tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/auth.svg" alt="灵境登录与 Workspace 创建" width="100%">
-<br>
-<sub><b>Production Auth Gate</b> · 登录和 Workspace 创建是产品界面的一部分，不只存在于 API 文档。</sub>
+<h3>身份与租户</h3>
+<ul>
+<li>Argon2 密码哈希</li>
+<li>JWT Bearer Token</li>
+<li>HttpOnly Session Cookie</li>
+<li>User / Workspace / Membership</li>
+<li>服务端 Principal 解析</li>
+<li>Workspace 强制数据隔离</li>
+<li>关键操作 Audit Trail</li>
+</ul>
 </td>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/providers.svg" alt="灵境模型服务选择" width="100%">
-<br>
-<sub><b>模型服务</b> · 未配置 Provider 会明确显示不可用，密钥只保留在服务端。</sub>
+<h3>数据与执行</h3>
+<ul>
+<li>SQLAlchemy 数据层</li>
+<li>SQLite 开发环境</li>
+<li>PostgreSQL 生产环境</li>
+<li>Alembic Schema Migration</li>
+<li>持久化 analysis_jobs</li>
+<li>In-process / 独立 Worker</li>
+<li>DB Event Store</li>
+</ul>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<h3>对象存储</h3>
+<ul>
+<li>Local Storage</li>
+<li>S3 Object Storage</li>
+<li>MinIO 兼容部署</li>
+<li>Workspace 路径隔离</li>
+<li>Presigned 下载 URL</li>
+</ul>
+</td>
+<td width="50%" valign="top">
+<h3>安全与运维</h3>
+<ul>
+<li>Request ID</li>
+<li>Security Headers / CSP</li>
+<li>CORS Allowlist</li>
+<li>Trusted Hosts</li>
+<li>基础 Rate Limit</li>
+<li>Liveness / Readiness</li>
+<li>数据库与对象存储 Readiness 检查</li>
+</ul>
 </td>
 </tr>
 </table>
 
-> **UI v3**：这一版按 Taste Skill 的 redesign 思路重新审计了视觉系统。保留原有信息架构和交互 ID，降低紫色渐变、统一圆角与密度、强化主次层级，并补齐 reduced-motion 与响应式检查。产品行为没有为了“换皮”被重写。
+### 多租户边界
+
+客户端不能简单通过一个自由填冝的 Workspace Header 冒充其他租户。Store 层查询挹认证 Principal 的 `workspace_id` 强制过滤；即使知道其他 Workspace 的 Conversation ID，也不会直接读取对应数据。
 
 ---
 
-## 这版已经落地什么
+## WorldForge Runtime
 
-| 领域 | 当前实现 | 生产价值 |
-|---|---|---|
-| **Identity** | Argon2 密码、JWT、HttpOnly Session | 浏览器和 API Client 都有明确身份边界 |
-| **Workspace** | User / Membership / Workspace | 多租户控制面进入真实数据模型 |
-| **Tenant Guard** | Conversation、Asset、Event、Audit 按 `workspace_id` 过滤 | ID 泄露不会直接变成跨租户读 |
-| **Database** | SQLAlchemy；SQLite / PostgreSQL | 本地轻量，生产可迁移 |
-| **Schema** | Alembic | 容器启动不依赖隐式建表 |
-| **Object Storage** | Local / S3 / MinIO | API 不再绑死本地磁盘 |
-| **Jobs** | 持久化 `analysis_jobs` + Worker | API 和长任务可以独立扩容 |
-| **Realtime** | DB Event Store + WebSocket | 进度事件可以跨进程恢复 |
-| **Audit** | Workspace Audit Trail | 关键操作可追踪 |
-| **Ops** | Request ID、Security Headers、CORS、Trusted Host、Rate Limit | 建立公网部署基础线 |
-| **Health** | Liveness + Readiness | 编排器可以判断 DB / Storage 是否真正可用 |
+产品层下方还保留了 WorldForge Runtime，用于更结构化的游戏任务分析与验证：
+
+- Adaptive Planner
+- State Verifier
+- Event Store
+- Counterfactual Brancher
+- Episodic Memory
+- Skill Bank
+- Replay / Self-play / Evolution 相关能力
+- Benchmark 与 Scenario Eval
+
+Runtime 的作用不是替代对话，而是让对话结果可以调用更结构化的复核与模拟能力。
 
 ---
 
-## 30 秒启动
+# 30 秒启动
 
 ### 1 · 创建环境
 
@@ -105,172 +256,35 @@ Windows PowerShell：
 .venv\Scripts\Activate.ps1
 ```
 
-### 2 · 启动
+### 2 · 启动产品
 
 ```bash
 uvicorn worldforge.api.app:app --host 0.0.0.0 --port 8765 --reload
 ```
 
-打开：
+浏览器打开：
 
 ```text
 http://localhost:8765
 ```
 
-开发模式默认提供一个本地 Demo Workspace，不要求数据库、Redis、S3 或模型 Key。
+开发模式默认提供本地 Demo Workspace，不要求 PostgreSQL、S3 或模型 Key，适合先体验完整交互。
 
 ---
 
-## 架构
+## 生产部署
 
-灵境把生产系统拆成四个职责区域，而不是把所有状态都塞在 Web 进程里。
+仓库提供：
 
-| 区域 | 职责 | 默认实现 |
-|---|---|---|
-| **Web / API** | Auth、Workspace、Conversation、Upload、WebSocket | FastAPI |
-| **Data Plane** | User / Tenant / Task / Audit / Job / Event | SQLAlchemy + PostgreSQL |
-| **Execution** | 分析任务、媒体处理、模型调用、Verifier | Durable Worker |
-| **Object Plane** | 上传素材与大对象 | S3 / MinIO |
-
-### Request Path
-
-```text
-Browser
-  Web/API        Identity · Tenant Guard · Conversation · WebSocket
-  Data           PostgreSQL · Audit · Event Store · Durable Jobs
-  Worker         Media · Provider · Verifier · Result persistence
-  Object Store   S3 / MinIO
-```
-
-这里只描述责任边界，不用一整屏流程箭头解释系统。
-
----
-
-## 安全与租户隔离
-
-### Authentication
-
-Production 模式支持：
-
-```text
-Authorization: Bearer <JWT>
-```
-
-浏览器登录后使用 HttpOnly Session Cookie，不把 Token 存在 Local Storage。
-
-密码使用 **Argon2** 哈希。生产环境必须配置稳定的高熵：
-
-```bash
-WORLDFORGE_JWT_SECRET=<long-random-secret>
-```
-
-### Workspace Boundary
-
-客户端不会通过 `X-Workspace-ID` 自由声明租户。
-
-服务端从认证 Principal 解析当前 Workspace，并在 Store 层强制：
-
-```text
-workspace_id == current_principal.workspace_id
-```
-
-即使用户知道其他 Workspace 的 Conversation ID，查询仍返回 404。
-
-### Audit Trail
-
-管理员可以读取 Workspace Audit Trail：
-
-```http
-GET /api/audit
-```
-
-当前记录包括注册、登录、Conversation 创建、素材上传、模型切换等关键操作。
-
----
-
-## 多模态任务
-
-一个任务可以持续挂载：
-
-- PNG / JPG / WEBP；
-- MP4 / MOV / WEBM；
-- LOG / TXT；
-- 其他文件作为 metadata + binary context 保存。
-
-第二轮追问不需要重新挂录像和日志。Worker 会恢复同一 Workspace / Conversation 的历史消息和素材。
-
-### 当前媒体边界
-
-| 类型 | 当前处理 |
+| Service | 职责 |
 |---|---|
-| Image | Pillow 解码、尺寸、颜色等轻量特征 |
-| Video | FFprobe 元数据 + FFmpeg 关键帧 |
-| Log / Text | UTF-8 文本解析 |
-| Audio | 文件上下文；尚未内置 ASR Pipeline |
-| PDF / Office | 文件上下文；尚未内置正文解析 / RAG |
+| **PostgreSQL** | User / Workspace / Conversation / Event / Job / Audit 等持久数据 |
+| **MinIO** | S3-compatible 素材与大对象存储 |
+| **Migrate** | 启动前执行 `alembic upgrade head` |
+| **API** | FastAPI、Auth、Tenant Guard、Upload、WebSocket |
+| **Worker** | 独立消费 durable analysis jobs |
 
-README 不把“模型理论上可以做”写成“产品已经实现”。
-
----
-
-## Model Gateway
-
-当前 Adapter：
-
-```text
-OpenAI
-Anthropic
-Gemini
-DeepSeek
-Qwen / DashScope
-Doubao / Ark
-Custom OpenAI-compatible endpoint
-```
-
-浏览器只会把服务端判定为 configured 的 Provider 显示为可选择。
-
-<details>
-<summary><b>展开模型配置示例</b></summary>
-
-```bash
-OPENAI_API_KEY=...
-OPENAI_MODEL=...
-
-ANTHROPIC_API_KEY=...
-ANTHROPIC_MODEL=...
-
-GEMINI_API_KEY=...
-GEMINI_MODEL=...
-
-DEEPSEEK_API_KEY=...
-DEEPSEEK_MODEL=deepseek-v4-pro
-
-DASHSCOPE_API_KEY=...
-QWEN_MODEL=qwen3-vl-plus
-
-ARK_API_KEY=...
-DOUBAO_MODEL=...
-```
-
-</details>
-
-没有配置任何 Key 时，开发模式使用 deterministic demo provider，便于 UI / API / E2E 测试。
-
----
-
-# 生产部署
-
-仓库提供了生产 Compose 拓扑：
-
-```text
-PostgreSQL   persistent SaaS data
-MinIO        S3-compatible object storage
-Migrate      Alembic upgrade head
-API          FastAPI + Auth + WebSocket
-Worker       durable analysis jobs
-```
-
-### 1 · 准备环境
+准备配置：
 
 ```bash
 cp .env.production.example .env.production
@@ -285,7 +299,7 @@ MINIO_ROOT_PASSWORD=...
 WORLDFORGE_JWT_SECRET=...
 ```
 
-### 2 · 部署
+启动：
 
 ```bash
 docker compose \
@@ -294,16 +308,12 @@ docker compose \
   up --build
 ```
 
-Production Compose 会先启动数据库与对象存储，再执行 Alembic migration；成功后启动 API 与独立 Worker。
+健康检查：
 
-### 3 · 健康检查
-
-```http
+```text
 GET /api/health/live
 GET /api/health/ready
 ```
-
-Readiness 不只是返回写死的 `ok`，它会检查数据库与 Object Storage。
 
 <details>
 <summary><b>展开生产配置矩阵</b></summary>
@@ -317,9 +327,9 @@ Readiness 不只是返回写死的 `ok`，它会检查数据库与 Object Storag
 | `WORLDFORGE_QUEUE_MODE` | `inprocess` | `external` |
 | `WORLDFORGE_AUTO_CREATE_SCHEMA` | `1` | `0` + Alembic |
 | `WORLDFORGE_SECURE_COOKIES` | `0` | `1` under HTTPS |
-| `WORLDFORGE_CORS_ORIGINS` | localhost | 精确前端域名 |
+| `WORLDFORGE_CORS_ORIGINS` | localhost | 精确业务域名 |
 | `WORLDFORGE_TRUSTED_HOSTS` | localhost | 精确业务域名 |
-| `WORLDFORGE_JWT_SECRET` | 开发临时生成 | Secret Manager 中的高熵固定密钥 |
+| `WORLDFORGE_JWT_SECRET` | 开发临时值 | Secret Manager 中固定高熵密钥 |
 
 </details>
 
@@ -328,31 +338,29 @@ Readiness 不只是返回写死的 `ok`，它会检查数据库与 Object Storag
 ## 仓库结构
 
 ```text
-Lingjing-Game-Studio/
-├── frontend/                       Workspace / Auth / Realtime UI
+lingjing-game-studio/
+├── frontend/                 对话式 Workspace / Auth / Realtime UI
 ├── worldforge/
-│   ├── api/                        FastAPI、Auth、Tenant Guard、WebSocket
-│   ├── product/                    分析编排、媒体处理、SaaS Store
-│   ├── providers/                  Model Gateway
-│   ├── runtime/                    Planner / Verifier / Replay / Evolution
-│   ├── security.py                 Argon2 + JWT Principal
-│   ├── storage.py                  Local / S3 Object Storage
-│   ├── observability.py            Request ID / Headers / Rate Limit
-│   └── worker.py                   Durable Analysis Worker
-├── migrations/                     Alembic migrations
-├── tests/                          Runtime / API / Tenant isolation tests
-├── scripts/                        Product E2E / UI E2E / benchmark
-├── docs/                           Architecture / Runbook / frontend notes
-├── docker-compose.prod.yml         PostgreSQL + MinIO + API + Worker
-├── Dockerfile                      non-root production image
-└── .env.production.example        Production configuration template
+│   ├── api/                  FastAPI / Auth / Tenant Guard / WebSocket
+│   ├── product/              Conversation 分析 / 媒体 / SaaS Store
+│   ├── providers/            Model Gateway
+│   ├── runtime/              Planner / Verifier / Replay / World Model
+│   ├── security.py           Argon2 / JWT / Principal
+│   ├── storage.py            Local / S3
+│   ├── observability.py      Request ID / Headers / Rate Limit
+│   └── worker.py             Durable Analysis Worker
+├── migrations/               Alembic
+├── tests/                    Runtime / API / SaaS isolation
+├── scripts/                  Backend E2E / UI E2E / Preview / Benchmark
+├── docs/                     Architecture / Runbook / Frontend / Benchmark
+├── docker-compose.prod.yml
+├── Dockerfile
+└── .env.production.example
 ```
 
 ---
 
 # 测试与验收
-
-README 中的产品截图来自当前代码的 Playwright 测试状态，不是概念稿。
 
 ### Unit / API
 
@@ -360,7 +368,7 @@ README 中的产品截图来自当前代码的 Playwright 测试状态，不是�
 pytest -q
 ```
 
-当前结果：
+当前基线：
 
 ```text
 16 passed
@@ -372,17 +380,17 @@ pytest -q
 python scripts/product_ui_e2e.py
 ```
 
-当前检查：
+覆盖：
 
 ```text
-auth_gate             PASS
-register_workspace    PASS
-upload_interaction    PASS
-realtime_answer       PASS
-evidence_panel        PASS
-suggestions           PASS
-provider_modal        PASS
-page_errors           0
+auth_gate
+register_workspace
+upload_interaction
+realtime_answer
+evidence_panel
+suggestions
+provider_modal
+page_errors = 0
 ```
 
 ### 后端产品 E2E
@@ -391,38 +399,36 @@ page_errors           0
 python scripts/product_backend_e2e.py
 ```
 
-覆盖 Health、Conversation、Asset、WebSocket event、Answer、follow-up context 等主链路。
+覆盖 Backend Health、Provider Gateway、Multimodal Ingest、Conversation Analysis、Task Event、WebSocket History、Follow-up Context。
 
-### 已验证的生产路径
+GitHub Actions 还会执行：
 
-- Alembic 可在全新数据库执行 `upgrade head`；
-- `production + auth required` 可真实启动；
-- 未认证访问受到拦截；
-- 注册后可以创建 User + Workspace；
-- Workspace Conversation 查询强制租户隔离；
-- Readiness 检查 Database + Object Storage；
-- UI 自动化未发现 JavaScript page error。
+```text
+pip install -r requirements.txt
+python -m compileall
+pytest -q
+node --check frontend/app.js
+```
 
 ---
 
-## Production Gate
+## 当前边界 · Production Gate
 
-这套仓库已经是**生产 SaaS 架构骨架**，但“能以生产拓扑运行”和“已经完成企业上线治理”不是一回事。
+这套仓库已经具备**生产 SaaS 架构基座**，但“生产拓扑可运行”不等于已经完成所有企业治理。
 
-公网正式部署前仍建议补齐：
+正式公网部署仍建议补充：
 
-- 企业 SSO / MFA / SCIM；
-- 邮件验证、邀请和找回密码；
-- 全局分布式限流；
-- WAF / DDoS 防护；
-- PostgreSQL backup / PITR；
-- S3 lifecycle / encryption policy；
-- Metrics、Tracing、集中日志与告警；
-- 文件病毒扫描与内容安全；
-- Secret Manager / KMS；
-- 数据保留、删除与合规策略。
-
-这部分刻意不在 README 里伪装成“已经内置”。
+- SSO / MFA / SCIM
+- 邮箱验证、邀请、找回密码
+- Redis / Gateway 级分布式限流
+- WAF / DDoS 防护
+- PostgreSQL Backup / PITR
+- S3 Lifecycle / Encryption Policy
+- Metrics / Tracing / 集中日志与告警
+- 文件病毒扫描与内容安全
+- Secret Manager / KMS
+- 数据保留、删除与合规策略
+- OCR / ASR / PDF & Office 深度解析 / RAG（按产品需要接入）
 
 ---
 
@@ -430,9 +436,9 @@ python scripts/product_backend_e2e.py
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | SaaS 数据模型、API、Worker、事件与存储边界 |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | SaaS 数据模型、API、Worker、Event 与 Storage 边界 |
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | 部署与运行维护 |
-| [`docs/FRONTEND.md`](docs/FRONTEND.md) | 前端交互结构 |
+| [`docs/FRONTEND.md`](docs/FRONTEND.md) | 对话工作台交互结构 |
 | [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) | Benchmark 方法 |
 | [`SECURITY.md`](SECURITY.md) | 安全模型与漏洞反馈 |
 
@@ -440,7 +446,8 @@ python scripts/product_backend_e2e.py
 
 <div align="center">
 
-**Lingjing Game Studio Cloud**  
-让一次问题排查留下可继续使用的上下文、证据和结论。
+### Lingjing Game Studio Cloud
+
+**让一次问题排查，沉淀成可以继续追问、复核与协作的研发上下文。**
 
 </div>
