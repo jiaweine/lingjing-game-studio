@@ -1,0 +1,91 @@
+name: Harness v4 hardening bootstrap
+
+on:
+  push:
+    branches: [harness-v4-hardening]
+    paths:
+      - '.v5payload/READY'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: harness-v4-hardening-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Rebuild and verify source payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, json, lzma
+          from pathlib import Path
+          root = Path('.v5payload')
+          manifest = json.loads((root / 'manifest.json').read_text())
+          chunks = []
+          for row in manifest:
+              raw = (root / row['name']).read_bytes()
+              assert len(raw) == row['length'], (row['name'], len(raw), row['length'])
+              assert hashlib.sha256(raw).hexdigest() == row['sha256'], row['name']
+              chunks.append(raw)
+          archive = base64.b64decode(b''.join(chunks), validate=True)
+          digest = hashlib.sha256(archive).hexdigest()
+          assert digest == '2ddbb681c3c933f49f9c27b2179957773bc2a3d6fffd85ba05f2b96fa91a7b45', digest
+          lzma.decompress(archive)
+          Path('/tmp/worldforge-source.tar.xz').write_bytes(archive)
+          print('payload verified', len(archive), digest)
+          PY
+
+      - name: Replace source with verified tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf frontend worldforge migrations scripts tests models
+          rm -rf .github/workflows
+          find docs -mindepth 1 -maxdepth 1 ! -name assets -exec rm -rf {} +
+          tar -xJf /tmp/worldforge-source.tar.xz -C .
+          rm -rf .v5payload
+          test -f worldforge/harness/executor.py
+          test -f migrations/versions/20260816_0004_queue_fencing.py
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Verify hardened source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q
+          python -m compileall -q worldforge scripts
+          node --check frontend/app.js
+          ! grep -R -n -E '基线|baseline|ablation|M1 直接策略|M1 \+ Planner|M1 \+ Verifier' README.md docs BUILD_REPORT.md worldforge/api worldforge/harness scripts/product_ui_e2e.py
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          data=yaml.safe_load(Path('docker-compose.prod.yml').read_text())
+          assert {'postgres','minio','minio-init','migrate','api','worker'} <= set(data['services'])
+          print('compose schema ok')
+          PY
+
+      - name: Commit verified hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Harden execution harness queue, tenancy, sandbox and realtime'
+          git push origin HEAD:harness-v4-hardening
