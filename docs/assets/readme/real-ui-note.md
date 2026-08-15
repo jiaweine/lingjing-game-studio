@@ -1,0 +1,1 @@
+These README visuals must use real captures from the current Chinese conversational product UI. Source capture set: cover, workspace conversation, evidence, auth and providers. No illustrative English SVG replacements.
