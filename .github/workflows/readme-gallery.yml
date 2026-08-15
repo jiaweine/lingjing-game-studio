@@ -1,0 +1,69 @@
+name: README Gallery
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'scripts/product_ui_e2e.py'
+      - '.github/workflows/readme-gallery.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Capture real product states
+        run: python scripts/product_ui_e2e.py
+
+      - name: Verify gallery
+        run: |
+          test -s docs/assets/readme/cover.png
+          test -s docs/assets/readme/workspace.png
+          test -s docs/assets/readme/workspace-empty.png
+          test -s docs/assets/readme/workspace-saas.png
+          test -s docs/assets/readme/evidence.png
+          test -s docs/assets/readme/providers.png
+          test -s docs/assets/readme/auth.png
+          python - <<'PY'
+          from PIL import Image
+          from pathlib import Path
+          names=['cover','workspace','workspace-empty','workspace-saas','evidence','providers','auth']
+          for name in names:
+              p=Path('docs/assets/readme')/f'{name}.png'
+              im=Image.open(p)
+              im.verify()
+              print(name, p.stat().st_size)
+          PY
+
+      - name: Commit refreshed screenshots
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/assets/readme/*.png outputs/product_ui_e2e.json
+          if git diff --cached --quiet; then
+            echo 'README screenshots are already current.'
+          else
+            git commit -m 'docs: refresh real product screenshots'
+            git push
+          fi
