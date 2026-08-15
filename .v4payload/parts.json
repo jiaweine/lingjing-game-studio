@@ -1,57 +1,14 @@
 [
-  {
-    "name": "part-000.txt",
-    "length": 12000,
-    "sha256": "25091bed9082112f16bbe0f7c745b57bdf578d33b8694f829dccbbeea357d97a"
-  },
-  {
-    "name": "part-001.txt",
-    "length": 12000,
-    "sha256": "f64f32b4e8460f5aa41a1862f597163e63368cb942d580687b6df81a9c7749c8"
-  },
-  {
-    "name": "part-002.txt",
-    "length": 12000,
-    "sha256": "fe2469214331eb6c60c1801d0f15939db7b11a7aa0633f293116bb4ab8e4c60f"
-  },
-  {
-    "name": "part-003.txt",
-    "length": 12000,
-    "sha256": "d628962b8f9552c5515a8395b68959b92b93ff116b1a9be3a613da9a66356426"
-  },
-  {
-    "name": "part-004.txt",
-    "length": 18000,
-    "sha256": "7a24c55b0b4092cc2673327aa03db54549b69da1dcc4e828a27eec75ea3c94c2"
-  },
-  {
-    "name": "part-005.txt",
-    "length": 18000,
-    "sha256": "27d747bb3c345cc58a45fffd1b3c3a7847461ccde316c147da5c8d75bdf76f5b"
-  },
-  {
-    "name": "part-006.txt",
-    "length": 18000,
-    "sha256": "0e24ac8610c1b75a246825d64e5370a2d2bc2d38d0eeab0bec935bb6f3bcabd9"
-  },
-  {
-    "name": "part-007.txt",
-    "length": 18000,
-    "sha256": "5ec4f8574def4831832ebf30ce62102bee669f37233c6e9b4d7cb423103efa03"
-  },
-  {
-    "name": "part-008.txt",
-    "length": 18000,
-    "sha256": "29728719b07334e5683fc2120b8ce0e6bd88a23c6e9de3c3c57749b370c7cbaa"
-  },
-  {
-    "name": "part-009.txt",
-    "length": 18000,
-    "sha256": "e20114c54b6bacb5c693e8b63cd2e713ed20f602faf025cdef74c7db35fc4015"
-  },
-  {
-    "name": "part-010.txt",
-    "length": 7504,
-    "sha256": "af2dcfaf699b2f68ae4aaaa5559f4c8cf44fed619d077c0d88b00a54834e6487"
-  }
+  {"name":"part-000.txt","length":12000,"sha256":"25091bed9082112f16bbe0f7c745b57bdf578d33b8694f829dccbbeea357d97a"},
+  {"name":"part-001.txt","length":12000,"sha256":"f64f32b4e8460f5aa41a1862f597163e63368cb942d580687b6df81a9c7749c8"},
+  {"name":"part-002.txt","length":12000,"sha256":"fe2469214331eb6c60c1801d0f15939db7b11a7aa0633f293116bb4ab8e4c60f"},
+  {"name":"part-003.txt","length":12000,"sha256":"d628962b8f9552c5515a8395b68959b92b93ff116b1a9be3a613da9a66356426"},
+  {"name":"part-004.txt","length":18000,"sha256":"7a24c55b0b4092cc2673327aa03db54549b69da1dcc4e828a27eec75ea3c94c2"},
+  {"name":"part-005.txt","length":18000,"sha256":"27d747bb3c345cc58a45fffd1b3c3a7847461ccde316c147da5c8d75bdf76f5b"},
+  {"name":"part-006.txt","length":18000,"sha256":"0e24ac8610c1b75a246825d64e5370a2d2bc2d38d0eeab0bec935bb6f3bcabd9"},
+  {"name":"part-007.txt","length":18000,"sha256":"5ec4f8574def4831832ebf30ce62102bee669f37233c6e9b4d7cb423103efa03"},
+  {"name":"part-008.txt","length":18000,"sha256":"29728719b07334e5683fc2120b8ce0e6bd88a23c6e9de3c3c57749b370c7cbaa"},
+  {"name":"part-009a.txt","length":9000,"sha256":"1671aaac8548b9f69ae5653131cc6a0e2633bd570afc569f73c6d342693a4c3c"},
+  {"name":"part-009b.txt","length":9000,"sha256":"3089292045912812112b9279f7f53427a733cd4b9e3d5434ddc7713be7e26c12"},
+  {"name":"part-010.txt","length":7504,"sha256":"af2dcfaf699b2f68ae4aaaa5559f4c8cf44fed619d077c0d88b00a54834e6487"}
 ]
