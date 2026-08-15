@@ -1,0 +1,88 @@
+name: Harness v4 Bootstrap 2
+
+on:
+  push:
+    branches: [harness-v4-final]
+    paths:
+      - '.v4payload/READY'
+      - '.github/workflows/harness-v4-bootstrap2.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: harness-v4-bootstrap2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify ready marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .v4payload/READY
+          grep -qx 'ed33cc6379572019bd071b46bc1a7d4f30667c107a95d1c3772db8e4f7e3e85d' .v4payload/READY
+      - name: Verify payload parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          manifest=json.loads(Path('.v4payload/parts.json').read_text())
+          for row in manifest:
+              p=Path('.v4payload')/row['name']
+              raw=p.read_bytes()
+              assert len(raw)==row['length'], (p,len(raw),row['length'])
+              assert hashlib.sha256(raw).hexdigest()==row['sha256'], p
+          print('parts verified:',len(manifest))
+          PY
+      - name: Rebuild and verify source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .v4payload/part-*.txt | base64 -d > /tmp/source.tar.xz
+          echo 'ed33cc6379572019bd071b46bc1a7d4f30667c107a95d1c3772db8e4f7e3e85d  /tmp/source.tar.xz' | sha256sum -c -
+          xz --test /tmp/source.tar.xz
+      - name: Replace v4 source trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf frontend worldforge migrations scripts tests .github/workflows
+          tar -xJf /tmp/source.tar.xz -C .
+          rm -rf .v4payload
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Verify v4 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q
+          python -m compileall -q worldforge scripts
+          node --check frontend/app.js
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          data=yaml.safe_load(Path('docker-compose.prod.yml').read_text())
+          assert {'postgres','minio','minio-init','migrate','api','worker'} <= set(data['services'])
+          print('compose schema ok')
+          PY
+      - name: Commit verified source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Upgrade to execution-first WorldForge Harness v4'
+          git push origin HEAD:harness-v4-final
