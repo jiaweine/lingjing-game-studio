@@ -123,6 +123,12 @@ class ConversationStore:
   with self.engine.connect() as c:row=c.execute(select(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id))).first()
   if not row:raise KeyError(job_id)
   return self._json_row(row)
+ def latest_job(self,conversation_id,*,workspace_id):
+  with self.engine.connect() as c:row=c.execute(select(self.jobs).where((self.jobs.c.conversation_id==conversation_id)&(self.jobs.c.workspace_id==workspace_id)).order_by(self.jobs.c.created_at.desc()).limit(1)).first()
+  return self._json_row(row) if row else None
+ def cancel_job(self,job_id,*,workspace_id):
+  with self.engine.begin() as c:c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id)&(self.jobs.c.status.in_(('queued','running')))).values(status='cancelled',completed_at=time.time()))
+  return self.get_job(job_id,workspace_id=workspace_id)
  def claim_job(self,worker_id):
   now=time.time()
   with self.engine.begin() as c:
@@ -133,10 +139,10 @@ class ConversationStore:
    claimed=c.execute(select(self.jobs).where(self.jobs.c.id==job_id)).first()
   return self._json_row(claimed)
  def finish_job(self,job_id):
-  with self.engine.begin() as c:c.execute(update(self.jobs).where(self.jobs.c.id==job_id).values(status='completed',completed_at=time.time(),last_error=None))
+  with self.engine.begin() as c:c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.status=='running')).values(status='completed',completed_at=time.time(),last_error=None))
  def fail_job(self,job_id,error,*,retry_delay=15.,max_attempts=3):
   with self.engine.begin() as c:
    row=c.execute(select(self.jobs.c.attempts).where(self.jobs.c.id==job_id)).first();attempts=int(row[0]) if row else max_attempts;values={'last_error':error[:4000]}
    if attempts<max_attempts:values.update(status='queued',worker_id=None,claimed_at=None,available_at=time.time()+retry_delay*attempts)
    else:values.update(status='failed',completed_at=time.time())
-   c.execute(update(self.jobs).where(self.jobs.c.id==job_id).values(**values))
+   c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.status=='running')).values(**values))

@@ -63,6 +63,10 @@ task_event_hub = TaskEventFanoutHub(product_store)
 logger = logging.getLogger("worldforge.api")
 
 
+class AnalysisCancelled(Exception):
+    pass
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await task_event_hub.start()
@@ -258,14 +262,7 @@ def _session_response(principal: Principal, response: Response):
 
 @app.get("/api/config")
 def public_config():
-    return {
-        "environment": settings.env,
-        "auth_required": settings.auth_mode == "required",
-        "max_upload_mb": settings.max_upload_mb,
-        "storage": settings.storage_backend,
-        "queue_mode": settings.queue_mode,
-        "version": "1.0.0",
-    }
+    return {"auth_required": settings.auth_mode == "required"}
 
 
 @app.post("/api/auth/register")
@@ -450,6 +447,9 @@ def conversation_get(
             conversation_id, workspace_id=principal.workspace_id
         ),
         "events": product_store.list_events(
+            conversation_id, workspace_id=principal.workspace_id
+        ),
+        "job": product_store.latest_job(
             conversation_id, workspace_id=principal.workspace_id
         ),
     }
@@ -655,13 +655,26 @@ async def _run_analysis_job(
     provider_key,
     history,
     assets,
+    job_id=None,
 ):
+    def ensure_active():
+        if not job_id:
+            return
+        try:
+            job = product_store.get_job(job_id, workspace_id=workspace_id)
+        except KeyError as exc:
+            raise AnalysisCancelled from exc
+        if job["status"] == "cancelled":
+            raise AnalysisCancelled
+
     try:
         async def sink(type_, payload):
+            ensure_active()
             await _product_emit(
                 conversation_id, workspace_id, type_, payload
             )
 
+        ensure_active()
         prepared = _materialize_assets(assets)
         result = await product_analyzer.run(
             text=text,
@@ -670,6 +683,7 @@ async def _run_analysis_job(
             sink=sink,
             history=history,
         )
+        ensure_active()
         message = product_store.add_message(
             conversation_id,
             "assistant",
@@ -683,6 +697,9 @@ async def _run_analysis_job(
             "answer.ready",
             {"message": message, "result": result},
         )
+        return True
+    except AnalysisCancelled:
+        return False
     except Exception as exc:
         logger.exception(
             "analysis job failed",
@@ -782,9 +799,12 @@ async def conversation_message(
     async def work():
         try:
             with product_store.engine.begin() as connection:
-                connection.execute(
+                claimed = connection.execute(
                     product_store.jobs.update()
-                    .where(product_store.jobs.c.id == job["id"])
+                    .where(
+                        (product_store.jobs.c.id == job["id"])
+                        & (product_store.jobs.c.status == "queued")
+                    )
                     .values(
                         status="running",
                         worker_id="api-inprocess",
@@ -792,15 +812,19 @@ async def conversation_message(
                         attempts=1,
                     )
                 )
-            await _run_analysis_job(
+            if claimed.rowcount == 0:
+                return
+            completed = await _run_analysis_job(
                 conversation_id=conversation_id,
                 workspace_id=principal.workspace_id,
                 text=req.content,
                 provider_key=req.provider,
                 history=history,
                 assets=assets,
+                job_id=job["id"],
             )
-            product_store.finish_job(job["id"])
+            if completed:
+                product_store.finish_job(job["id"])
         except Exception as exc:
             product_store.fail_job(job["id"], repr(exc), max_attempts=1)
 
@@ -823,6 +847,39 @@ def job_get(
         )
     except KeyError:
         raise HTTPException(404, "任务不存在")
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def job_cancel(
+    job_id: str,
+    request: Request,
+    principal: Principal = Depends(require_principal),
+):
+    try:
+        job = product_store.get_job(job_id, workspace_id=principal.workspace_id)
+    except KeyError:
+        raise HTTPException(404, "任务不存在")
+    if job["status"] in {"completed", "failed", "cancelled"}:
+        return job
+    cancelled = product_store.cancel_job(
+        job_id, workspace_id=principal.workspace_id
+    )
+    if cancelled["status"] == "cancelled":
+        await _product_emit(
+            job["conversation_id"],
+            principal.workspace_id,
+            "answer.cancelled",
+            {"job_id": job_id},
+        )
+        product_store.add_audit(
+            request_id=request.state.request_id,
+            action="job.cancel",
+            workspace_id=principal.workspace_id,
+            user_id=principal.user_id,
+            resource_type="job",
+            resource_id=job_id,
+        )
+    return cancelled
 
 
 @app.websocket("/ws/conversations/{conversation_id}")
@@ -883,23 +940,12 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str):
 
 @app.get("/api/health/live")
 def liveness():
-    return {
-        "status": "ok",
-        "service": "lingjing-api",
-        "version": "1.0.0",
-    }
+    return {"status": "ok"}
 
 
 @app.get("/api/health/ready")
 def readiness():
-    checks = {
-        "database": False,
-        "object_storage": False,
-        "storage_backend": storage.name,
-        "providers": len(
-            [item for item in providers.list() if item.get("configured")]
-        ),
-    }
+    checks = {"database": False, "object_storage": False}
     try:
         with product_store.engine.connect() as connection:
             connection.execute(sql_text("select 1"))
@@ -911,27 +957,17 @@ def readiness():
     except Exception as exc:
         checks["storage_error"] = type(exc).__name__
     ok = bool(checks["database"] and checks["object_storage"])
+    if not ok:
+        logger.warning("readiness check failed", extra={"checks": checks})
     return JSONResponse(
-        {"status": "ready" if ok else "not_ready", "checks": checks},
+        {"status": "ready" if ok else "not_ready"},
         status_code=200 if ok else 503,
     )
 
 
 @app.get("/api/health")
 def health():
-    return {
-        "status": "ok",
-        "product": "灵境游戏工作台",
-        "version": "1.0.0",
-        "locale": "zh-CN",
-        "environment": settings.env,
-        "auth": settings.auth_mode,
-        "storage": storage.name,
-        "queue": settings.queue_mode,
-        "providers": len(
-            [item for item in providers.list() if item.get("configured")]
-        ),
-    }
+    return {"status": "ok", "product": "灵境游戏工作台"}
 
 
 @app.get("/api/model")
@@ -980,24 +1016,6 @@ def runtime(principal: Principal = Depends(require_principal)):
         "policy": manager.engine.policy_model.card_dict(),
     }
 
-
-@app.get("/api/showcase")
-def showcase(principal: Principal = Depends(require_principal)):
-    return {
-        "product": {
-            "name": "WorldForge Runtime",
-            "cn_name": "游戏自主执行运行时",
-            "tagline": "把研发目标变成可执行、可验证、可恢复的长期任务",
-            "policy": manager.engine.policy_model.card.name,
-            "external_model_api": False,
-        },
-        "business_scenarios": [
-            {"name": "数值平衡测试", "value": "自动探索极端组合、资源曲线与胜负边界"},
-            {"name": "版本回归", "value": "复现历史失败轨迹并验证修复结果"},
-            {"name": "漏洞发现", "value": "通过多策略探索发现异常收益路径"},
-            {"name": "智能 NPC 验证", "value": "验证长周期策略稳定性与行为一致性"},
-        ],
-    }
 
 
 @app.get("/api/diagnostics")

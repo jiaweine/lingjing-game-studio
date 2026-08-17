@@ -35,7 +35,7 @@ const fixAssetImages=()=>document.querySelectorAll('img').forEach(img=>{for(cons
 new MutationObserver(fixAssetImages).observe(document.documentElement,{childList:true,subtree:true});
 window.fetch=async function(url,opt={}){
   const u=String(url),method=String(opt.method||'GET').toUpperCase(),S=window.__E2E;
-  if(u.endsWith('/api/config')) return jsonResponse({environment:'production',auth_required:true,max_upload_mb:120,storage:'s3',queue_mode:'external',version:'1.0.0'});
+  if(u.endsWith('/api/config')) return jsonResponse({auth_required:true});
   if(u.endsWith('/api/auth/me')) return S.session?jsonResponse(S.session):jsonResponse({detail:'请先登录'},401);
   if(u.endsWith('/api/auth/register')&&method==='POST'){
     S.session={authenticated:true,user:{id:'user-e2e',email:'qa@studio.com',role:'owner'},workspace:{id:'ws-e2e',name:'Nebula Studio',slug:'nebula-studio',plan:'team'},access_token:'mock',token_type:'bearer'};
@@ -43,14 +43,6 @@ window.fetch=async function(url,opt={}){
   }
   if(u.endsWith('/api/auth/login')&&method==='POST') return jsonResponse(S.session||{detail:'邮箱或密码错误'},S.session?200:401);
   if(u.endsWith('/api/auth/logout')){S.session=false;return jsonResponse({ok:true})}
-  if(u.endsWith('/api/providers')) return jsonResponse([
-    {key:'auto',name:'自动选择',vendor:'Lingjing',configured:true,multimodal:true,note:'按输入类型、可用性与成本自动路由'},
-    {key:'demo',name:'内置演示',vendor:'Lingjing',configured:true,multimodal:true,note:'本地验证任务链路'},
-    {key:'openai',name:'OpenAI',vendor:'OpenAI',configured:false,multimodal:true,supports_video:true,note:'图像与关键帧多模态推理'},
-    {key:'anthropic',name:'Claude',vendor:'Anthropic',configured:false,multimodal:true,note:'图像输入与文本推理'},
-    {key:'deepseek',name:'DeepSeek',vendor:'DeepSeek',configured:false,multimodal:false,note:'文本推理服务'},
-    {key:'gemini',name:'Gemini',vendor:'Google',configured:false,multimodal:true,supports_video:true,supports_audio:true,note:'图像、视频与音频输入'}
-  ]);
   if(u.endsWith('/api/health')) return jsonResponse({status:'ok',storage:'s3',queue:'external'});
   if(u.endsWith('/api/conversations')&&method==='GET') return jsonResponse(S.conversations);
   if(u.endsWith('/api/conversations')&&method==='POST'){
@@ -78,7 +70,7 @@ window.fetch=async function(url,opt={}){
     const user={id:'msg-user',conversation_id:'cv-e2e',role:'user',content:body.content,created_at:2.5,payload:{asset_ids:body.asset_ids||[]}};
     c.messages=[user];
     const log=S.assets.find(a=>a.meta?.kind==='text');
-    const answer={id:'msg-answer',conversation_id:'cv-e2e',role:'assistant',content:'### 结论\n异常具备稳定复现条件，核心窗口集中在第二阶段进入后的防御资源真空期。\n\n### 关键发现\n1. 60 秒附近 shield 归零后，承伤在极短时间内连续抬升。\n2. 同条件再次核验时，异常路径可以重复出现。\n3. 当前证据更支持资源覆盖与技能时序叠加，而不是单一伤害参数失控。\n\n### 下一步\n优先核对减伤持续时间、Boss 技能冷却与资源恢复窗口，再用同一条件做修复后回归。',created_at:3,payload:{provider:'内置演示',evidence:[{type:'text',label:'战斗日志',title:'battle.log · 关键时间窗',asset_id:log?.id},{type:'replay',label:'复核结果',title:'同条件复核 · 异常路径再次出现'}],suggestions:['把异常时间段单独展开','继续核对伤害配置','生成回归测试清单']}};
+    const answer={id:'msg-answer',conversation_id:'cv-e2e',role:'assistant',content:'### 结论\n异常具备稳定复现条件，核心窗口集中在第二阶段进入后的防御资源真空期。\n\n### 关键发现\n1. 60 秒附近 shield 归零后，承伤在极短时间内连续抬升。\n2. 同条件再次核验时，异常路径可以重复出现。\n3. 当前证据更支持资源覆盖与技能时序叠加，而不是单一伤害参数失控。\n\n### 下一步\n优先核对减伤持续时间、Boss 技能冷却与资源恢复窗口，再用同一条件做修复后回归。',created_at:3,payload:{evidence:[{type:'text',label:'战斗日志',title:'battle.log · 关键时间窗',asset_id:log?.id},{type:'replay',label:'复核结果',title:'同条件复核 · 异常路径再次出现'}],suggestions:['把异常时间段单独展开','继续核对伤害配置','生成回归测试清单']}};
     setTimeout(()=>{
       const events=[
         {id:1,type:'progress',payload:{step:'读取任务上下文',detail:'已关联当前素材，正在建立执行上下文',percent:12}},
@@ -92,6 +84,7 @@ window.fetch=async function(url,opt={}){
     },80);
     return jsonResponse({status:'queued',message:user,job_id:'job-e2e'});
   }
+  if(u.endsWith('/api/jobs/job-e2e/cancel')&&method==='POST') return jsonResponse({id:'job-e2e',status:'cancelled'});
   return jsonResponse({detail:'not mocked: '+u},404);
 };
 class MockWebSocket{
@@ -176,6 +169,10 @@ with sync_playwright() as playwright:
     )
     shot("task-running.png")
     report["checks"]["running_state"] = True
+    report["checks"]["stop_control"] = page.locator("#stopBtn").is_visible()
+    report["checks"]["no_dead_controls"] = page.locator(
+        "#providerBtn,#providerModal,#settingsBtn,#moreBtn"
+    ).count() == 0
 
     page.wait_for_function(
         "document.querySelectorAll('#messageList .msg.assistant').length===1",

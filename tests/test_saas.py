@@ -21,5 +21,8 @@ def _register(client,prefix):
 def test_api_tenant_isolation_and_audit():
     owner_a=TestClient(app);owner_b=TestClient(app);session_a=_register(owner_a,"alpha");session_b=_register(owner_b,"beta");assert session_a["workspace"]["id"]!=session_b["workspace"]["id"];conv=owner_a.post("/api/conversations",json={"title":"Alpha only","scene":"battle_review"});assert conv.status_code==200;cid=conv.json()["id"];assert owner_a.get(f"/api/conversations/{cid}").status_code==200;assert owner_b.get(f"/api/conversations/{cid}").status_code==404;audit=owner_a.get("/api/audit").json();actions={x["action"] for x in audit};assert "auth.register" in actions;assert "conversation.create" in actions
 
+def test_cancelled_job_is_terminal(tmp_path):
+    store=ConversationStore(tmp_path/"jobs.db",tmp_path/"assets");conv=store.create_conversation("Job");job=store.enqueue_job(workspace_id=conv["workspace_id"],conversation_id=conv["id"],payload={});store.cancel_job(job["id"],workspace_id=conv["workspace_id"]);store.finish_job(job["id"]);store.fail_job(job["id"],"late failure");assert store.get_job(job["id"],workspace_id=conv["workspace_id"])["status"]=="cancelled"
+
 def test_security_headers_and_readiness():
-    c=TestClient(app);r=c.get("/api/health");assert r.status_code==200;assert r.headers["x-content-type-options"]=="nosniff";assert r.headers["x-frame-options"]=="DENY";assert "content-security-policy" in r.headers;ready=c.get("/api/health/ready");assert ready.status_code==200;assert ready.json()["checks"]["database"] is True
+    c=TestClient(app);r=c.get("/api/health");assert r.status_code==200;assert r.headers["x-content-type-options"]=="nosniff";assert r.headers["x-frame-options"]=="DENY";assert "content-security-policy" in r.headers;ready=c.get("/api/health/ready");assert ready.status_code==200;assert ready.json()["status"]=="ready"
