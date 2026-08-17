@@ -1,0 +1,51 @@
+name: README Math Diagnostic
+
+on:
+  pull_request:
+    paths:
+      - 'README.md'
+      - '.github/workflows/readme-math-diagnostic.yml'
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Inspect GitHub math DOM
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from playwright.sync_api import sync_playwright
+
+          repo = os.environ['GH_REPOSITORY']
+          sha = os.environ['SOURCE_SHA']
+          url = f'https://github.com/{repo}/tree/{sha}'
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+              response = page.goto(url, wait_until='domcontentloaded', timeout=90000)
+              assert response and response.status == 200
+              page.get_by_text('Agent Method · Core Equations', exact=True).scroll_into_view_if_needed()
+              page.wait_for_timeout(5000)
+              data = page.evaluate('''() => ({
+                mathRenderer: Array.from(document.querySelectorAll('math-renderer')).map(x => ({tag:x.tagName, cls:x.className, text:x.textContent.slice(0,160), html:x.outerHTML.slice(0,700)})),
+                mjx: Array.from(document.querySelectorAll('mjx-container')).map(x => ({tag:x.tagName, cls:x.className, text:x.textContent.slice(0,160), html:x.outerHTML.slice(0,700)})),
+                mathjax: Array.from(document.querySelectorAll('.MathJax')).map(x => ({tag:x.tagName, cls:x.className, text:x.textContent.slice(0,160), html:x.outerHTML.slice(0,700)})),
+                mathSvg: Array.from(document.querySelectorAll('article.markdown-body svg')).filter(x => (x.getAttribute('aria-label') || '').toLowerCase().includes('math')).length,
+                suspiciousCode: Array.from(document.querySelectorAll('article.markdown-body pre code')).filter(x => /operatorname|mathbb|mathrm|varepsilon|mathcal/.test(x.textContent)).map(x => x.textContent.slice(0,160)),
+                rawLatexVisible: /\\operatorname|\\mathbb|\\mathrm|\\mathcal/.test(document.querySelector('article.markdown-body')?.innerText || '')
+              })''')
+              print(json.dumps(data, ensure_ascii=False, indent=2))
+              browser.close()
+          PY
