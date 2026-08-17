@@ -1,79 +1,97 @@
 from __future__ import annotations
 
-from worldforge.models import Skill, WorldState
+from pathlib import Path
+import json
+
+from worldforge.models import BeliefState, GoalState, Skill, WorldState
+
+from .harness_genome import HarnessGenomeStore, lightweight_features, state_features
 
 
-DEFAULT_SKILLS = [
-    Skill(
-        skill_id="survival_guard",
-        name="Survival Guard",
-        description="Prefer defense or healing when the next damage window can terminate the run.",
-        trigger="hp_low_or_threat_high",
-        action_bias={"defend": 2.4, "heal": 4.2, "scout": .8},
-        success_rate=.72,
-    ),
-    Skill(
-        skill_id="burst_window",
-        name="Burst Window",
-        description="Spend energy when the enemy is in a finishable range.",
-        trigger="enemy_low_energy_ready",
-        action_bias={"heavy_attack": 4.0, "cast": 3.4, "attack": 1.2},
-        success_rate=.69,
-    ),
-    Skill(
-        skill_id="information_first",
-        name="Information First",
-        description="Probe early under high uncertainty before irreversible commitments.",
-        trigger="uncertainty_high",
-        action_bias={"scout": 4.2, "defend": .8},
-        success_rate=.66,
-    ),
-    Skill(
-        skill_id="economy_guard",
-        name="Economy Guard",
-        description="Avoid over-spending and suspicious reward-loop behavior.",
-        trigger="economy_or_exploit",
-        action_bias={"farm": .4, "buy_armor": 1.7, "buy_blade": 1.0, "attack": .7},
-        success_rate=.61,
-    ),
-]
+def _load_seed_skills() -> list[Skill]:
+    path = Path(__file__).with_name("default_skills.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [Skill.model_validate(item) for item in data]
 
 
 class SkillBank:
+    """Persistent skill artifacts whose activation is controlled by HarnessGenome gates."""
+
     def __init__(self) -> None:
         self.skills: dict[str, Skill] = {
-            skill.skill_id: skill.model_copy(deep=True) for skill in DEFAULT_SKILLS
+            skill.skill_id: skill.model_copy(deep=True)
+            for skill in _load_seed_skills()
         }
         self.history: list[Skill] = []
 
-    def active_for(self, state: WorldState, uncertainty: float = .5) -> list[Skill]:
-        out: list[Skill] = []
-        for skill in self.skills.values():
+    @staticmethod
+    def _features(
+        state: WorldState,
+        uncertainty: float,
+        goal: GoalState | None,
+    ) -> dict[str, float]:
+        if goal is None:
+            return lightweight_features(state, uncertainty)
+        belief = BeliefState(
+            enemy_attack_low=max(1, state.enemy_attack - state.enemy_variance),
+            enemy_attack_high=state.enemy_attack + state.enemy_variance,
+            uncertainty=uncertainty,
+        )
+        return state_features(state, belief, goal)
+
+    def activations(
+        self,
+        state: WorldState,
+        uncertainty: float = .5,
+        *,
+        goal: GoalState | None = None,
+    ) -> dict[str, float]:
+        genome = HarnessGenomeStore.current()
+        features = self._features(state, uncertainty, goal)
+        out: dict[str, float] = {}
+        for skill_id, skill in self.skills.items():
             if skill.status != "active":
                 continue
-            if skill.skill_id == "survival_guard" and (
-                state.player_hp < 45 or state.threat > .62
-            ):
-                out.append(skill)
-            elif skill.skill_id == "burst_window" and (
-                state.enemy_hp < state.enemy_max_hp * .48 and state.energy >= 2
-            ):
-                out.append(skill)
-            elif skill.skill_id == "information_first" and (
-                uncertainty > .48 and state.discovered_enemy_attack is None
-            ):
-                out.append(skill)
-            elif skill.skill_id == "economy_guard" and any(
-                tag in state.tags for tag in ("economy", "exploit-test")
-            ):
-                out.append(skill)
+            gate = genome.skill_gates.get(skill_id)
+            out[skill_id] = gate.activation(features) if gate else 0.0
         return out
 
-    def bias(self, state: WorldState, action: str, uncertainty: float = .5) -> float:
-        return sum(
-            skill.action_bias.get(action, 0.0) * (.7 + skill.success_rate * .5)
-            for skill in self.active_for(state, uncertainty)
-        )
+    def active_for(
+        self,
+        state: WorldState,
+        uncertainty: float = .5,
+        *,
+        goal: GoalState | None = None,
+    ) -> list[Skill]:
+        activations = self.activations(state, uncertainty, goal=goal)
+        return [
+            skill
+            for skill_id, skill in self.skills.items()
+            if skill.status == "active" and activations.get(skill_id, 0.0) >= .5
+        ]
+
+    def bias(
+        self,
+        state: WorldState,
+        action: str,
+        uncertainty: float = .5,
+        *,
+        goal: GoalState | None = None,
+    ) -> float:
+        genome = HarnessGenomeStore.current()
+        planner = genome.planner
+        activations = self.activations(state, uncertainty, goal=goal)
+        total = 0.0
+        for skill_id, skill in self.skills.items():
+            if skill.status != "active":
+                continue
+            activation = activations.get(skill_id, 0.0)
+            reliability = (
+                planner.skill_base_factor
+                + skill.success_rate * planner.skill_success_factor
+            )
+            total += skill.action_bias.get(action, 0.0) * activation * reliability
+        return total
 
     def propose_patch(self, skill_id: str, action: str, delta: float, reason: str) -> Skill:
         before = self.skills[skill_id]
