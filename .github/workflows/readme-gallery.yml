@@ -80,6 +80,67 @@ jobs:
           assert data['isPrerelease'] is True, data
           print('release-assets-ok', sorted(names), data['url'])
           PY
+      - name: Verify published README images on GitHub
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import os
+          from playwright.sync_api import sync_playwright
+
+          repository = os.environ['GH_REPOSITORY']
+          expected_alts = [
+              '灵境游戏研发执行工作台总览',
+              '登录与工作空间入口',
+              '空任务工作台',
+              '多模态素材上传',
+              '任务执行状态',
+              '任务结果工作台',
+              '证据核验',
+              '多模态任务上下文',
+              '产品总览',
+          ]
+          url = f'https://github.com/{repository}'
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+              image_failures = []
+              page.on('requestfailed', lambda request: image_failures.append({
+                  'url': request.url,
+                  'failure': request.failure,
+              }) if ('readme-gallery-assets' in request.url.lower() or 'release-assets.githubusercontent.com' in request.url.lower()) else None)
+              response = page.goto(url, wait_until='domcontentloaded', timeout=90000)
+              assert response and response.status == 200, response.status if response else None
+
+              verified = []
+              for alt in expected_alts:
+                  locator = page.locator(f'img[alt="{alt}"]').first
+                  locator.wait_for(state='attached', timeout=30000)
+                  locator.scroll_into_view_if_needed(timeout=30000)
+                  page.wait_for_function(
+                      '(img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0',
+                      arg=locator.element_handle(),
+                      timeout=45000,
+                  )
+                  data = locator.evaluate('''img => ({
+                      alt: img.alt,
+                      src: img.getAttribute('src'),
+                      currentSrc: img.currentSrc,
+                      naturalWidth: img.naturalWidth,
+                      naturalHeight: img.naturalHeight,
+                      complete: img.complete
+                  })''')
+                  assert 'releases/download/readme-gallery-assets/' in data['src'], data
+                  assert data['naturalWidth'] == 3840 and data['naturalHeight'] == 2400, data
+                  verified.append(data)
+                  print('README-IMAGE', data)
+
+              assert len(verified) == 9, len(verified)
+              assert not image_failures, image_failures
+              print(f'readme-gallery-browser-ok images={len(verified)} url={url}')
+              browser.close()
+          PY
       - name: Commit refreshed screenshots
         run: |
           git config user.name 'github-actions[bot]'
