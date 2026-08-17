@@ -12,8 +12,8 @@ from .harness_genome import HarnessGenomeStore
 class CounterfactualBrancher:
     """Counterfactual search whose budget and risk aggregation are genome-controlled.
 
-    The caller supplies only hard resource caps. The active harness decides how much of that
-    budget to spend for the current uncertainty/threat state.
+    The caller supplies hard resource caps. Full WorldForge planners let the active harness
+    allocate within those caps; generic planner adapters keep the explicit caller budget.
     """
 
     def __init__(self, planner, verifier):
@@ -21,15 +21,16 @@ class CounterfactualBrancher:
         self.verifier = verifier
 
     def evaluate(self, env, candidates, goal, width=4, horizon=3, rollouts=3):
-        gene = HarnessGenomeStore.current().search
-        belief = self.planner.make_belief(env.state)
-        width, horizon, rollouts = gene.allocate(
-            uncertainty=belief.uncertainty,
-            threat=env.state.threat,
-            width_cap=width,
-            horizon_cap=horizon,
-            rollout_cap=rollouts,
-        )
+        if hasattr(self.planner, "make_belief"):
+            gene = HarnessGenomeStore.current().search
+            belief = self.planner.make_belief(env.state)
+            width, horizon, rollouts = gene.allocate(
+                uncertainty=belief.uncertainty,
+                threat=env.state.threat,
+                width_cap=width,
+                horizon_cap=horizon,
+                rollout_cap=rollouts,
+            )
         selected = candidates[:width]
         if not selected:
             return []
