@@ -38,14 +38,15 @@ jobs:
           ]
           for name in screenshots:
               rel = f'docs/assets/readme/{name}.png'
-              markdown_ref = f'](/{rel})'
-              assert markdown_ref in readme, f'README missing Markdown image reference: {markdown_ref}'
+              markdown_ref = f'](./{rel})'
+              assert markdown_ref in readme, f'README missing repository-relative image reference: {markdown_ref}'
               path = Path(rel)
               assert path.is_file() and path.stat().st_size > 0, path
               with Image.open(path) as image:
                   assert image.format == 'PNG', (name, image.format)
                   assert image.size == (3840, 2400), (name, image.size)
 
+          assert '](/docs/' not in readme, 'README must not use site-root /docs image paths'
           assert '<img ' not in readme, 'README screenshots must use GitHub Markdown image syntax, not raw HTML img tags'
           assert not Path('frontend/.readme-gallery-trigger').exists()
           stale = {
@@ -60,7 +61,7 @@ jobs:
               for token in tokens:
                   assert token not in text, f'{filename} still contains stale token: {token}'
           PY
-      - name: GitHub README render smoke test
+      - name: GitHub README repository-relative render smoke test
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
@@ -110,13 +111,19 @@ jobs:
           parser.feed(rendered)
           assert len(parser.images) >= 8, f'GitHub rendered only {len(parser.images)} image tags'
 
-          rendered_attrs = [
-              unquote(' '.join(str(value) for value in attrs.values() if value))
-              for attrs in parser.images
-          ]
           for name in expected:
-              filename = f'{name}.png'
-              assert any(filename in attrs for attrs in rendered_attrs), f'GitHub render missing {filename}'
+              rel = f'docs/assets/readme/{name}.png'
+              expected_src = f'./{rel}'
+              matches = []
+              for attrs in parser.images:
+                  src = unquote(str(attrs.get('src') or ''))
+                  if rel in src:
+                      matches.append(src)
+              assert matches, f'GitHub render missing repository image {rel}'
+              for src in matches:
+                  assert src == expected_src, f'{name} must stay repository-relative; got {src}'
+                  assert not src.startswith('/docs/'), f'{name} still resolves to GitHub site root: {src}'
+                  print(f'rendered-image {name}: {src}')
 
           for name in expected:
               path = f'docs/assets/readme/{name}.png'

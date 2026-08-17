@@ -6,7 +6,7 @@
 
 问题复现 · 数值检查 · 版本回归 · 角色行为 · 多素材交叉核对
 
-![灵境游戏研发执行工作台总览](/docs/assets/readme/cover.png)
+![灵境游戏研发执行工作台总览](./docs/assets/readme/cover.png)
 
 ---
 
@@ -33,49 +33,49 @@
 
 注册、登录与工作空间身份边界。
 
-![登录与工作空间入口](/docs/assets/readme/auth.png)
+![登录与工作空间入口](./docs/assets/readme/auth.png)
 
 ### 2 · 新任务
 
 从研发目标开始，而不是从模型配置开始。
 
-![空任务工作台](/docs/assets/readme/workspace-empty.png)
+![空任务工作台](./docs/assets/readme/workspace-empty.png)
 
 ### 3 · 素材输入
 
 图片、视频、音频、日志、配置与文档进入同一个任务上下文。
 
-![多模态素材上传](/docs/assets/readme/upload.png)
+![多模态素材上传](./docs/assets/readme/upload.png)
 
 ### 4 · 执行中
 
 查看真实进度、当前任务状态，并在需要时停止执行。
 
-![任务执行状态](/docs/assets/readme/task-running.png)
+![任务执行状态](./docs/assets/readme/task-running.png)
 
 ### 5 · 任务结果
 
 结论、后续动作、团队协作和任务管理集中在同一个工作台。
 
-![任务结果工作台](/docs/assets/readme/workspace.png)
+![任务结果工作台](./docs/assets/readme/workspace.png)
 
 ### 6 · 证据核验
 
 让结论能够回到截图、关键帧、日志等来源。
 
-![证据核验](/docs/assets/readme/evidence.png)
+![证据核验](./docs/assets/readme/evidence.png)
 
 ### 7 · 持续多模态上下文
 
 后续追问自动继承当前任务已有素材，不把上一轮上下文丢掉。
 
-![多模态任务上下文](/docs/assets/readme/multimodal.png)
+![多模态任务上下文](./docs/assets/readme/multimodal.png)
 
 ### 8 · 产品总览
 
 控制、证据、交付与协作集中在同一个任务空间。
 
-![产品总览](/docs/assets/readme/cover.png)
+![产品总览](./docs/assets/readme/cover.png)
 
 ---
 
@@ -117,7 +117,6 @@
 - **证据索引**让最终结论可以指回来源，而不是只给一段无法复查的答案。
 
 ---
-
 ## 适合做什么
 
 | 研发目标 | 灵境负责交付 |
