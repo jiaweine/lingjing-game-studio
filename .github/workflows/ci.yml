@@ -23,4 +23,56 @@ jobs:
         run: pytest -q
       - name: JavaScript syntax check
         run: node --check frontend/app.js
-      # README gallery is validated by .github/workflows/readme-gallery.yml
+      - name: Backend product E2E
+        run: python scripts/product_backend_e2e.py
+      - name: README and repository consistency
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+
+          readme = Path('README.md').read_text(encoding='utf-8')
+          screenshots = [
+              'auth', 'workspace-empty', 'upload', 'task-running',
+              'workspace', 'evidence', 'multimodal', 'cover',
+          ]
+          for name in screenshots:
+              rel = f'docs/assets/readme/{name}.png'
+              assert rel in readme, f'README missing {rel}'
+              path = Path(rel)
+              assert path.is_file() and path.stat().st_size > 0, path
+              with Image.open(path) as image:
+                  assert image.format == 'PNG', (name, image.format)
+                  assert image.size == (3840, 2400), (name, image.size)
+
+          assert not Path('frontend/.readme-gallery-trigger').exists()
+          stale = {
+              'BUILD_REPORT.md': ['v2.0', 'UI v3', '16 passed', '7 / 7 PASS'],
+              'docs/ARCHITECTURE.md': ['SaaS Control Plane（v2.0）', '本项目只启用自研本地模型'],
+              'docs/FRONTEND.md': ['决策空间', '轨迹回放', '策略演进', '评测报告'],
+              'SECURITY.md': ['The v2 SaaS control-plane code'],
+              'Makefile': ['train_worldforge_m1.py'],
+          }
+          for filename, tokens in stale.items():
+              text = Path(filename).read_text(encoding='utf-8')
+              for token in tokens:
+                  assert token not in text, f'{filename} still contains stale token: {token}'
+          PY
+
+  product-ui-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Browser product E2E
+        run: python scripts/product_ui_e2e.py
+      # README Gallery is refreshed separately by .github/workflows/readme-gallery.yml on main.
