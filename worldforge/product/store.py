@@ -471,6 +471,9 @@ class ConversationStore:
 
     def archive_conversation(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any]:
         self.get_conversation(conversation_id, workspace_id=workspace_id)
+        latest = self.latest_job(conversation_id, workspace_id=workspace_id)
+        if latest and latest["status"] in {"queued", "running"}:
+            raise ValueError("执行中的任务需要先停止，才能归档")
         now = time.time()
         with self.engine.begin() as connection:
             connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(archived_at=now, updated_at=now))
@@ -552,7 +555,12 @@ class ConversationStore:
         return [self._json_row(row) for row in rows]
 
     def enqueue_job(self, *, workspace_id: str, conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        conversation = self.get_conversation(conversation_id, workspace_id=workspace_id)
+        if conversation.get("archived_at") is not None:
+            raise ValueError("已归档任务需要先恢复，才能继续执行")
+        latest = self.latest_job(conversation_id, workspace_id=workspace_id)
+        if latest and latest["status"] in {"queued", "running"}:
+            raise ValueError("当前任务已有执行正在进行")
         job_id, now = _id("job"), time.time()
         with self.engine.begin() as connection:
             connection.execute(insert(self.jobs).values(id=job_id, workspace_id=workspace_id, conversation_id=conversation_id, status="queued", payload=json.dumps(payload, ensure_ascii=False), attempts=0, created_at=now, available_at=now))
@@ -601,6 +609,9 @@ class ConversationStore:
         source = self.get_job(job_id, workspace_id=workspace_id)
         if source["status"] not in {"failed", "cancelled"}:
             raise ValueError("只有失败或已停止的执行可以重试")
+        latest = self.latest_job(source["conversation_id"], workspace_id=workspace_id)
+        if not latest or latest["id"] != source["id"]:
+            raise ValueError("只能重新执行当前任务最新一次失败或已停止的执行")
         return self.enqueue_job(workspace_id=workspace_id, conversation_id=source["conversation_id"], payload=source["payload"])
 
     def complete_job_answer(self, job_id: str, *, workspace_id: str, content: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -747,35 +758,73 @@ class ConversationStore:
             message_rows = connection.execute(select(self.messages.c.conversation_id, self.messages.c.role).select_from(self.messages.join(self.conversations, self.messages.c.conversation_id == self.conversations.c.id)).where(self.conversations.c.workspace_id == workspace_id)).fetchall()
             events = [self._dict(row) for row in connection.execute(select(self.product_events).where(self.product_events.c.workspace_id == workspace_id)).fetchall()]
             feedback = [self._dict(row) for row in connection.execute(select(self.result_feedback).where(self.result_feedback.c.workspace_id == workspace_id)).fetchall()]
+
         jobs_by_conversation: dict[str, list[dict[str, Any]]] = {}
         for job in jobs:
             jobs_by_conversation.setdefault(job["conversation_id"], []).append(job)
-        completed_ids = {cid for cid, rows in jobs_by_conversation.items() if any(row["status"] == "completed" for row in rows)}
+
+        completed_ids = {
+            conversation_id
+            for conversation_id, rows in jobs_by_conversation.items()
+            if any(row["status"] == "completed" for row in rows)
+        }
         task_ids_with_jobs = set(jobs_by_conversation)
-        durations = [float(job["completed_at"] - job["created_at"]) for job in jobs if job["status"] == "completed" and job.get("completed_at")]
-        failed_or_cancelled = {cid for cid, rows in jobs_by_conversation.items() if any(row["status"] in {"failed", "cancelled"} for row in rows)}
+        failed_or_cancelled = {
+            conversation_id
+            for conversation_id, rows in jobs_by_conversation.items()
+            if any(row["status"] in {"failed", "cancelled"} for row in rows)
+        }
         recovered = failed_or_cancelled & completed_ids
+
+        first_verified_durations: list[float] = []
+        for conversation_id in completed_ids:
+            rows = jobs_by_conversation[conversation_id]
+            started_at = min(float(row["created_at"]) for row in rows)
+            completed_at = min(
+                float(row["completed_at"])
+                for row in rows
+                if row["status"] == "completed" and row.get("completed_at") is not None
+            )
+            first_verified_durations.append(max(0.0, completed_at - started_at))
+
         user_turns: dict[str, int] = {}
         for row in message_rows:
             if row.role == "user":
                 user_turns[row.conversation_id] = user_turns.get(row.conversation_id, 0) + 1
-        continued = sum(1 for count in user_turns.values() if count >= 2)
-        evidence_opens = sum(1 for event in events if event["name"] == "evidence.open")
-        adoption = sum(1 for event in events if event["name"] in {"result.copy", "deliverable.copy"})
+        continued_ids = {conversation_id for conversation_id, count in user_turns.items() if count >= 2}
+
+        evidence_open_ids = {
+            event["conversation_id"]
+            for event in events
+            if event["name"] == "evidence.open" and event.get("conversation_id") in completed_ids
+        }
+        adoption_ids = {
+            event["conversation_id"]
+            for event in events
+            if event["name"] in {"result.copy", "deliverable.copy"} and event.get("conversation_id") in completed_ids
+        }
+        explicit_intervention_ids = {
+            event["conversation_id"]
+            for event in events
+            if event["name"] in {"task.retry", "task.handoff"} and event.get("conversation_id")
+        }
+        manual_intervention_ids = failed_or_cancelled | explicit_intervention_ids
         verified_feedback = sum(1 for row in feedback if row.get("human_verified"))
-        denominator = max(1, len(task_ids_with_jobs))
+
+        job_denominator = max(1, len(task_ids_with_jobs))
         completed_denominator = max(1, len(completed_ids))
         feedback_denominator = max(1, len(feedback))
         return {
             "task_count": len(conversations),
             "active_tasks": sum(1 for row in conversations if row.get("archived_at") is None),
-            "first_task_completion_rate": round(len(completed_ids) / denominator, 4),
-            "avg_time_to_verified_seconds": round(sum(durations) / len(durations), 2) if durations else None,
+            "first_task_completion_rate": round(len(completed_ids) / job_denominator, 4),
+            "avg_time_to_verified_seconds": round(sum(first_verified_durations) / len(first_verified_durations), 2) if first_verified_durations else None,
             "interruption_rate": round(sum(1 for job in jobs if job["status"] == "cancelled") / max(1, len(jobs)), 4),
             "failure_rate": round(sum(1 for job in jobs if job["status"] == "failed") / max(1, len(jobs)), 4),
             "recovery_rate": round(len(recovered) / max(1, len(failed_or_cancelled)), 4),
-            "continuation_rate": round(continued / max(1, len(user_turns)), 4),
-            "evidence_open_rate": round(evidence_opens / completed_denominator, 4),
-            "result_adoption_rate": round(adoption / completed_denominator, 4),
+            "continuation_rate": round(len(continued_ids) / max(1, len(user_turns)), 4),
+            "manual_intervention_rate": round(len(manual_intervention_ids & task_ids_with_jobs) / job_denominator, 4),
+            "evidence_open_rate": round(len(evidence_open_ids) / completed_denominator, 4),
+            "result_adoption_rate": round(len(adoption_ids) / completed_denominator, 4),
             "human_verified_feedback_rate": round(verified_feedback / feedback_denominator, 4),
         }

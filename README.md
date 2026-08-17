@@ -167,7 +167,7 @@ flowchart LR
 
 ### Verification + Evolution
 
-Verifier 独立检查状态不变量、非法动作、灾难性风险和异常奖励循环。成功与失败轨迹进入 Memory / Skill；策略更新受 group-relative reward、KL trust region、Regression Gate 与 Human Feedback Gate 共同约束。客户对结果的反馈会先进入结构化质量状态，不会直接修改策略；存在错误反馈或缺少人工验证时，可以显式否决候选演进。
+Verifier 独立检查状态不变量、非法动作、灾难性风险和异常奖励循环。成功与失败轨迹进入 Memory / Skill；策略更新受 group-relative reward、KL trust region、Regression Gate 与 Human Feedback Gate 共同约束。客户对结果的反馈会先进入结构化质量状态，不会直接修改策略；存在错误反馈或缺少人工验证时，Human Feedback Gate 会作为候选演进的否决输入。
 
 > **可验证轨迹 → 候选更新 → 回归评估 + 人工质量门 → 通过才提交。**
 

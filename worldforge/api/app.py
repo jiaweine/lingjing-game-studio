@@ -224,6 +224,7 @@ class RegisterRequest(BaseModel):
     workspace_name: str = Field(
         default="我的游戏团队", min_length=1, max_length=120
     )
+    invite_token: str | None = Field(default=None, max_length=96)
 
 
 class LoginRequest(BaseModel):
@@ -271,12 +272,20 @@ def auth_register(req: RegisterRequest, response: Response, request: Request):
     host = request.client.host if request.client else "unknown"
     rate_limiter.check(f"auth:{host}")
     try:
-        row = product_store.create_user_workspace(
-            email=req.email,
-            name=req.name,
-            password_hash=hash_password(req.password),
-            workspace_name=req.workspace_name,
-        )
+        if req.invite_token:
+            row = product_store.create_user_from_invite(
+                token=req.invite_token,
+                email=req.email,
+                name=req.name,
+                password_hash=hash_password(req.password),
+            )
+        else:
+            row = product_store.create_user_workspace(
+                email=req.email,
+                name=req.name,
+                password_hash=hash_password(req.password),
+                workspace_name=req.workspace_name,
+            )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     principal = Principal(
@@ -724,16 +733,22 @@ async def _run_analysis_job(
             except KeyError:
                 return False
         logger.exception(
-            "analysis job failed",
-            extra={"conversation_id": conversation_id},
-        )
-        await _product_emit(
-            conversation_id,
-            workspace_id,
-            "answer.error",
-            {"message": "处理过程中出现问题", "detail": repr(exc), "job_id": job_id},
+            "analysis job attempt failed",
+            extra={"conversation_id": conversation_id, "job_id": job_id},
         )
         raise
+
+
+async def _fail_product_job(job_id: str, error: str, *, max_attempts: int = 3):
+    failed = product_store.fail_job(job_id, error, max_attempts=max_attempts)
+    if failed and failed["status"] == "failed":
+        await _product_emit(
+            failed["conversation_id"],
+            failed["workspace_id"],
+            "answer.error",
+            {"message": "处理过程中出现问题", "detail": error, "job_id": job_id},
+        )
+    return failed
 
 
 async def _schedule_product_job(job, background_tasks: BackgroundTasks, principal: Principal):
@@ -762,7 +777,7 @@ async def _schedule_product_job(job, background_tasks: BackgroundTasks, principa
                 job_id=claimed["id"],
             )
         except Exception as exc:
-            product_store.fail_job(claimed["id"], repr(exc), max_attempts=1)
+            await _fail_product_job(claimed["id"], repr(exc), max_attempts=1)
 
     background_tasks.add_task(work)
 
@@ -776,11 +791,16 @@ async def conversation_message(
     principal: Principal = Depends(require_principal),
 ):
     try:
-        product_store.get_conversation(
+        conversation = product_store.get_conversation(
             conversation_id, workspace_id=principal.workspace_id
         )
     except KeyError:
         raise HTTPException(404, "任务不存在")
+    if conversation.get("archived_at") is not None:
+        raise HTTPException(409, "已归档任务需要先恢复，才能继续执行")
+    latest = product_store.latest_job(conversation_id, workspace_id=principal.workspace_id)
+    if latest and latest["status"] in {"queued", "running"}:
+        raise HTTPException(409, "当前任务已有执行正在进行")
 
     history = product_store.list_messages(
         conversation_id, workspace_id=principal.workspace_id

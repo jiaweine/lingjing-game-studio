@@ -4,7 +4,7 @@ import asyncio
 import os
 import socket
 
-from worldforge.api.app import _run_analysis_job, product_store
+from worldforge.api.app import _fail_product_job, _run_analysis_job, product_store
 
 
 async def run_worker():
@@ -39,7 +39,7 @@ async def run_worker():
                 job_id=job["id"],
             )
         except Exception as exc:
-            product_store.fail_job(job["id"], repr(exc))
+            await _fail_product_job(job["id"], repr(exc))
 
 
 def main():

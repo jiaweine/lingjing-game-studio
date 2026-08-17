@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import Callable
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
@@ -13,7 +12,6 @@ class ConversationUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=240)
     assigned_to: str | None = None
     pinned: bool | None = None
-    status: str | None = None
 
 
 class InviteCreate(BaseModel):
@@ -113,6 +111,9 @@ def build_control_router(
         principal: Principal = Depends(require_principal),
     ):
         require_manager(principal)
+        current = store.get_membership(principal.workspace_id, user_id)
+        if principal.role != "owner" and current and (current["role"] == "owner" or req.role == "owner"):
+            raise HTTPException(403, "只有所有者可以变更所有者角色")
         try:
             row = store.set_member_role(principal.workspace_id, user_id, req.role)
         except KeyError as exc:
@@ -129,6 +130,9 @@ def build_control_router(
         principal: Principal = Depends(require_principal),
     ):
         require_manager(principal)
+        current = store.get_membership(principal.workspace_id, user_id)
+        if principal.role != "owner" and current and current["role"] == "owner":
+            raise HTTPException(403, "只有所有者可以移除所有者")
         try:
             store.remove_member(principal.workspace_id, user_id)
         except KeyError as exc:
@@ -213,7 +217,6 @@ def build_control_router(
                 title=req.title,
                 assigned_to=req.assigned_to if "assigned_to" in req.model_fields_set else ...,
                 pinned=req.pinned,
-                status=req.status,
             )
         except KeyError as exc:
             raise HTTPException(404, "任务不存在") from exc
@@ -233,6 +236,8 @@ def build_control_router(
             row = store.archive_conversation(conversation_id, workspace_id=principal.workspace_id)
         except KeyError as exc:
             raise HTTPException(404, "任务不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         audit(request, principal, "conversation.archive", "conversation", conversation_id)
         store.record_product_event(workspace_id=principal.workspace_id, user_id=principal.user_id, conversation_id=conversation_id, name="task.archive")
         return row
@@ -257,6 +262,9 @@ def build_control_router(
         request: Request,
         principal: Principal = Depends(require_principal),
     ):
+        latest = store.latest_job(conversation_id, workspace_id=principal.workspace_id)
+        if latest and latest["status"] in {"queued", "running"}:
+            raise HTTPException(409, "执行中的任务需要先停止，才能请求永久删除")
         try:
             approval = store.create_approval(
                 workspace_id=principal.workspace_id,
@@ -301,21 +309,23 @@ def build_control_router(
             raise HTTPException(404, "审批不存在") from exc
         if approval["conversation_id"] != conversation_id or approval["action"] != "conversation.delete" or approval["status"] != "approved":
             raise HTTPException(409, "删除审批尚未通过或不匹配当前任务")
+        latest = store.latest_job(conversation_id, workspace_id=principal.workspace_id)
+        if latest and latest["status"] in {"queued", "running"}:
+            raise HTTPException(409, "执行中的任务需要先停止，才能永久删除")
         assets = store.list_assets(conversation_id, workspace_id=principal.workspace_id)
         keys: list[str] = []
         for asset in assets:
             keys.append(str(asset["path"]))
             keys.extend(str(key) for key in (asset.get("meta") or {}).get("keyframes", []))
-        if not store.consume_approval(approval_id, workspace_id=principal.workspace_id, conversation_id=conversation_id, action="conversation.delete"):
-            raise HTTPException(409, "删除审批已被使用")
-        store.delete_conversation(conversation_id, workspace_id=principal.workspace_id)
         for key in dict.fromkeys(keys):
             try:
                 storage.delete(key)
-            except Exception:
-                # Database deletion remains authoritative. Orphan cleanup can be retried
-                # from the audit trail without restoring a deleted customer task.
-                pass
+            except Exception as exc:
+                audit(request, principal, "conversation.delete.storage_failed", "conversation", conversation_id, {"object_key": key, "error": repr(exc)})
+                raise HTTPException(503, "素材清理失败，任务尚未删除；可以稍后重试") from exc
+        if not store.consume_approval(approval_id, workspace_id=principal.workspace_id, conversation_id=conversation_id, action="conversation.delete"):
+            raise HTTPException(409, "删除审批已被使用")
+        store.delete_conversation(conversation_id, workspace_id=principal.workspace_id)
         audit(request, principal, "conversation.delete", "conversation", conversation_id, {"asset_objects": len(keys)})
         return {"ok": True}
 

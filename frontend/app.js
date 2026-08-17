@@ -208,6 +208,7 @@ function bindAuth() {
         body: JSON.stringify({
           name: $("registerName").value.trim(),
           workspace_name: $("registerWorkspace").value.trim(),
+          invite_token: new URLSearchParams(location.search).get("invite") || null,
           email: $("registerEmail").value.trim(),
           password: $("registerPassword").value,
         }),
@@ -325,6 +326,9 @@ async function newConversation(scene = state.scene) {
   state.events = [];
   state.progress = [];
   state.pending = [];
+  state.control = null;
+  state.feedback = {};
+  state.gate = null;
   setBusy(false);
   state.ws?.close();
   syncConversationUrl(conversation.id);
@@ -423,6 +427,7 @@ function renderMessage(message) {
           <button class="answer-action feedback-action" type="button" data-feedback="correct">正确</button>
           <button class="answer-action feedback-action" type="button" data-feedback="partial">部分正确</button>
           <button class="answer-action feedback-action" type="button" data-feedback="incorrect">有错误</button>
+          <button class="answer-action evidence-action" type="button" data-evidence-useful>证据有用</button>
           <button class="answer-action verify-action" type="button" data-human-verify>人工已验证</button>
         </div>
       </div>
@@ -592,6 +597,7 @@ function renderEventHistory() {
 
   const terminal = [...state.events].reverse().find(event =>
     ["answer.cancelled", "answer.error"].includes(event.type)
+    && (!job?.id || event.payload?.job_id === job.id)
   );
   if (terminal?.type === "answer.cancelled") markCancelled();
   if (terminal?.type === "answer.error") {
@@ -759,6 +765,7 @@ async function sendMessage() {
   const content = input.value.trim();
   if (!content || state.busy) return;
   if (!state.conversation) await newConversation(state.scene);
+  if (state.conversation?.archived_at) { toast("请先恢复已归档任务，再继续执行"); return; }
 
   setBusy(true);
   const selectedAssets = state.pending.map(asset => asset.id);
@@ -896,6 +903,10 @@ function renderTaskActions() {
   $("pinTaskBtn").textContent = state.conversation.pinned ? "取消置顶" : "置顶";
   $("archiveTaskBtn").textContent = state.conversation.archived_at ? "恢复" : "归档";
   $("deleteTaskBtn").hidden = !isManager();
+  const archived = Boolean(state.conversation.archived_at);
+  $("messageInput").disabled = archived;
+  $("sendBtn").disabled = state.busy || archived;
+  document.querySelectorAll(".attach-action").forEach(button => { button.disabled = archived; });
 }
 
 function pendingDeleteApproval() {
@@ -1025,6 +1036,7 @@ function renderFeedbackState() {
     const messageId = article.dataset.messageId;
     const feedback = state.feedback[messageId];
     article.querySelectorAll("[data-feedback]").forEach(button => button.classList.toggle("active", feedback?.verdict === button.dataset.feedback));
+    article.querySelector("[data-evidence-useful]")?.classList.toggle("active", feedback?.evidence_useful === 1 || feedback?.evidence_useful === true);
     article.querySelector("[data-human-verify]")?.classList.toggle("active", Boolean(feedback?.human_verified));
   });
 }
@@ -1111,7 +1123,11 @@ function renderTeamPanel() {
   const metrics = state.metrics;
   $("metricGrid").innerHTML = metrics ? [
     ["任务完成", `${Math.round((metrics.first_task_completion_rate || 0) * 100)}%`],
+    ["首次可核验", metrics.avg_time_to_verified_seconds == null ? "—" : `${Math.round(metrics.avg_time_to_verified_seconds)}s`],
+    ["执行中断", `${Math.round((metrics.interruption_rate || 0) * 100)}%`],
     ["失败恢复", `${Math.round((metrics.recovery_rate || 0) * 100)}%`],
+    ["人工介入", `${Math.round((metrics.manual_intervention_rate || 0) * 100)}%`],
+    ["继续任务", `${Math.round((metrics.continuation_rate || 0) * 100)}%`],
     ["证据打开", `${Math.round((metrics.evidence_open_rate || 0) * 100)}%`],
     ["结果采纳", `${Math.round((metrics.result_adoption_rate || 0) * 100)}%`],
   ].map(([label, value]) => `<div><b>${value}</b><small>${label}</small></div>`).join("") : "";
@@ -1286,6 +1302,11 @@ function bindUI() {
     }
     const feedback = event.target.closest("[data-feedback]");
     if (feedback) { saveFeedback(messageId, {verdict: feedback.dataset.feedback}); return; }
+    if (event.target.closest("[data-evidence-useful]")) {
+      const previous = state.feedback[messageId];
+      saveFeedback(messageId, {verdict: previous?.verdict || "correct", evidence_useful: !(previous?.evidence_useful === 1 || previous?.evidence_useful === true)});
+      return;
+    }
     if (event.target.closest("[data-human-verify]")) {
       const previous = state.feedback[messageId];
       saveFeedback(messageId, {verdict: previous?.verdict || "correct", human_verified: !Boolean(previous?.human_verified)});
