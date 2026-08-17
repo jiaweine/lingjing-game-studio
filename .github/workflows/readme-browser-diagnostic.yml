@@ -1,0 +1,69 @@
+name: README Browser Diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Inspect public repository README images
+        run: |
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          expected_alts = {
+              '灵境游戏研发执行工作台总览',
+              '登录与工作空间入口',
+              '空任务工作台',
+              '多模态素材上传',
+              '任务执行状态',
+              '任务结果工作台',
+              '证据核验',
+              '多模态任务上下文',
+              '产品总览',
+          }
+          url = 'https://github.com/jiaweine/lingjing-game-studio'
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+              failed_requests = []
+              page.on('requestfailed', lambda request: failed_requests.append({
+                  'url': request.url,
+                  'failure': request.failure,
+              }))
+              response = page.goto(url, wait_until='domcontentloaded', timeout=90000)
+              print('page-status', response.status if response else None)
+              page.wait_for_timeout(10000)
+              images = page.locator('img').evaluate_all('''imgs => imgs.map(img => ({
+                  alt: img.alt,
+                  src: img.getAttribute('src'),
+                  currentSrc: img.currentSrc,
+                  naturalWidth: img.naturalWidth,
+                  naturalHeight: img.naturalHeight,
+                  complete: img.complete
+              }))''')
+              targets = [img for img in images if img.get('alt') in expected_alts]
+              print('target-count', len(targets))
+              for img in targets:
+                  print('README-IMAGE', img)
+              for failure in failed_requests:
+                  if 'readme' in failure['url'].lower() or '.png' in failure['url'].lower() or 'raw.githubusercontent' in failure['url'].lower():
+                      print('FAILED-REQUEST', failure)
+              missing = sorted(expected_alts - {img.get('alt') for img in targets})
+              broken = [img for img in targets if not img.get('complete') or int(img.get('naturalWidth') or 0) <= 0]
+              print('missing-alts', missing)
+              print('broken-images', broken)
+              browser.close()
+              assert not missing, f'Missing README images in public repository DOM: {missing}'
+              assert not broken, f'Broken README images in public repository DOM: {broken}'
+          PY
