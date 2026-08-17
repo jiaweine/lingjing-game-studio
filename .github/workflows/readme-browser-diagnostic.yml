@@ -35,12 +35,24 @@ jobs:
           url = 'https://github.com/jiaweine/lingjing-game-studio'
           with sync_playwright() as p:
               browser = p.chromium.launch()
-              page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+              context = browser.new_context(viewport={'width': 1440, 'height': 1000})
+              page = context.new_page()
               failed_requests = []
+              image_responses = []
               page.on('requestfailed', lambda request: failed_requests.append({
                   'url': request.url,
                   'failure': request.failure,
               }))
+              def capture_response(response):
+                  u = response.url.lower()
+                  if '/raw/main/docs/assets/readme/' in u or 'raw.githubusercontent.com' in u:
+                      image_responses.append({
+                          'url': response.url,
+                          'status': response.status,
+                          'content_type': response.headers.get('content-type'),
+                          'location': response.headers.get('location'),
+                      })
+              page.on('response', capture_response)
               response = page.goto(url, wait_until='domcontentloaded', timeout=90000)
               print('page-status', response.status if response else None)
               page.wait_for_timeout(10000)
@@ -56,9 +68,27 @@ jobs:
               print('target-count', len(targets))
               for img in targets:
                   print('README-IMAGE', img)
+              for item in image_responses:
+                  print('IMAGE-RESPONSE', item)
               for failure in failed_requests:
-                  if 'readme' in failure['url'].lower() or '.png' in failure['url'].lower() or 'raw.githubusercontent' in failure['url'].lower():
+                  if '.png' in failure['url'].lower() or 'raw.githubusercontent' in failure['url'].lower():
                       print('FAILED-REQUEST', failure)
+              seen = set()
+              for img in targets:
+                  src = img.get('currentSrc')
+                  if not src or src in seen:
+                      continue
+                  seen.add(src)
+                  direct = context.request.get(src, timeout=30000, fail_on_status_code=False)
+                  body = direct.body()
+                  print('DIRECT-IMAGE', {
+                      'url': src,
+                      'status': direct.status,
+                      'content_type': direct.headers.get('content-type'),
+                      'content_length': direct.headers.get('content-length'),
+                      'first_bytes_hex': body[:24].hex(),
+                      'text_prefix': body[:120].decode('utf-8', errors='replace').replace('\n', ' '),
+                  })
               missing = sorted(expected_alts - {img.get('alt') for img in targets})
               broken = [img for img in targets if not img.get('complete') or int(img.get('naturalWidth') or 0) <= 0]
               print('missing-alts', missing)
