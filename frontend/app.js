@@ -142,7 +142,27 @@ function applySession(session) {
   $("userAvatar").title = `${email} · ${session?.user?.role || "member"}`;
 }
 
+function configureInviteAuth() {
+  const invited = Boolean(new URLSearchParams(location.search).get("invite"));
+  const registerTab = document.querySelector('[data-auth-tab="register"]');
+  if (registerTab) registerTab.textContent = invited ? "接受邀请" : "创建空间";
+  const workspaceInput = $("registerWorkspace");
+  const workspaceField = workspaceInput?.closest("label");
+  if (workspaceField) workspaceField.hidden = invited;
+  if (workspaceInput) workspaceInput.required = !invited;
+  const submit = $("registerForm")?.querySelector(".auth-submit");
+  if (submit) submit.textContent = invited ? "注册并加入" : "创建并进入";
+}
+
+function clearInviteFromUrl() {
+  const url = new URL(location.href);
+  if (!url.searchParams.has("invite")) return;
+  url.searchParams.delete("invite");
+  history.replaceState(null, "", url);
+}
+
 function showAuthModal() {
+  configureInviteAuth();
   if ($("authModal")) $("authModal").hidden = false;
 }
 
@@ -202,21 +222,23 @@ function bindAuth() {
 
   $("registerForm").onsubmit = async event => {
     event.preventDefault();
+    const inviteToken = new URLSearchParams(location.search).get("invite") || null;
     try {
       const session = await api("/api/auth/register", {
         method: "POST",
         body: JSON.stringify({
           name: $("registerName").value.trim(),
-          workspace_name: $("registerWorkspace").value.trim(),
-          invite_token: new URLSearchParams(location.search).get("invite") || null,
+          workspace_name: $("registerWorkspace").value.trim() || "受邀工作空间",
+          invite_token: inviteToken,
           email: $("registerEmail").value.trim(),
           password: $("registerPassword").value,
         }),
       });
       applySession(session);
       hideAuthModal();
-      await maybeAcceptInvite();
-      toast("工作空间已创建");
+      if (inviteToken) clearInviteFromUrl();
+      else await maybeAcceptInvite();
+      toast(inviteToken ? "已加入工作空间" : "工作空间已创建");
       await bootWorkspace();
     } catch (error) {
       toast(error.message);
@@ -280,6 +302,7 @@ function markCancelled() {
   $("taskState").textContent = "已停止";
   $("taskStateHint").textContent = "当前执行已停止，可以修改目标后重新开始。";
   document.querySelector(".task-state-card").className = "task-state-card cancelled";
+  renderTaskActions();
 }
 
 async function loadConversations() {
@@ -734,6 +757,7 @@ function handleEvent(event) {
     $("taskState").textContent = "执行中断";
     $("taskStateHint").textContent = "本次执行没有完成，可以重试或补充要求。";
     document.querySelector(".task-state-card").className = "task-state-card error";
+    renderTaskActions();
     toast(event.payload?.message || "执行失败");
   }
 }
@@ -868,7 +892,7 @@ function scrollBottom(smooth = true) {
 }
 
 function taskStatusLabel(status) {
-  return {active: "进行中", waiting_approval: "等待确认", blocked: "受阻", verified: "已验证"}[status] || "进行中";
+  return {active: "进行中", waiting_approval: "等待确认", blocked: "受阻", verified: "已验证", stopped: "已停止"}[status] || "进行中";
 }
 
 function isManager() {
@@ -1073,12 +1097,14 @@ async function maybeAcceptInvite() {
   try {
     const session = await api(`/api/invites/${encodeURIComponent(token)}/accept`, {method: "POST", body: "{}"});
     applySession(session);
-    const url = new URL(location.href);
-    url.searchParams.delete("invite");
-    history.replaceState(null, "", url);
+    clearInviteFromUrl();
     toast("已加入工作空间");
   } catch (error) {
-    if (!/已失效|已使用/.test(error.message)) toast(error.message);
+    if (/已失效|已使用/.test(error.message)) {
+      clearInviteFromUrl();
+      return;
+    }
+    toast(error.message);
   }
 }
 

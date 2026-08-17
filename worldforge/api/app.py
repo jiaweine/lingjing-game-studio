@@ -694,12 +694,16 @@ async def _run_analysis_job(
 
         ensure_active()
         prepared = _materialize_assets(assets)
+        quality_gate = product_store.feedback_gate(
+            conversation_id, workspace_id=workspace_id
+        )
         result = await product_analyzer.run(
             text=text,
             assets=prepared,
             provider_key=provider_key,
             sink=sink,
             history=history,
+            human_feedback_gate=bool(quality_gate["approved"]),
         )
         if job_id:
             message = product_store.complete_job_answer(

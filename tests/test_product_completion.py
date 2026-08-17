@@ -47,6 +47,7 @@ def test_task_lifecycle_retry_guard_and_metrics(tmp_path):
     claimed = store.claim_job("test-worker", job_id=first["id"])
     assert claimed and claimed["status"] == "running"
     store.cancel_job(first["id"], workspace_id=workspace_id)
+    assert store.get_conversation(conversation["id"], workspace_id=workspace_id)["status"] == "stopped"
 
     retry = store.retry_job(first["id"], workspace_id=workspace_id)
     with pytest.raises(ValueError, match="最新|执行"):
@@ -255,3 +256,108 @@ def test_invite_registration_role_management_and_delete_approval():
     )
     assert deleted.status_code == 200
     assert owner_client.get(f"/api/conversations/{conversation['id']}").status_code == 404
+
+
+
+def test_role_demotion_and_removal_take_effect_without_relogin():
+    owner_client = TestClient(app)
+    owner_registration = owner_client.post(
+        "/api/auth/register",
+        json={
+            "email": _email("fresh-owner"),
+            "password": "strong-password-owner",
+            "name": "Fresh Owner",
+            "workspace_name": f"Fresh Studio {uuid.uuid4().hex[:6]}",
+        },
+    )
+    assert owner_registration.status_code == 200
+
+    invite = owner_client.post(
+        "/api/workspace/invites",
+        json={"role": "admin", "email": None},
+    ).json()
+    admin_client = TestClient(app)
+    admin_email = _email("fresh-admin")
+    admin_registration = admin_client.post(
+        "/api/auth/register",
+        json={
+            "email": admin_email,
+            "password": "strong-password-admin",
+            "name": "Fresh Admin",
+            "workspace_name": "unused",
+            "invite_token": invite["token"],
+        },
+    )
+    assert admin_registration.status_code == 200
+    assert admin_client.post(
+        "/api/workspace/invites", json={"role": "member", "email": None}
+    ).status_code == 200
+
+    member = next(
+        row for row in owner_client.get("/api/workspace/members").json()
+        if row["email"] == admin_email
+    )
+    demoted = owner_client.patch(
+        f"/api/workspace/members/{member['id']}", json={"role": "viewer"}
+    )
+    assert demoted.status_code == 200
+    # Same cookie/JWT: require_principal must refresh current membership.
+    assert admin_client.post(
+        "/api/workspace/invites", json={"role": "member", "email": None}
+    ).status_code == 403
+
+    removed = owner_client.delete(f"/api/workspace/members/{member['id']}")
+    assert removed.status_code == 200
+    # Removal invalidates the old workspace session immediately.
+    assert admin_client.get("/api/conversations").status_code == 401
+
+
+
+@pytest.mark.asyncio
+async def test_product_analyzer_enables_evolution_only_after_human_gate():
+    class Summary:
+        steps = 4
+        outcome = "success"
+
+        def model_dump(self):
+            return {"steps": self.steps, "outcome": self.outcome}
+
+    class Engine:
+        def __init__(self):
+            self.calls = []
+
+        async def run(self, config, **kwargs):
+            self.calls.append((config, kwargs))
+            return Summary()
+
+    class Providers:
+        @staticmethod
+        def choose(provider_key, assets):
+            return None
+
+    async def sink(event_type, payload):
+        return None
+
+    engine = Engine()
+    analyzer = ProductAnalyzer(engine, Providers())
+    await analyzer.run(
+        text="战斗异常需要复核",
+        assets=[],
+        provider_key="auto",
+        sink=sink,
+        human_feedback_gate=False,
+    )
+    config, kwargs = engine.calls[-1]
+    assert config.enable_evolution is False
+    assert kwargs["session_meta"]["human_feedback_gate"] is False
+
+    await analyzer.run(
+        text="战斗异常需要复核",
+        assets=[],
+        provider_key="auto",
+        sink=sink,
+        human_feedback_gate=True,
+    )
+    config, kwargs = engine.calls[-1]
+    assert config.enable_evolution is True
+    assert kwargs["session_meta"]["human_feedback_gate"] is True

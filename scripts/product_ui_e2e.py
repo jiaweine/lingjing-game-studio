@@ -70,7 +70,7 @@ const emitRun=(jobId,startId=1)=>{
 };
 window.fetch=async function(url,opt={}){
   const raw=String(url),method=String(opt.method||'GET').toUpperCase(),S=window.__E2E;
-  const U=new URL(raw,location.href),u=U.pathname;
+  const U=new URL(raw,'http://e2e.local'),u=U.pathname;
   if(u==='/api/config') return jsonResponse({auth_required:true});
   if(u==='/api/auth/me') return S.session?jsonResponse(S.session):jsonResponse({detail:'请先登录'},401);
   if(u==='/api/auth/register'&&method==='POST'){

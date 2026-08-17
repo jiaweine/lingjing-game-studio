@@ -602,7 +602,7 @@ class ConversationStore:
                 raise KeyError(job_id)
             result = connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id, self.jobs.c.status.in_(("queued", "running")))).values(status="cancelled", completed_at=now))
             if result.rowcount:
-                connection.execute(update(self.conversations).where(self.conversations.c.id == row[0]).values(status="active", updated_at=now))
+                connection.execute(update(self.conversations).where(self.conversations.c.id == row[0]).values(status="stopped", updated_at=now))
         return self.get_job(job_id, workspace_id=workspace_id)
 
     def retry_job(self, job_id: str, *, workspace_id: str) -> dict[str, Any]:

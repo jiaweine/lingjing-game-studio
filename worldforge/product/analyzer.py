@@ -81,7 +81,7 @@ class ProductAnalyzer:
         verified = .34 if runtime_result else 0.0
         return round(min(.92, .18 + diversity + volume + verified), 2)
 
-    async def run(self, *, text, assets, provider_key, sink, history=None):
+    async def run(self, *, text, assets, provider_key, sink, history=None, human_feedback_gate=False):
         history = history or []
         intent = self.intent(text, assets, history)
         detail = f"已关联 {len(assets)} 份任务素材"
@@ -143,9 +143,10 @@ class ProductAnalyzer:
                     branch_width=3,
                     rollout_horizon=2,
                     rollouts_per_branch=2,
-                    enable_evolution=False,
+                    enable_evolution=bool(human_feedback_gate),
                 ),
                 demo_delay=0,
+                session_meta={"human_feedback_gate": bool(human_feedback_gate)},
             )
             runtime_result = summary.model_dump()
             evidence.append({
