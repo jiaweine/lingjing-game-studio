@@ -60,6 +60,22 @@ class GameHarnessMutator(HarnessMutator):
             child.origin = operator
         return child, operator
 
+    def _sample_operator(self, genome: HarnessGenome, *, allow_recombine: bool) -> str:
+        """Temperature-softmax exploitation with an independent exploration mixture."""
+        items = [
+            (name, value)
+            for name, value in genome.mutation_policy.operator_logits.items()
+            if allow_recombine or name != "recombine"
+        ]
+        names = [name for name, _ in items]
+        exploration = max(0.0, min(1.0, genome.mutation_policy.exploration))
+        if self.rng.random() < exploration:
+            return self.rng.choice(names)
+        temperature = max(.02, genome.mutation_policy.temperature)
+        maximum = max(value for _, value in items)
+        weights = [math.exp((value - maximum) / temperature) for _, value in items]
+        return self.rng.choices(names, weights=weights, k=1)[0]
+
     def _parameter_jitter(self, genome: HarnessGenome, sign: float) -> None:
         groups = [
             genome.features,
