@@ -1,0 +1,66 @@
+name: README repository audit
+
+on:
+  push:
+    branches: [agent/readme-repo-consistency-audit]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Install browser test dependencies
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Compile and unit tests
+        run: |
+          python -m compileall -q worldforge migrations scripts tests
+          pytest -q
+          node --check frontend/app.js
+      - name: Backend product E2E
+        run: python scripts/product_backend_e2e.py
+      - name: Browser product E2E
+        run: python scripts/product_ui_e2e.py
+      - name: README image and stale-content audit
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+
+          readme = Path('README.md').read_text(encoding='utf-8')
+          names = [
+              'auth', 'workspace-empty', 'upload', 'task-running',
+              'workspace', 'evidence', 'multimodal', 'cover',
+          ]
+          for name in names:
+              rel = f'docs/assets/readme/{name}.png'
+              assert rel in readme, f'README missing {rel}'
+              path = Path(rel)
+              assert path.is_file() and path.stat().st_size > 0, path
+              with Image.open(path) as image:
+                  assert image.format == 'PNG', (name, image.format)
+                  assert image.size == (3840, 2400), (name, image.size)
+              print('image-ok', name, path.stat().st_size)
+
+          assert not Path('frontend/.readme-gallery-trigger').exists()
+
+          checks = {
+              'BUILD_REPORT.md': ['v2.0', 'UI v3', '16 passed', '7 / 7 PASS'],
+              'docs/ARCHITECTURE.md': ['SaaS Control Plane（v2.0）', '本项目只启用自研本地模型'],
+              'docs/FRONTEND.md': ['决策空间', '轨迹回放', '策略演进', '评测报告'],
+              'SECURITY.md': ['The v2 SaaS control-plane code'],
+              'Makefile': ['train_worldforge_m1.py'],
+          }
+          for filename, stale in checks.items():
+              text = Path(filename).read_text(encoding='utf-8')
+              for token in stale:
+                  assert token not in text, f'{filename} still contains stale token: {token}'
+          print('repository-consistency-ok')
+          PY
