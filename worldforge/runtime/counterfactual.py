@@ -6,6 +6,8 @@ import uuid
 
 from worldforge.models import BranchResult, GameAction
 
+from .harness_genome import HarnessGenomeStore
+
 
 class CounterfactualBrancher:
     def __init__(self, planner, verifier):
@@ -14,6 +16,8 @@ class CounterfactualBrancher:
 
     def evaluate(self, env, candidates, goal, width=4, horizon=3, rollouts=3):
         selected = candidates[:width]
+        if not selected:
+            return []
 
         def run_action(action, branch_idx):
             scores: list[float] = []
@@ -26,7 +30,9 @@ class CounterfactualBrancher:
             sample_actions: list[str] = []
 
             for rollout in range(rollouts):
-                sim = env.clone(seed_offset=0 if rollout == 0 else branch_idx * 101 + rollout)
+                sim = env.clone(
+                    seed_offset=0 if rollout == 0 else branch_idx * 101 + rollout
+                )
                 total = 0.0
                 rollout_actions: list[str] = []
                 rollout_violations: set[str] = set()
@@ -38,7 +44,11 @@ class CounterfactualBrancher:
                         GameAction(kind=act, rationale="counterfactual")
                     )
                     verification = self.verifier.verify(
-                        before, after, info, goal, getattr(sim, "anomalies", [])
+                        before,
+                        after,
+                        info,
+                        goal,
+                        getattr(sim, "anomalies", []),
                     )
                     total += reward
                     rollout_actions.append(act.value)
@@ -47,18 +57,26 @@ class CounterfactualBrancher:
                     outcome = after.outcome
                     if terminal:
                         break
-                    act = self.planner.rank(
-                        after, sim.legal_actions(after), goal
-                    ).candidates[0]
+                    ranked = self.planner.rank(
+                        after,
+                        sim.legal_actions(after),
+                        goal,
+                    )
+                    if not ranked.candidates:
+                        break
+                    act = ranked.candidates[0]
 
-                # A rollout is scored only with violations observed in that rollout.
-                # The branch-level union is evidence, not shared mutable scoring state.
                 score = self.verifier.branch_score(
-                    final, total, goal, sorted(rollout_violations)
+                    final,
+                    total,
+                    goal,
+                    sorted(rollout_violations),
                 )
                 scores.append(score)
                 all_violations.update(rollout_violations)
-                survivals.append(max(0.0, final.player_hp / max(1, final.player_max_hp)))
+                survivals.append(
+                    max(0.0, final.player_hp / max(1, final.player_max_hp))
+                )
                 successes.append(1.0 if final.outcome == "victory" else 0.0)
                 if not sample_actions:
                     sample_actions = rollout_actions
@@ -67,8 +85,12 @@ class CounterfactualBrancher:
             downside = min(scores)
             dispersion = statistics.pstdev(scores) if len(scores) > 1 else 0.0
             success_probability = statistics.mean(successes)
+            gene = HarnessGenomeStore.current().search
             risk_adjusted = (
-                mean - .45 * dispersion + .2 * downside + 16 * success_probability
+                gene.mean_weight * mean
+                - gene.dispersion_penalty * dispersion
+                + gene.downside_weight * downside
+                + gene.success_bonus * success_probability
             )
             return BranchResult(
                 branch_id=f"b-{uuid.uuid4().hex[:8]}",
