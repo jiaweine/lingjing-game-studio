@@ -63,24 +63,30 @@ Do migrations as a deployment step before API/Worker rollout. Do not use runtime
 python -m worldforge.worker
 ```
 
-Worker claims rows from `analysis_jobs`, materializes assets from object storage, runs ProductAnalyzer/Runtime/Provider calls, writes `task_events`, then completes the job.
+Worker claims durable analysis jobs, materializes task assets from object storage, runs ProductAnalyzer / Runtime / inference-resource calls, writes `task_events`, then commits terminal job state and result artifacts.
 
 ## Operations
 
 - `/api/health/live`: process liveness.
 - `/api/health/ready`: database + object storage readiness.
 - Every HTTP response gets `X-Request-ID`.
-- Admin workspace accounts can read `/api/audit`.
+- Owner/Admin workspace accounts can read `/api/audit`.
 - WebSocket progress is recoverable from persisted `task_events`.
+- Product metrics come from persisted `product_events` rather than browser-only counters.
+- Permanent delete approvals are persisted; an approved delete that fails storage/database cleanup should remain retryable instead of being manually bypassed.
+- Viewer is a server-side read-only role; do not rely on frontend button visibility as authorization.
 
 ## Incident priorities
 
 1. **DB unavailable** — readiness returns 503; stop accepting new traffic until PostgreSQL is healthy.
 2. **Object storage unavailable** — readiness returns 503; uploads/downloads and worker asset access will fail.
-3. **Provider unavailable** — analysis falls back to local Demo behavior where applicable and emits a notice; inspect provider credentials and upstream status.
-4. **Worker backlog** — inspect `analysis_jobs` statuses and scale workers; do not scale API as a substitute for worker capacity.
-5. **Suspected cross-tenant access** — rotate credentials, preserve audit logs, inspect Workspace-scoped resource access, and treat as a security incident.
+3. **Inference resource unavailable** — the product keeps deterministic local/demo analysis where applicable and emits a notice; inspect server-side inference configuration and upstream health.
+4. **Worker backlog** — inspect durable job statuses and scale workers; do not scale API as a substitute for worker capacity.
+5. **Stuck delete approval** — verify object storage and database errors first; do not consume or bypass the persisted approval manually. Retry the governed delete after the underlying dependency is healthy.
+6. **Suspected cross-tenant access** — rotate credentials, preserve audit logs, inspect Workspace-scoped resource access, and treat as a security incident.
 
 ## Platform hardening outside the app
 
 Use a reverse proxy / ingress with TLS and WebSocket support. Add WAF/DDoS controls, centralized rate limiting, metrics/tracing/error reporting, secret management, PostgreSQL backups/PITR, object-storage versioning/encryption, and malware scanning for untrusted uploads.
+
+Enterprise SSO/MFA, email verification, legal hold, organization-level retention/export/deletion policy and other compliance controls belong to the deployment/organization layer unless explicitly implemented for that environment.
