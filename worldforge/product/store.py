@@ -1,156 +1,781 @@
 from __future__ import annotations
+
 import json
 import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any
-from sqlalchemy import BigInteger, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select, update
+
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    Float,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    and_,
+    create_engine,
+    delete,
+    insert,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
-DEMO_WORKSPACE_ID='workspace-demo';DEMO_USER_ID='user-demo'
-def _id(prefix:str)->str:return f'{prefix}-{uuid.uuid4().hex[:16]}'
-def _slug(value:str)->str:
- value=re.sub('[^a-zA-Z0-9\\u4e00-\\u9fff]+','-',value.strip()).strip('-').lower();return value[:36] or f'workspace-{uuid.uuid4().hex[:6]}'
+
+DEMO_WORKSPACE_ID = "workspace-demo"
+DEMO_USER_ID = "user-demo"
+
+
+def _id(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:16]}"
+
+
+def _slug(value: str) -> str:
+    value = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "-", value.strip()).strip("-").lower()
+    return value[:36] or f"workspace-{uuid.uuid4().hex[:6]}"
+
+
 class ConversationStore:
- def __init__(self,db_path:str|Path|None=None,asset_dir:str|Path='assets',*,database_url:str|None=None,auto_create_schema:bool=True,seed_dev_identity:bool=True):
-  self.asset_dir=Path(asset_dir);self.asset_dir.mkdir(parents=True,exist_ok=True)
-  if database_url:url=database_url
-  else:
-   path=Path(db_path or 'product.db');path.parent.mkdir(parents=True,exist_ok=True);url=f'sqlite:///{path.as_posix()}'
-  kwargs={'pool_pre_ping':True}
-  if url.startswith('sqlite'):kwargs['connect_args']={'check_same_thread':False}
-  self.engine:Engine=create_engine(url,**kwargs);self.metadata=MetaData();self._define_tables()
-  if auto_create_schema:self.metadata.create_all(self.engine)
-  if seed_dev_identity:self.ensure_dev_identity()
- def _define_tables(self):
-  self.users=Table('users',self.metadata,Column('id',String(64),primary_key=True),Column('email',String(320),nullable=False,unique=True),Column('name',String(120),nullable=False),Column('password_hash',Text,nullable=False),Column('status',String(32),nullable=False,default='active'),Column('created_at',Float,nullable=False))
-  self.workspaces=Table('workspaces',self.metadata,Column('id',String(64),primary_key=True),Column('name',String(160),nullable=False),Column('slug',String(80),nullable=False,unique=True),Column('plan',String(32),nullable=False,default='team'),Column('created_at',Float,nullable=False))
-  self.memberships=Table('memberships',self.metadata,Column('workspace_id',String(64),primary_key=True),Column('user_id',String(64),primary_key=True),Column('role',String(32),nullable=False),Column('created_at',Float,nullable=False))
-  self.conversations=Table('conversations',self.metadata,Column('id',String(64),primary_key=True),Column('workspace_id',String(64),nullable=False,index=True),Column('created_by',String(64),nullable=False),Column('title',String(240),nullable=False),Column('scene',String(80),nullable=False),Column('created_at',Float,nullable=False),Column('updated_at',Float,nullable=False))
-  self.messages=Table('messages',self.metadata,Column('id',String(64),primary_key=True),Column('conversation_id',String(64),nullable=False,index=True),Column('role',String(24),nullable=False),Column('content',Text,nullable=False),Column('payload',Text,nullable=False,default='{}'),Column('created_at',Float,nullable=False))
-  self.assets=Table('assets',self.metadata,Column('id',String(64),primary_key=True),Column('workspace_id',String(64),nullable=False,index=True),Column('created_by',String(64),nullable=False),Column('conversation_id',String(64),nullable=True,index=True),Column('name',String(512),nullable=False),Column('mime',String(160),nullable=False),Column('path',Text,nullable=False),Column('storage_backend',String(32),nullable=False,default='local'),Column('size',BigInteger,nullable=False),Column('meta',Text,nullable=False,default='{}'),Column('created_at',Float,nullable=False))
-  self.task_events=Table('task_events',self.metadata,Column('id',Integer,primary_key=True,autoincrement=True),Column('workspace_id',String(64),nullable=False,index=True),Column('conversation_id',String(64),nullable=False,index=True),Column('type',String(96),nullable=False),Column('payload',Text,nullable=False),Column('created_at',Float,nullable=False))
-  self.audit_logs=Table('audit_logs',self.metadata,Column('id',Integer,primary_key=True,autoincrement=True),Column('workspace_id',String(64),nullable=True,index=True),Column('user_id',String(64),nullable=True),Column('request_id',String(64),nullable=False,index=True),Column('action',String(120),nullable=False),Column('resource_type',String(80),nullable=True),Column('resource_id',String(96),nullable=True),Column('payload',Text,nullable=False,default='{}'),Column('created_at',Float,nullable=False))
-  self.jobs=Table('analysis_jobs',self.metadata,Column('id',String(64),primary_key=True),Column('workspace_id',String(64),nullable=False,index=True),Column('conversation_id',String(64),nullable=False,index=True),Column('status',String(32),nullable=False,index=True),Column('payload',Text,nullable=False),Column('attempts',Integer,nullable=False,default=0),Column('worker_id',String(96),nullable=True),Column('last_error',Text,nullable=True),Column('created_at',Float,nullable=False),Column('available_at',Float,nullable=False),Column('claimed_at',Float,nullable=True),Column('completed_at',Float,nullable=True))
- @staticmethod
- def _dict(row):return dict(row._mapping if hasattr(row,'_mapping') else row)
- @staticmethod
- def _json_row(row,field='payload'):
-  d=ConversationStore._dict(row);d[field]=json.loads(d.get(field) or '{}');return d
- def ensure_dev_identity(self):
-  now=time.time()
-  with self.engine.begin() as c:
-   if c.execute(select(self.workspaces.c.id).where(self.workspaces.c.id==DEMO_WORKSPACE_ID)).first() is None:c.execute(insert(self.workspaces).values(id=DEMO_WORKSPACE_ID,name='本地演示空间',slug='local-demo',plan='dev',created_at=now))
-   if c.execute(select(self.users.c.id).where(self.users.c.id==DEMO_USER_ID)).first() is None:c.execute(insert(self.users).values(id=DEMO_USER_ID,email='demo@local.lingjing',name='本地用户',password_hash='!dev-only',status='active',created_at=now))
-   if c.execute(select(self.memberships.c.user_id).where((self.memberships.c.workspace_id==DEMO_WORKSPACE_ID)&(self.memberships.c.user_id==DEMO_USER_ID))).first() is None:c.execute(insert(self.memberships).values(workspace_id=DEMO_WORKSPACE_ID,user_id=DEMO_USER_ID,role='owner',created_at=now))
- def create_user_workspace(self,*,email,name,password_hash,workspace_name):
-  now=time.time();uid=_id('user');wid=_id('ws');email=email.strip().lower();slug=f'{_slug(workspace_name)}-{uuid.uuid4().hex[:5]}'
-  try:
-   with self.engine.begin() as c:
-    c.execute(insert(self.users).values(id=uid,email=email,name=name.strip() or email.split('@')[0],password_hash=password_hash,status='active',created_at=now));c.execute(insert(self.workspaces).values(id=wid,name=workspace_name.strip() or '我的工作区',slug=slug,plan='team',created_at=now));c.execute(insert(self.memberships).values(workspace_id=wid,user_id=uid,role='owner',created_at=now))
-  except IntegrityError as exc:raise ValueError('该邮箱已注册') from exc
-  return {'user_id':uid,'workspace_id':wid,'email':email,'name':name,'role':'owner'}
- def get_user_auth(self,email):
-  email=email.strip().lower()
-  with self.engine.connect() as c:
-   row=c.execute(select(self.users).where(self.users.c.email==email)).first()
-   if not row:return None
-   user=self._dict(row);membership=c.execute(select(self.memberships).where(self.memberships.c.user_id==user['id']).order_by(self.memberships.c.created_at)).first()
-   if not membership:return None
-   m=self._dict(membership);user.update({'workspace_id':m['workspace_id'],'role':m['role']});return user
- def get_workspace(self,workspace_id):
-  with self.engine.connect() as c:row=c.execute(select(self.workspaces).where(self.workspaces.c.id==workspace_id)).first()
-  if not row:raise KeyError(workspace_id)
-  return self._dict(row)
- def create_conversation(self,title='新的分析任务',scene='battle_review',*,workspace_id=DEMO_WORKSPACE_ID,created_by=DEMO_USER_ID):
-  cid=_id('cv');now=time.time()
-  with self.engine.begin() as c:c.execute(insert(self.conversations).values(id=cid,workspace_id=workspace_id,created_by=created_by,title=title,scene=scene,created_at=now,updated_at=now))
-  return self.get_conversation(cid,workspace_id=workspace_id)
- def list_conversations(self,limit=50,*,workspace_id=DEMO_WORKSPACE_ID):
-  with self.engine.connect() as c:rows=c.execute(select(self.conversations).where(self.conversations.c.workspace_id==workspace_id).order_by(self.conversations.c.updated_at.desc()).limit(limit)).fetchall()
-  return [self._dict(r) for r in rows]
- def get_conversation(self,cid,*,workspace_id=DEMO_WORKSPACE_ID):
-  with self.engine.connect() as c:row=c.execute(select(self.conversations).where((self.conversations.c.id==cid)&(self.conversations.c.workspace_id==workspace_id))).first()
-  if not row:raise KeyError(cid)
-  return self._dict(row)
- def touch(self,cid,*,title=None,workspace_id=DEMO_WORKSPACE_ID):
-  values={'updated_at':time.time()};values.update({'title':title} if title else {})
-  with self.engine.begin() as c:
-   result=c.execute(update(self.conversations).where((self.conversations.c.id==cid)&(self.conversations.c.workspace_id==workspace_id)).values(**values))
-   if result.rowcount==0:raise KeyError(cid)
- def add_message(self,cid,role,content,payload=None,*,workspace_id=DEMO_WORKSPACE_ID):
-  self.get_conversation(cid,workspace_id=workspace_id);mid=_id('msg');now=time.time();payload=payload or {}
-  with self.engine.begin() as c:c.execute(insert(self.messages).values(id=mid,conversation_id=cid,role=role,content=content,payload=json.dumps(payload,ensure_ascii=False),created_at=now));c.execute(update(self.conversations).where(self.conversations.c.id==cid).values(updated_at=now))
-  return {'id':mid,'conversation_id':cid,'role':role,'content':content,'payload':payload,'created_at':now}
- def list_messages(self,cid,*,workspace_id=DEMO_WORKSPACE_ID):
-  self.get_conversation(cid,workspace_id=workspace_id)
-  with self.engine.connect() as c:rows=c.execute(select(self.messages).where(self.messages.c.conversation_id==cid).order_by(self.messages.c.created_at,self.messages.c.id)).fetchall()
-  return [self._json_row(r) for r in rows]
- def add_asset(self,cid,*,name,mime,path,size,meta,workspace_id=DEMO_WORKSPACE_ID,created_by=DEMO_USER_ID,storage_backend='local'):
-  if cid:self.get_conversation(cid,workspace_id=workspace_id)
-  aid=_id('asset');now=time.time()
-  with self.engine.begin() as c:
-   c.execute(insert(self.assets).values(id=aid,workspace_id=workspace_id,created_by=created_by,conversation_id=cid,name=name,mime=mime,path=path,storage_backend=storage_backend,size=size,meta=json.dumps(meta,ensure_ascii=False),created_at=now))
-   if cid:c.execute(update(self.conversations).where(self.conversations.c.id==cid).values(updated_at=now))
-  return self.get_asset(aid,workspace_id=workspace_id)
- def get_asset(self,aid,*,workspace_id=DEMO_WORKSPACE_ID):
-  with self.engine.connect() as c:row=c.execute(select(self.assets).where((self.assets.c.id==aid)&(self.assets.c.workspace_id==workspace_id))).first()
-  if not row:raise KeyError(aid)
-  return self._json_row(row,'meta')
- def list_assets(self,cid,*,workspace_id=DEMO_WORKSPACE_ID):
-  self.get_conversation(cid,workspace_id=workspace_id)
-  with self.engine.connect() as c:rows=c.execute(select(self.assets).where((self.assets.c.conversation_id==cid)&(self.assets.c.workspace_id==workspace_id)).order_by(self.assets.c.created_at)).fetchall()
-  return [self._json_row(r,'meta') for r in rows]
- def add_event(self,cid,type_,payload,*,workspace_id=DEMO_WORKSPACE_ID):
-  self.get_conversation(cid,workspace_id=workspace_id);now=time.time()
-  with self.engine.begin() as c:result=c.execute(insert(self.task_events).values(workspace_id=workspace_id,conversation_id=cid,type=type_,payload=json.dumps(payload,ensure_ascii=False),created_at=now));eid=result.inserted_primary_key[0]
-  return {'id':eid,'workspace_id':workspace_id,'conversation_id':cid,'type':type_,'payload':payload,'created_at':now}
- def list_events(self,cid,after_id=0,*,workspace_id=DEMO_WORKSPACE_ID):
-  self.get_conversation(cid,workspace_id=workspace_id)
-  with self.engine.connect() as c:rows=c.execute(select(self.task_events).where((self.task_events.c.conversation_id==cid)&(self.task_events.c.workspace_id==workspace_id)&(self.task_events.c.id>after_id)).order_by(self.task_events.c.id)).fetchall()
-  return [self._json_row(r) for r in rows]
- def add_audit(self,*,request_id,action,workspace_id=None,user_id=None,resource_type=None,resource_id=None,payload=None):
-  with self.engine.begin() as c:c.execute(insert(self.audit_logs).values(workspace_id=workspace_id,user_id=user_id,request_id=request_id,action=action,resource_type=resource_type,resource_id=resource_id,payload=json.dumps(payload or {},ensure_ascii=False),created_at=time.time()))
- def list_audit(self,*,workspace_id,limit=100):
-  with self.engine.connect() as c:rows=c.execute(select(self.audit_logs).where(self.audit_logs.c.workspace_id==workspace_id).order_by(self.audit_logs.c.id.desc()).limit(limit)).fetchall()
-  return [self._json_row(r) for r in rows]
- def enqueue_job(self,*,workspace_id,conversation_id,payload):
-  self.get_conversation(conversation_id,workspace_id=workspace_id);jid=_id('job');now=time.time()
-  with self.engine.begin() as c:c.execute(insert(self.jobs).values(id=jid,workspace_id=workspace_id,conversation_id=conversation_id,status='queued',payload=json.dumps(payload,ensure_ascii=False),attempts=0,created_at=now,available_at=now))
-  return self.get_job(jid,workspace_id=workspace_id)
- def get_job(self,job_id,*,workspace_id):
-  with self.engine.connect() as c:row=c.execute(select(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id))).first()
-  if not row:raise KeyError(job_id)
-  return self._json_row(row)
- def latest_job(self,conversation_id,*,workspace_id):
-  with self.engine.connect() as c:row=c.execute(select(self.jobs).where((self.jobs.c.conversation_id==conversation_id)&(self.jobs.c.workspace_id==workspace_id)).order_by(self.jobs.c.created_at.desc()).limit(1)).first()
-  return self._json_row(row) if row else None
- def cancel_job(self,job_id,*,workspace_id):
-  with self.engine.begin() as c:c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id)&(self.jobs.c.status.in_(('queued','running')))).values(status='cancelled',completed_at=time.time()))
-  return self.get_job(job_id,workspace_id=workspace_id)
- def complete_job_answer(self,job_id,*,workspace_id,content,payload):
-  now=time.time();mid=_id('msg')
-  with self.engine.begin() as c:
-   job=c.execute(select(self.jobs.c.conversation_id).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id)&(self.jobs.c.status=='running'))).first()
-   if not job:return None
-   cid=job[0];result=c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id)&(self.jobs.c.status=='running')).values(status='completed',completed_at=now,last_error=None))
-   if result.rowcount!=1:return None
-   message={'id':mid,'conversation_id':cid,'role':'assistant','content':content,'payload':payload,'created_at':now}
-   c.execute(insert(self.messages).values(id=mid,conversation_id=cid,role='assistant',content=content,payload=json.dumps(payload,ensure_ascii=False),created_at=now));c.execute(update(self.conversations).where((self.conversations.c.id==cid)&(self.conversations.c.workspace_id==workspace_id)).values(updated_at=now));event_payload={'message':message,'result':payload};c.execute(insert(self.task_events).values(workspace_id=workspace_id,conversation_id=cid,type='answer.ready',payload=json.dumps(event_payload,ensure_ascii=False),created_at=now))
-  return message
- def claim_job(self,worker_id):
-  now=time.time()
-  with self.engine.begin() as c:
-   row=c.execute(select(self.jobs.c.id).where((self.jobs.c.status=='queued')&(self.jobs.c.available_at<=now)).order_by(self.jobs.c.created_at).limit(1)).first()
-   if not row:return None
-   job_id=row[0];result=c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.status=='queued')).values(status='running',worker_id=worker_id,claimed_at=now,attempts=self.jobs.c.attempts+1))
-   if result.rowcount==0:return None
-   claimed=c.execute(select(self.jobs).where(self.jobs.c.id==job_id)).first()
-  return self._json_row(claimed)
- def fail_job(self,job_id,error,*,retry_delay=15.,max_attempts=3):
-  with self.engine.begin() as c:
-   row=c.execute(select(self.jobs.c.attempts).where(self.jobs.c.id==job_id)).first();attempts=int(row[0]) if row else max_attempts;values={'last_error':error[:4000]}
-   if attempts<max_attempts:values.update(status='queued',worker_id=None,claimed_at=None,available_at=time.time()+retry_delay*attempts)
-   else:values.update(status='failed',completed_at=time.time())
-   c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.status=='running')).values(**values))
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        asset_dir: str | Path = "assets",
+        *,
+        database_url: str | None = None,
+        auto_create_schema: bool = True,
+        seed_dev_identity: bool = True,
+    ) -> None:
+        self.asset_dir = Path(asset_dir)
+        self.asset_dir.mkdir(parents=True, exist_ok=True)
+        if database_url:
+            url = database_url
+        else:
+            path = Path(db_path or "product.db")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            url = f"sqlite:///{path.as_posix()}"
+        kwargs: dict[str, Any] = {"pool_pre_ping": True}
+        if url.startswith("sqlite"):
+            kwargs["connect_args"] = {"check_same_thread": False}
+        self.engine: Engine = create_engine(url, **kwargs)
+        self.metadata = MetaData()
+        self._define_tables()
+        if auto_create_schema:
+            self.metadata.create_all(self.engine)
+        if seed_dev_identity:
+            self.ensure_dev_identity()
+
+    def _define_tables(self) -> None:
+        self.users = Table(
+            "users",
+            self.metadata,
+            Column("id", String(64), primary_key=True),
+            Column("email", String(320), nullable=False, unique=True),
+            Column("name", String(120), nullable=False),
+            Column("password_hash", Text, nullable=False),
+            Column("status", String(32), nullable=False, default="active"),
+            Column("created_at", Float, nullable=False),
+        )
+        self.workspaces = Table(
+            "workspaces",
+            self.metadata,
+            Column("id", String(64), primary_key=True),
+            Column("name", String(160), nullable=False),
+            Column("slug", String(80), nullable=False, unique=True),
+            Column("plan", String(32), nullable=False, default="team"),
+            Column("created_at", Float, nullable=False),
+        )
+        self.memberships = Table(
+            "memberships",
+            self.metadata,
+            Column("workspace_id", String(64), primary_key=True),
+            Column("user_id", String(64), primary_key=True),
+            Column("role", String(32), nullable=False),
+            Column("created_at", Float, nullable=False),
+        )
+        self.conversations = Table(
+            "conversations",
+            self.metadata,
+            Column("id", String(64), primary_key=True),
+            Column("workspace_id", String(64), nullable=False, index=True),
+            Column("created_by", String(64), nullable=False),
+            Column("assigned_to", String(64), nullable=True, index=True),
+            Column("title", String(240), nullable=False),
+            Column("scene", String(80), nullable=False),
+            Column("status", String(32), nullable=False, default="active", index=True),
+            Column("pinned", Integer, nullable=False, default=0),
+            Column("archived_at", Float, nullable=True, index=True),
+            Column("created_at", Float, nullable=False),
+            Column("updated_at", Float, nullable=False),
+        )
+        self.messages = Table(
+            "messages",
+            self.metadata,
+            Column("id", String(64), primary_key=True),
+            Column("conversation_id", String(64), nullable=False, index=True),
+            Column("role", String(24), nullable=False),
+            Column("content", Text, nullable=False),
+            Column("payload", Text, nullable=False, default="{}"),
+            Column("created_at", Float, nullable=False),
+        )
+        self.assets = Table(
+            "assets",
+            self.metadata,
+            Column("id", String(64), primary_key=True),
+            Column("workspace_id", String(64), nullable=False, index=True),
+            Column("created_by", String(64), nullable=False),
+            Column("conversation_id", String(64), nullable=True, index=True),
+            Column("name", String(512), nullable=False),
+            Column("mime", String(160), nullable=False),
+            Column("path", Text, nullable=False),
+            Column("storage_backend", String(32), nullable=False, default="local"),
+            Column("size", BigInteger, nullable=False),
+            Column("meta", Text, nullable=False, default="{}"),
+            Column("created_at", Float, nullable=False),
+        )
+        self.task_events = Table(
+            "task_events",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("workspace_id", String(64), nullable=False, index=True),
+            Column("conversation_id", String(64), nullable=False, index=True),
+            Column("type", String(96), nullable=False),
+            Column("payload", Text, nullable=False),
+            Column("created_at", Float, nullable=False),
+        )
+        self.audit_logs = Table(
+            "audit_logs",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("workspace_id", String(64), nullable=True, index=True),
+            Column("user_id", String(64), nullable=True),
+            Column("request_id", String(64), nullable=False, index=True),
+            Column("action", String(120), nullable=False),
+            Column("resource_type", String(80), nullable=True),
+            Column("resource_id", String(96), nullable=True),
+            Column("payload", Text, nullable=False, default="{}"),
+            Column("created_at", Float, nullable=False),
+        )
+        self.jobs = Table(
+            "analysis_jobs",
+            self.metadata,
+            Column("id", String(64), primary_key=True),
+            Column("workspace_id", String(64), nullable=False, index=True),
+            Column("conversation_id", String(64), nullable=False, index=True),
+            Column("status", String(32), nullable=False, index=True),
+            Column("payload", Text, nullable=False),
+            Column("attempts", Integer, nullable=False, default=0),
+            Column("worker_id", String(96), nullable=True),
+            Column("last_error", Text, nullable=True),
+            Column("created_at", Float, nullable=False),
+            Column("available_at", Float, nullable=False),
+            Column("claimed_at", Float, nullable=True),
+            Column("completed_at", Float, nullable=True),
+        )
+        self.workspace_invites = Table(
+            "workspace_invites",
+            self.metadata,
+            Column("id", String(64), primary_key=True),
+            Column("workspace_id", String(64), nullable=False, index=True),
+            Column("token", String(96), nullable=False, unique=True, index=True),
+            Column("email", String(320), nullable=True),
+            Column("role", String(32), nullable=False),
+            Column("status", String(32), nullable=False, index=True),
+            Column("created_by", String(64), nullable=False),
+            Column("created_at", Float, nullable=False),
+            Column("expires_at", Float, nullable=False),
+            Column("accepted_by", String(64), nullable=True),
+            Column("accepted_at", Float, nullable=True),
+        )
+        self.approval_requests = Table(
+            "approval_requests",
+            self.metadata,
+            Column("id", String(64), primary_key=True),
+            Column("workspace_id", String(64), nullable=False, index=True),
+            Column("conversation_id", String(64), nullable=False, index=True),
+            Column("action", String(96), nullable=False),
+            Column("status", String(32), nullable=False, index=True),
+            Column("reason", Text, nullable=False, default=""),
+            Column("payload", Text, nullable=False, default="{}"),
+            Column("requested_by", String(64), nullable=False),
+            Column("resolved_by", String(64), nullable=True),
+            Column("created_at", Float, nullable=False),
+            Column("resolved_at", Float, nullable=True),
+        )
+        self.result_feedback = Table(
+            "result_feedback",
+            self.metadata,
+            Column("message_id", String(64), primary_key=True),
+            Column("user_id", String(64), primary_key=True),
+            Column("workspace_id", String(64), nullable=False, index=True),
+            Column("conversation_id", String(64), nullable=False, index=True),
+            Column("verdict", String(32), nullable=False),
+            Column("evidence_useful", Integer, nullable=True),
+            Column("human_verified", Integer, nullable=False, default=0),
+            Column("note", Text, nullable=False, default=""),
+            Column("created_at", Float, nullable=False),
+            Column("updated_at", Float, nullable=False),
+        )
+        self.product_events = Table(
+            "product_events",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("workspace_id", String(64), nullable=False, index=True),
+            Column("user_id", String(64), nullable=False),
+            Column("conversation_id", String(64), nullable=True, index=True),
+            Column("name", String(96), nullable=False, index=True),
+            Column("payload", Text, nullable=False, default="{}"),
+            Column("created_at", Float, nullable=False),
+        )
+
+    @staticmethod
+    def _dict(row: Any) -> dict[str, Any]:
+        return dict(row._mapping if hasattr(row, "_mapping") else row)
+
+    @staticmethod
+    def _json_row(row: Any, field: str = "payload") -> dict[str, Any]:
+        data = ConversationStore._dict(row)
+        data[field] = json.loads(data.get(field) or "{}")
+        return data
+
+    def ensure_dev_identity(self) -> None:
+        now = time.time()
+        with self.engine.begin() as connection:
+            if connection.execute(select(self.workspaces.c.id).where(self.workspaces.c.id == DEMO_WORKSPACE_ID)).first() is None:
+                connection.execute(insert(self.workspaces).values(id=DEMO_WORKSPACE_ID, name="本地演示空间", slug="local-demo", plan="dev", created_at=now))
+            if connection.execute(select(self.users.c.id).where(self.users.c.id == DEMO_USER_ID)).first() is None:
+                connection.execute(insert(self.users).values(id=DEMO_USER_ID, email="demo@local.lingjing", name="本地用户", password_hash="!dev-only", status="active", created_at=now))
+            exists = connection.execute(select(self.memberships.c.user_id).where(and_(self.memberships.c.workspace_id == DEMO_WORKSPACE_ID, self.memberships.c.user_id == DEMO_USER_ID))).first()
+            if exists is None:
+                connection.execute(insert(self.memberships).values(workspace_id=DEMO_WORKSPACE_ID, user_id=DEMO_USER_ID, role="owner", created_at=now))
+
+    def create_user_workspace(self, *, email: str, name: str, password_hash: str, workspace_name: str) -> dict[str, Any]:
+        now = time.time()
+        user_id, workspace_id = _id("user"), _id("ws")
+        email = email.strip().lower()
+        slug = f"{_slug(workspace_name)}-{uuid.uuid4().hex[:5]}"
+        try:
+            with self.engine.begin() as connection:
+                connection.execute(insert(self.users).values(id=user_id, email=email, name=name.strip() or email.split("@")[0], password_hash=password_hash, status="active", created_at=now))
+                connection.execute(insert(self.workspaces).values(id=workspace_id, name=workspace_name.strip() or "我的工作区", slug=slug, plan="team", created_at=now))
+                connection.execute(insert(self.memberships).values(workspace_id=workspace_id, user_id=user_id, role="owner", created_at=now))
+        except IntegrityError as exc:
+            raise ValueError("该邮箱已注册") from exc
+        return {"user_id": user_id, "workspace_id": workspace_id, "email": email, "name": name, "role": "owner"}
+
+    def create_user_from_invite(self, *, token: str, email: str, name: str, password_hash: str) -> dict[str, Any]:
+        invite = self.get_invite(token)
+        email = email.strip().lower()
+        if invite["status"] != "pending" or invite["expires_at"] <= time.time():
+            raise ValueError("邀请已失效")
+        if invite.get("email") and invite["email"].lower() != email:
+            raise ValueError("该邀请仅限指定邮箱")
+        user_id = _id("user")
+        now = time.time()
+        try:
+            with self.engine.begin() as connection:
+                connection.execute(insert(self.users).values(id=user_id, email=email, name=name.strip() or email.split("@")[0], password_hash=password_hash, status="active", created_at=now))
+                connection.execute(insert(self.memberships).values(workspace_id=invite["workspace_id"], user_id=user_id, role=invite["role"], created_at=now))
+                result = connection.execute(update(self.workspace_invites).where(and_(self.workspace_invites.c.id == invite["id"], self.workspace_invites.c.status == "pending")).values(status="accepted", accepted_by=user_id, accepted_at=now))
+                if result.rowcount != 1:
+                    raise ValueError("邀请已失效")
+        except IntegrityError as exc:
+            raise ValueError("该邮箱已注册，请登录后接受邀请") from exc
+        return {"user_id": user_id, "workspace_id": invite["workspace_id"], "email": email, "name": name, "role": invite["role"]}
+
+    def get_user_auth(self, email: str) -> dict[str, Any] | None:
+        email = email.strip().lower()
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.users).where(self.users.c.email == email)).first()
+            if not row:
+                return None
+            user = self._dict(row)
+            membership = connection.execute(select(self.memberships).where(self.memberships.c.user_id == user["id"]).order_by(self.memberships.c.created_at)).first()
+            if not membership:
+                return None
+            member = self._dict(membership)
+        user.update({"workspace_id": member["workspace_id"], "role": member["role"]})
+        return user
+
+    def get_user(self, user_id: str) -> dict[str, Any]:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.users).where(self.users.c.id == user_id)).first()
+        if not row:
+            raise KeyError(user_id)
+        return self._dict(row)
+
+    def get_workspace(self, workspace_id: str) -> dict[str, Any]:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.workspaces).where(self.workspaces.c.id == workspace_id)).first()
+        if not row:
+            raise KeyError(workspace_id)
+        return self._dict(row)
+
+    def get_membership(self, workspace_id: str, user_id: str) -> dict[str, Any] | None:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.memberships).where(and_(self.memberships.c.workspace_id == workspace_id, self.memberships.c.user_id == user_id))).first()
+        return self._dict(row) if row else None
+
+    def list_user_workspaces(self, user_id: str) -> list[dict[str, Any]]:
+        statement = select(self.workspaces, self.memberships.c.role).select_from(self.memberships.join(self.workspaces, self.memberships.c.workspace_id == self.workspaces.c.id)).where(self.memberships.c.user_id == user_id).order_by(self.memberships.c.created_at)
+        with self.engine.connect() as connection:
+            return [self._dict(row) for row in connection.execute(statement).fetchall()]
+
+    def list_members(self, workspace_id: str) -> list[dict[str, Any]]:
+        statement = select(self.users.c.id, self.users.c.email, self.users.c.name, self.users.c.status, self.memberships.c.role, self.memberships.c.created_at).select_from(self.memberships.join(self.users, self.memberships.c.user_id == self.users.c.id)).where(self.memberships.c.workspace_id == workspace_id).order_by(self.memberships.c.created_at)
+        with self.engine.connect() as connection:
+            return [self._dict(row) for row in connection.execute(statement).fetchall()]
+
+    def add_member_by_email(self, workspace_id: str, email: str, role: str = "member") -> dict[str, Any]:
+        email = email.strip().lower()
+        if role not in {"admin", "member", "viewer"}:
+            raise ValueError("成员角色无效")
+        with self.engine.begin() as connection:
+            user = connection.execute(select(self.users).where(self.users.c.email == email)).first()
+            if not user:
+                raise KeyError(email)
+            user_data = self._dict(user)
+            existing = connection.execute(select(self.memberships).where(and_(self.memberships.c.workspace_id == workspace_id, self.memberships.c.user_id == user_data["id"]))).first()
+            if not existing:
+                connection.execute(insert(self.memberships).values(workspace_id=workspace_id, user_id=user_data["id"], role=role, created_at=time.time()))
+        return self.get_membership(workspace_id, user_data["id"]) or {}
+
+    def set_member_role(self, workspace_id: str, user_id: str, role: str) -> dict[str, Any]:
+        if role not in {"owner", "admin", "member", "viewer"}:
+            raise ValueError("成员角色无效")
+        current = self.get_membership(workspace_id, user_id)
+        if not current:
+            raise KeyError(user_id)
+        if current["role"] == "owner" and role != "owner" and self._owner_count(workspace_id) <= 1:
+            raise ValueError("工作空间必须至少保留一位所有者")
+        with self.engine.begin() as connection:
+            connection.execute(update(self.memberships).where(and_(self.memberships.c.workspace_id == workspace_id, self.memberships.c.user_id == user_id)).values(role=role))
+        return self.get_membership(workspace_id, user_id) or {}
+
+    def remove_member(self, workspace_id: str, user_id: str) -> None:
+        current = self.get_membership(workspace_id, user_id)
+        if not current:
+            raise KeyError(user_id)
+        if current["role"] == "owner" and self._owner_count(workspace_id) <= 1:
+            raise ValueError("不能移除工作空间最后一位所有者")
+        with self.engine.begin() as connection:
+            connection.execute(delete(self.memberships).where(and_(self.memberships.c.workspace_id == workspace_id, self.memberships.c.user_id == user_id)))
+            connection.execute(update(self.conversations).where(and_(self.conversations.c.workspace_id == workspace_id, self.conversations.c.assigned_to == user_id)).values(assigned_to=None, updated_at=time.time()))
+
+    def _owner_count(self, workspace_id: str) -> int:
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(self.memberships.c.user_id).where(and_(self.memberships.c.workspace_id == workspace_id, self.memberships.c.role == "owner"))).fetchall()
+        return len(rows)
+
+    def create_invite(self, *, workspace_id: str, created_by: str, email: str | None = None, role: str = "member", ttl_hours: int = 168) -> dict[str, Any]:
+        if role not in {"admin", "member", "viewer"}:
+            raise ValueError("邀请角色无效")
+        now = time.time()
+        invite_id = _id("invite")
+        token = uuid.uuid4().hex + uuid.uuid4().hex[:16]
+        with self.engine.begin() as connection:
+            connection.execute(insert(self.workspace_invites).values(id=invite_id, workspace_id=workspace_id, token=token, email=(email or "").strip().lower() or None, role=role, status="pending", created_by=created_by, created_at=now, expires_at=now + max(1, ttl_hours) * 3600))
+        return self.get_invite(token)
+
+    def get_invite(self, token: str) -> dict[str, Any]:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.workspace_invites).where(self.workspace_invites.c.token == token)).first()
+        if not row:
+            raise KeyError(token)
+        return self._dict(row)
+
+    def list_invites(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(self.workspace_invites).where(self.workspace_invites.c.workspace_id == workspace_id).order_by(self.workspace_invites.c.created_at.desc())).fetchall()
+        return [self._dict(row) for row in rows]
+
+    def revoke_invite(self, invite_id: str, workspace_id: str) -> dict[str, Any]:
+        with self.engine.begin() as connection:
+            result = connection.execute(update(self.workspace_invites).where(and_(self.workspace_invites.c.id == invite_id, self.workspace_invites.c.workspace_id == workspace_id, self.workspace_invites.c.status == "pending")).values(status="revoked"))
+            if result.rowcount != 1:
+                raise KeyError(invite_id)
+            row = connection.execute(select(self.workspace_invites).where(self.workspace_invites.c.id == invite_id)).first()
+        return self._dict(row)
+
+    def accept_invite(self, token: str, user_id: str) -> dict[str, Any]:
+        invite = self.get_invite(token)
+        user = self.get_user(user_id)
+        now = time.time()
+        if invite["status"] != "pending" or invite["expires_at"] <= now:
+            raise ValueError("邀请已失效")
+        if invite.get("email") and invite["email"].lower() != user["email"].lower():
+            raise ValueError("该邀请仅限指定邮箱")
+        with self.engine.begin() as connection:
+            existing = connection.execute(select(self.memberships).where(and_(self.memberships.c.workspace_id == invite["workspace_id"], self.memberships.c.user_id == user_id))).first()
+            if not existing:
+                connection.execute(insert(self.memberships).values(workspace_id=invite["workspace_id"], user_id=user_id, role=invite["role"], created_at=now))
+            result = connection.execute(update(self.workspace_invites).where(and_(self.workspace_invites.c.id == invite["id"], self.workspace_invites.c.status == "pending")).values(status="accepted", accepted_by=user_id, accepted_at=now))
+            if result.rowcount != 1:
+                raise ValueError("邀请已失效")
+        return self.get_membership(invite["workspace_id"], user_id) or {}
+
+    def create_conversation(self, title: str = "新的分析任务", scene: str = "battle_review", *, workspace_id: str = DEMO_WORKSPACE_ID, created_by: str = DEMO_USER_ID) -> dict[str, Any]:
+        conversation_id, now = _id("cv"), time.time()
+        with self.engine.begin() as connection:
+            connection.execute(insert(self.conversations).values(id=conversation_id, workspace_id=workspace_id, created_by=created_by, assigned_to=created_by, title=title, scene=scene, status="active", pinned=0, archived_at=None, created_at=now, updated_at=now))
+        return self.get_conversation(conversation_id, workspace_id=workspace_id)
+
+    def list_conversations(self, limit: int = 50, *, workspace_id: str = DEMO_WORKSPACE_ID, query: str | None = None, archived: bool = False) -> list[dict[str, Any]]:
+        statement = select(self.conversations).where(self.conversations.c.workspace_id == workspace_id)
+        statement = statement.where(self.conversations.c.archived_at.is_not(None) if archived else self.conversations.c.archived_at.is_(None))
+        if query and query.strip():
+            statement = statement.where(self.conversations.c.title.ilike(f"%{query.strip()[:120]}%"))
+        statement = statement.order_by(self.conversations.c.pinned.desc(), self.conversations.c.updated_at.desc()).limit(limit)
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement).fetchall()
+        return [self._dict(row) for row in rows]
+
+    def get_conversation(self, conversation_id: str, *, workspace_id: str = DEMO_WORKSPACE_ID) -> dict[str, Any]:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id))).first()
+        if not row:
+            raise KeyError(conversation_id)
+        return self._dict(row)
+
+    def touch(self, conversation_id: str, *, title: str | None = None, workspace_id: str = DEMO_WORKSPACE_ID) -> None:
+        values: dict[str, Any] = {"updated_at": time.time()}
+        if title:
+            values["title"] = title
+        with self.engine.begin() as connection:
+            result = connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(**values))
+            if result.rowcount == 0:
+                raise KeyError(conversation_id)
+
+    def update_conversation(self, conversation_id: str, *, workspace_id: str, title: str | None = None, assigned_to: str | None | object = ..., pinned: bool | None = None, status: str | None = None) -> dict[str, Any]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        values: dict[str, Any] = {"updated_at": time.time()}
+        if title is not None:
+            values["title"] = title.strip()[:240] or "未命名任务"
+        if assigned_to is not ...:
+            if assigned_to is not None and not self.get_membership(workspace_id, str(assigned_to)):
+                raise ValueError("负责人必须是当前工作空间成员")
+            values["assigned_to"] = assigned_to
+        if pinned is not None:
+            values["pinned"] = 1 if pinned else 0
+        if status is not None:
+            if status not in {"active", "waiting_approval", "blocked", "verified"}:
+                raise ValueError("任务状态无效")
+            values["status"] = status
+        with self.engine.begin() as connection:
+            connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(**values))
+        return self.get_conversation(conversation_id, workspace_id=workspace_id)
+
+    def archive_conversation(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        now = time.time()
+        with self.engine.begin() as connection:
+            connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(archived_at=now, updated_at=now))
+        return self.get_conversation(conversation_id, workspace_id=workspace_id)
+
+    def restore_conversation(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.begin() as connection:
+            connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(archived_at=None, updated_at=time.time()))
+        return self.get_conversation(conversation_id, workspace_id=workspace_id)
+
+    def add_message(self, conversation_id: str, role: str, content: str, payload: dict[str, Any] | None = None, *, workspace_id: str = DEMO_WORKSPACE_ID) -> dict[str, Any]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        message_id, now = _id("msg"), time.time()
+        payload = payload or {}
+        with self.engine.begin() as connection:
+            connection.execute(insert(self.messages).values(id=message_id, conversation_id=conversation_id, role=role, content=content, payload=json.dumps(payload, ensure_ascii=False), created_at=now))
+            connection.execute(update(self.conversations).where(self.conversations.c.id == conversation_id).values(updated_at=now))
+        return {"id": message_id, "conversation_id": conversation_id, "role": role, "content": content, "payload": payload, "created_at": now}
+
+    def get_message(self, message_id: str, *, workspace_id: str) -> dict[str, Any]:
+        statement = select(self.messages).select_from(self.messages.join(self.conversations, self.messages.c.conversation_id == self.conversations.c.id)).where(and_(self.messages.c.id == message_id, self.conversations.c.workspace_id == workspace_id))
+        with self.engine.connect() as connection:
+            row = connection.execute(statement).first()
+        if not row:
+            raise KeyError(message_id)
+        return self._json_row(row)
+
+    def list_messages(self, conversation_id: str, *, workspace_id: str = DEMO_WORKSPACE_ID) -> list[dict[str, Any]]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(self.messages).where(self.messages.c.conversation_id == conversation_id).order_by(self.messages.c.created_at, self.messages.c.id)).fetchall()
+        return [self._json_row(row) for row in rows]
+
+    def add_asset(self, conversation_id: str | None, *, name: str, mime: str, path: str, size: int, meta: dict[str, Any], workspace_id: str = DEMO_WORKSPACE_ID, created_by: str = DEMO_USER_ID, storage_backend: str = "local") -> dict[str, Any]:
+        if conversation_id:
+            self.get_conversation(conversation_id, workspace_id=workspace_id)
+        asset_id, now = _id("asset"), time.time()
+        with self.engine.begin() as connection:
+            connection.execute(insert(self.assets).values(id=asset_id, workspace_id=workspace_id, created_by=created_by, conversation_id=conversation_id, name=name, mime=mime, path=path, storage_backend=storage_backend, size=size, meta=json.dumps(meta, ensure_ascii=False), created_at=now))
+            if conversation_id:
+                connection.execute(update(self.conversations).where(self.conversations.c.id == conversation_id).values(updated_at=now))
+        return self.get_asset(asset_id, workspace_id=workspace_id)
+
+    def get_asset(self, asset_id: str, *, workspace_id: str = DEMO_WORKSPACE_ID) -> dict[str, Any]:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.assets).where(and_(self.assets.c.id == asset_id, self.assets.c.workspace_id == workspace_id))).first()
+        if not row:
+            raise KeyError(asset_id)
+        return self._json_row(row, "meta")
+
+    def list_assets(self, conversation_id: str, *, workspace_id: str = DEMO_WORKSPACE_ID) -> list[dict[str, Any]]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(self.assets).where(and_(self.assets.c.conversation_id == conversation_id, self.assets.c.workspace_id == workspace_id)).order_by(self.assets.c.created_at)).fetchall()
+        return [self._json_row(row, "meta") for row in rows]
+
+    def add_event(self, conversation_id: str, type_: str, payload: dict[str, Any], *, workspace_id: str = DEMO_WORKSPACE_ID) -> dict[str, Any]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        now = time.time()
+        with self.engine.begin() as connection:
+            result = connection.execute(insert(self.task_events).values(workspace_id=workspace_id, conversation_id=conversation_id, type=type_, payload=json.dumps(payload, ensure_ascii=False), created_at=now))
+            event_id = result.inserted_primary_key[0]
+        return {"id": event_id, "workspace_id": workspace_id, "conversation_id": conversation_id, "type": type_, "payload": payload, "created_at": now}
+
+    def list_events(self, conversation_id: str, after_id: int = 0, *, workspace_id: str = DEMO_WORKSPACE_ID) -> list[dict[str, Any]]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(self.task_events).where(and_(self.task_events.c.conversation_id == conversation_id, self.task_events.c.workspace_id == workspace_id, self.task_events.c.id > after_id)).order_by(self.task_events.c.id)).fetchall()
+        return [self._json_row(row) for row in rows]
+
+    def add_audit(self, *, request_id: str, action: str, workspace_id: str | None = None, user_id: str | None = None, resource_type: str | None = None, resource_id: str | None = None, payload: dict[str, Any] | None = None) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(insert(self.audit_logs).values(workspace_id=workspace_id, user_id=user_id, request_id=request_id, action=action, resource_type=resource_type, resource_id=resource_id, payload=json.dumps(payload or {}, ensure_ascii=False), created_at=time.time()))
+
+    def list_audit(self, *, workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(self.audit_logs).where(self.audit_logs.c.workspace_id == workspace_id).order_by(self.audit_logs.c.id.desc()).limit(limit)).fetchall()
+        return [self._json_row(row) for row in rows]
+
+    def enqueue_job(self, *, workspace_id: str, conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        job_id, now = _id("job"), time.time()
+        with self.engine.begin() as connection:
+            connection.execute(insert(self.jobs).values(id=job_id, workspace_id=workspace_id, conversation_id=conversation_id, status="queued", payload=json.dumps(payload, ensure_ascii=False), attempts=0, created_at=now, available_at=now))
+            connection.execute(update(self.conversations).where(self.conversations.c.id == conversation_id).values(status="active", updated_at=now))
+        return self.get_job(job_id, workspace_id=workspace_id)
+
+    def get_job(self, job_id: str, *, workspace_id: str) -> dict[str, Any]:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id))).first()
+        if not row:
+            raise KeyError(job_id)
+        return self._json_row(row)
+
+    def latest_job(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any] | None:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.jobs).where(and_(self.jobs.c.conversation_id == conversation_id, self.jobs.c.workspace_id == workspace_id)).order_by(self.jobs.c.created_at.desc()).limit(1)).first()
+        return self._json_row(row) if row else None
+
+    def claim_job(self, worker_id: str, job_id: str | None = None) -> dict[str, Any] | None:
+        now = time.time()
+        with self.engine.begin() as connection:
+            statement = select(self.jobs).where(and_(self.jobs.c.status == "queued", self.jobs.c.available_at <= now))
+            if job_id:
+                statement = statement.where(self.jobs.c.id == job_id)
+            row = connection.execute(statement.order_by(self.jobs.c.created_at).limit(1)).first()
+            if not row:
+                return None
+            job = self._json_row(row)
+            result = connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job["id"], self.jobs.c.status == "queued")).values(status="running", worker_id=worker_id, claimed_at=now, attempts=int(job.get("attempts") or 0) + 1))
+            if result.rowcount != 1:
+                return None
+        return self.get_job(job["id"], workspace_id=job["workspace_id"])
+
+    def cancel_job(self, job_id: str, *, workspace_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self.engine.begin() as connection:
+            row = connection.execute(select(self.jobs.c.conversation_id).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id))).first()
+            if not row:
+                raise KeyError(job_id)
+            result = connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id, self.jobs.c.status.in_(("queued", "running")))).values(status="cancelled", completed_at=now))
+            if result.rowcount:
+                connection.execute(update(self.conversations).where(self.conversations.c.id == row[0]).values(status="active", updated_at=now))
+        return self.get_job(job_id, workspace_id=workspace_id)
+
+    def retry_job(self, job_id: str, *, workspace_id: str) -> dict[str, Any]:
+        source = self.get_job(job_id, workspace_id=workspace_id)
+        if source["status"] not in {"failed", "cancelled"}:
+            raise ValueError("只有失败或已停止的执行可以重试")
+        return self.enqueue_job(workspace_id=workspace_id, conversation_id=source["conversation_id"], payload=source["payload"])
+
+    def complete_job_answer(self, job_id: str, *, workspace_id: str, content: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        now, message_id = time.time(), _id("msg")
+        with self.engine.begin() as connection:
+            job = connection.execute(select(self.jobs.c.conversation_id).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id, self.jobs.c.status == "running"))).first()
+            if not job:
+                return None
+            conversation_id = job[0]
+            result = connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id, self.jobs.c.status == "running")).values(status="completed", completed_at=now, last_error=None))
+            if result.rowcount != 1:
+                return None
+            message = {"id": message_id, "conversation_id": conversation_id, "role": "assistant", "content": content, "payload": payload, "created_at": now}
+            connection.execute(insert(self.messages).values(id=message_id, conversation_id=conversation_id, role="assistant", content=content, payload=json.dumps(payload, ensure_ascii=False), created_at=now))
+            connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(status="verified", updated_at=now))
+            event_payload = {"job_id": job_id, "message": message, "result": payload}
+            connection.execute(insert(self.task_events).values(workspace_id=workspace_id, conversation_id=conversation_id, type="answer.ready", payload=json.dumps(event_payload, ensure_ascii=False), created_at=now))
+        return message
+
+    def fail_job(self, job_id: str, error: str, max_attempts: int = 3) -> dict[str, Any] | None:
+        now = time.time()
+        with self.engine.begin() as connection:
+            row = connection.execute(select(self.jobs).where(self.jobs.c.id == job_id)).first()
+            if not row:
+                return None
+            job = self._json_row(row)
+            if job["status"] in {"completed", "cancelled", "failed"}:
+                return job
+            if int(job.get("attempts") or 0) < max_attempts:
+                connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.status == "running")).values(status="queued", worker_id=None, claimed_at=None, last_error=error[:8000], available_at=now + min(30, 2 ** max(0, int(job.get("attempts") or 1) - 1))))
+            else:
+                result = connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.status == "running")).values(status="failed", last_error=error[:8000], completed_at=now))
+                if result.rowcount:
+                    connection.execute(update(self.conversations).where(self.conversations.c.id == job["conversation_id"]).values(status="blocked", updated_at=now))
+        return self.get_job(job_id, workspace_id=job["workspace_id"])
+
+    def create_approval(self, *, workspace_id: str, conversation_id: str, action: str, requested_by: str, reason: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.connect() as connection:
+            existing = connection.execute(select(self.approval_requests).where(and_(self.approval_requests.c.workspace_id == workspace_id, self.approval_requests.c.conversation_id == conversation_id, self.approval_requests.c.action == action, self.approval_requests.c.status == "pending")).order_by(self.approval_requests.c.created_at.desc()).limit(1)).first()
+        if existing:
+            return self._json_row(existing)
+        approval_id, now = _id("approval"), time.time()
+        with self.engine.begin() as connection:
+            connection.execute(insert(self.approval_requests).values(id=approval_id, workspace_id=workspace_id, conversation_id=conversation_id, action=action, status="pending", reason=reason, payload=json.dumps(payload or {}, ensure_ascii=False), requested_by=requested_by, created_at=now))
+            connection.execute(update(self.conversations).where(self.conversations.c.id == conversation_id).values(status="waiting_approval", updated_at=now))
+        return self.get_approval(approval_id, workspace_id=workspace_id)
+
+    def get_approval(self, approval_id: str, *, workspace_id: str) -> dict[str, Any]:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.approval_requests).where(and_(self.approval_requests.c.id == approval_id, self.approval_requests.c.workspace_id == workspace_id))).first()
+        if not row:
+            raise KeyError(approval_id)
+        return self._json_row(row)
+
+    def list_approvals(self, conversation_id: str, *, workspace_id: str) -> list[dict[str, Any]]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(self.approval_requests).where(and_(self.approval_requests.c.conversation_id == conversation_id, self.approval_requests.c.workspace_id == workspace_id)).order_by(self.approval_requests.c.created_at.desc())).fetchall()
+        return [self._json_row(row) for row in rows]
+
+    def resolve_approval(self, approval_id: str, *, workspace_id: str, user_id: str, approved: bool) -> dict[str, Any]:
+        now = time.time()
+        with self.engine.begin() as connection:
+            row = connection.execute(select(self.approval_requests).where(and_(self.approval_requests.c.id == approval_id, self.approval_requests.c.workspace_id == workspace_id))).first()
+            if not row:
+                raise KeyError(approval_id)
+            approval = self._json_row(row)
+            if approval["status"] != "pending":
+                return approval
+            status = "approved" if approved else "rejected"
+            connection.execute(update(self.approval_requests).where(and_(self.approval_requests.c.id == approval_id, self.approval_requests.c.status == "pending")).values(status=status, resolved_by=user_id, resolved_at=now))
+            connection.execute(update(self.conversations).where(self.conversations.c.id == approval["conversation_id"]).values(status="active", updated_at=now))
+        return self.get_approval(approval_id, workspace_id=workspace_id)
+
+    def consume_approval(self, approval_id: str, *, workspace_id: str, conversation_id: str, action: str) -> bool:
+        with self.engine.begin() as connection:
+            result = connection.execute(update(self.approval_requests).where(and_(self.approval_requests.c.id == approval_id, self.approval_requests.c.workspace_id == workspace_id, self.approval_requests.c.conversation_id == conversation_id, self.approval_requests.c.action == action, self.approval_requests.c.status == "approved")).values(status="consumed"))
+        return result.rowcount == 1
+
+    def delete_conversation(self, conversation_id: str, *, workspace_id: str) -> list[dict[str, Any]]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        assets = self.list_assets(conversation_id, workspace_id=workspace_id)
+        with self.engine.begin() as connection:
+            message_ids = [row[0] for row in connection.execute(select(self.messages.c.id).where(self.messages.c.conversation_id == conversation_id)).fetchall()]
+            if message_ids:
+                connection.execute(delete(self.result_feedback).where(self.result_feedback.c.message_id.in_(message_ids)))
+            connection.execute(delete(self.product_events).where(and_(self.product_events.c.workspace_id == workspace_id, self.product_events.c.conversation_id == conversation_id)))
+            connection.execute(delete(self.task_events).where(and_(self.task_events.c.workspace_id == workspace_id, self.task_events.c.conversation_id == conversation_id)))
+            connection.execute(delete(self.jobs).where(and_(self.jobs.c.workspace_id == workspace_id, self.jobs.c.conversation_id == conversation_id)))
+            connection.execute(delete(self.messages).where(self.messages.c.conversation_id == conversation_id))
+            connection.execute(delete(self.assets).where(and_(self.assets.c.workspace_id == workspace_id, self.assets.c.conversation_id == conversation_id)))
+            connection.execute(delete(self.approval_requests).where(and_(self.approval_requests.c.workspace_id == workspace_id, self.approval_requests.c.conversation_id == conversation_id)))
+            connection.execute(delete(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)))
+        return assets
+
+    def upsert_feedback(self, *, workspace_id: str, user_id: str, message_id: str, verdict: str, evidence_useful: bool | None = None, human_verified: bool = False, note: str = "") -> dict[str, Any]:
+        if verdict not in {"correct", "partial", "incorrect"}:
+            raise ValueError("反馈类型无效")
+        if not self.get_membership(workspace_id, user_id):
+            raise ValueError("用户不属于当前工作空间")
+        message = self.get_message(message_id, workspace_id=workspace_id)
+        if message["role"] != "assistant":
+            raise ValueError("只能评价任务交付结果")
+        now = time.time()
+        values = {"verdict": verdict, "evidence_useful": None if evidence_useful is None else int(evidence_useful), "human_verified": int(human_verified), "note": note.strip()[:2000], "updated_at": now}
+        with self.engine.begin() as connection:
+            existing = connection.execute(select(self.result_feedback.c.message_id).where(and_(self.result_feedback.c.message_id == message_id, self.result_feedback.c.user_id == user_id))).first()
+            if existing:
+                connection.execute(update(self.result_feedback).where(and_(self.result_feedback.c.message_id == message_id, self.result_feedback.c.user_id == user_id)).values(**values))
+            else:
+                connection.execute(insert(self.result_feedback).values(message_id=message_id, user_id=user_id, workspace_id=workspace_id, conversation_id=message["conversation_id"], created_at=now, **values))
+        return self.get_feedback(message_id, user_id=user_id, workspace_id=workspace_id) or {}
+
+    def get_feedback(self, message_id: str, *, user_id: str, workspace_id: str) -> dict[str, Any] | None:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(self.result_feedback).where(and_(self.result_feedback.c.message_id == message_id, self.result_feedback.c.user_id == user_id, self.result_feedback.c.workspace_id == workspace_id))).first()
+        return self._dict(row) if row else None
+
+    def list_feedback(self, conversation_id: str, *, workspace_id: str) -> list[dict[str, Any]]:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(self.result_feedback).where(and_(self.result_feedback.c.conversation_id == conversation_id, self.result_feedback.c.workspace_id == workspace_id)).order_by(self.result_feedback.c.updated_at.desc())).fetchall()
+        return [self._dict(row) for row in rows]
+
+    def feedback_gate(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any]:
+        rows = self.list_feedback(conversation_id, workspace_id=workspace_id)
+        verified = [row for row in rows if row.get("human_verified")]
+        incorrect = [row for row in rows if row.get("verdict") == "incorrect"]
+        correct = [row for row in rows if row.get("verdict") == "correct"]
+        approved = bool(verified) and not incorrect
+        return {"approved": approved, "human_verified": len(verified), "correct": len(correct), "incorrect": len(incorrect), "feedback_count": len(rows), "reason": "已有人类验证且无错误反馈" if approved else "需要人工验证，且不能存在错误反馈"}
+
+    def record_product_event(self, *, workspace_id: str, user_id: str, name: str, conversation_id: str | None = None, payload: dict[str, Any] | None = None) -> None:
+        if conversation_id:
+            self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.begin() as connection:
+            connection.execute(insert(self.product_events).values(workspace_id=workspace_id, user_id=user_id, conversation_id=conversation_id, name=name, payload=json.dumps(payload or {}, ensure_ascii=False), created_at=time.time()))
+
+    def product_metrics(self, *, workspace_id: str) -> dict[str, Any]:
+        with self.engine.connect() as connection:
+            conversations = [self._dict(row) for row in connection.execute(select(self.conversations).where(self.conversations.c.workspace_id == workspace_id)).fetchall()]
+            jobs = [self._dict(row) for row in connection.execute(select(self.jobs).where(self.jobs.c.workspace_id == workspace_id)).fetchall()]
+            message_rows = connection.execute(select(self.messages.c.conversation_id, self.messages.c.role).select_from(self.messages.join(self.conversations, self.messages.c.conversation_id == self.conversations.c.id)).where(self.conversations.c.workspace_id == workspace_id)).fetchall()
+            events = [self._dict(row) for row in connection.execute(select(self.product_events).where(self.product_events.c.workspace_id == workspace_id)).fetchall()]
+            feedback = [self._dict(row) for row in connection.execute(select(self.result_feedback).where(self.result_feedback.c.workspace_id == workspace_id)).fetchall()]
+        jobs_by_conversation: dict[str, list[dict[str, Any]]] = {}
+        for job in jobs:
+            jobs_by_conversation.setdefault(job["conversation_id"], []).append(job)
+        completed_ids = {cid for cid, rows in jobs_by_conversation.items() if any(row["status"] == "completed" for row in rows)}
+        task_ids_with_jobs = set(jobs_by_conversation)
+        durations = [float(job["completed_at"] - job["created_at"]) for job in jobs if job["status"] == "completed" and job.get("completed_at")]
+        failed_or_cancelled = {cid for cid, rows in jobs_by_conversation.items() if any(row["status"] in {"failed", "cancelled"} for row in rows)}
+        recovered = failed_or_cancelled & completed_ids
+        user_turns: dict[str, int] = {}
+        for row in message_rows:
+            if row.role == "user":
+                user_turns[row.conversation_id] = user_turns.get(row.conversation_id, 0) + 1
+        continued = sum(1 for count in user_turns.values() if count >= 2)
+        evidence_opens = sum(1 for event in events if event["name"] == "evidence.open")
+        adoption = sum(1 for event in events if event["name"] in {"result.copy", "deliverable.copy"})
+        verified_feedback = sum(1 for row in feedback if row.get("human_verified"))
+        denominator = max(1, len(task_ids_with_jobs))
+        completed_denominator = max(1, len(completed_ids))
+        feedback_denominator = max(1, len(feedback))
+        return {
+            "task_count": len(conversations),
+            "active_tasks": sum(1 for row in conversations if row.get("archived_at") is None),
+            "first_task_completion_rate": round(len(completed_ids) / denominator, 4),
+            "avg_time_to_verified_seconds": round(sum(durations) / len(durations), 2) if durations else None,
+            "interruption_rate": round(sum(1 for job in jobs if job["status"] == "cancelled") / max(1, len(jobs)), 4),
+            "failure_rate": round(sum(1 for job in jobs if job["status"] == "failed") / max(1, len(jobs)), 4),
+            "recovery_rate": round(len(recovered) / max(1, len(failed_or_cancelled)), 4),
+            "continuation_rate": round(continued / max(1, len(user_turns)), 4),
+            "evidence_open_rate": round(evidence_opens / completed_denominator, 4),
+            "result_adoption_rate": round(adoption / completed_denominator, 4),
+            "human_verified_feedback_rate": round(verified_feedback / feedback_denominator, 4),
+        }
