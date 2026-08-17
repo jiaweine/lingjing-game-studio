@@ -22,7 +22,10 @@ jobs:
       - name: Apply cleanup
         run: python scripts/_product_cleanup.py
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install playwright
+          python -m playwright install chromium
       - name: Validate
         run: |
           python -m compileall -q worldforge migrations scripts tests
