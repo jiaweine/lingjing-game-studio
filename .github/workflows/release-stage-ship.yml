@@ -1,0 +1,128 @@
+name: Release Stage Verify
+
+on:
+  push:
+    branches: [release-stage]
+    paths:
+      - '.ship/READY'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-stage-verify
+  cancel-in-progress: false
+
+jobs:
+  verify-and-materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-stage
+          fetch-depth: 0
+
+      - name: Verify payload and extract source
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, json, lzma, tarfile, io
+          root = Path('.ship')
+          manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+          combined = bytearray()
+          for item in manifest['chunks']:
+              path = root / item['name']
+              data = path.read_bytes()
+              if len(data) != item['size']:
+                  raise SystemExit(f"size mismatch: {path}")
+              if hashlib.sha256(data).hexdigest() != item['sha256']:
+                  raise SystemExit(f"chunk hash mismatch: {path}")
+              combined.extend(data)
+          if len(combined) != manifest['base64_chars']:
+              raise SystemExit('base64 length mismatch')
+          archive = base64.b64decode(combined, validate=True)
+          if len(archive) != manifest['archive_size']:
+              raise SystemExit('archive size mismatch')
+          if hashlib.sha256(archive).hexdigest() != manifest['archive_sha256']:
+              raise SystemExit('archive sha256 mismatch')
+          tar_bytes = lzma.decompress(archive)
+          out = Path('/tmp/lingjing-source')
+          out.mkdir(parents=True, exist_ok=True)
+          with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode='r:') as tf:
+              for member in tf.getmembers():
+                  target = (out / member.name).resolve()
+                  if out.resolve() not in target.parents and target != out.resolve():
+                      raise SystemExit(f'unsafe archive member: {member.name}')
+              tf.extractall(out)
+          for required in ['README.md','frontend/index.html','frontend/app.js','worldforge/runtime/engine.py','worldforge/product/executor.py','models/worldforge_policy.json']:
+              if not (out / required).is_file():
+                  raise SystemExit(f'missing source file: {required}')
+          print('payload verified', manifest['archive_sha256'])
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: /tmp/lingjing-source/requirements.txt
+
+      - name: Install runtime and browser
+        working-directory: /tmp/lingjing-source
+        run: |
+          pip install -r requirements.txt
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Source gates
+        working-directory: /tmp/lingjing-source
+        run: |
+          python -m compileall -q worldforge migrations scripts tests
+          pytest -q
+          node --check frontend/app.js
+          DATABASE_URL=sqlite:////tmp/lingjing-stage.db alembic upgrade head
+          python scripts/product_backend_e2e.py
+          python scripts/product_ui_e2e.py
+
+      - name: Product and pixel gates
+        working-directory: /tmp/lingjing-source
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import re
+          ui = Path('frontend/index.html').read_text(encoding='utf-8').lower()
+          forbidden = ['world-state','world state','counterfactual','grpo','recursive agent','planner','verifier','harness','反事实','规划器','验证器','世界状态','策略演进']
+          found = [x for x in forbidden if x in ui]
+          if found:
+              raise SystemExit(f'customer UI leaks internal terminology: {found}')
+          full = {'auth.png','cover.png','evidence.png','execution-trace.png','providers.png','recovery.png','task-running.png','upload.png','workspace-empty.png','workspace.png'}
+          root = Path('docs/assets/readme')
+          for name in sorted(full | {'mobile.png'}):
+              path = root / name
+              with Image.open(path) as im:
+                  if im.format != 'PNG': raise SystemExit(f'{name}: not PNG')
+                  if name in full and im.size != (3840, 2400): raise SystemExit(f'{name}: {im.size}')
+                  if name == 'mobile.png' and (im.width < 860 or im.height < 1800): raise SystemExit(f'{name}: {im.size}')
+          readme = Path('README.md').read_text(encoding='utf-8')
+          refs = set(re.findall(r'docs/assets/readme/[A-Za-z0-9._/-]+\.png', readme))
+          missing = [p for p in refs if not Path(p).is_file()]
+          if missing: raise SystemExit(f'missing README images: {missing}')
+          if len(refs) < 10: raise SystemExit(f'too few README images: {len(refs)}')
+          print('product gates passed')
+          PY
+
+      - name: Materialize verified release
+        run: |
+          rm -rf /tmp/lingjing-source/outputs /tmp/lingjing-source/.pytest_cache
+          find /tmp/lingjing-source -type d -name __pycache__ -prune -exec rm -rf {} +
+          find /tmp/lingjing-source -type f -name '*.py[co]' -delete
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a /tmp/lingjing-source/. .
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'Prepare WorldForge game execution platform'
+          git push origin HEAD:release-stage
