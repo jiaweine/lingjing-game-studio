@@ -15,6 +15,9 @@ permissions:
 jobs:
   capture:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ASSET_TAG: readme-gallery-assets
     steps:
       - uses: actions/checkout@v6
         with:
@@ -47,6 +50,35 @@ jobs:
                   assert image.format == 'PNG', (name, image.format)
                   assert image.size == (3840, 2400), (name, image.size)
               print(name, path.stat().st_size)
+          PY
+      - name: Publish stable README image assets
+        run: |
+          if ! gh release view "$ASSET_TAG" >/dev/null 2>&1; then
+            gh release create "$ASSET_TAG" \
+              --target main \
+              --title 'README Gallery Assets' \
+              --notes 'Stable image assets used by the repository README. Managed by README Gallery automation.' \
+              --prerelease
+          else
+            gh release edit "$ASSET_TAG" --prerelease
+          fi
+          gh release upload "$ASSET_TAG" docs/assets/readme/*.png --clobber
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          names = {
+              'auth.png', 'workspace-empty.png', 'upload.png', 'task-running.png',
+              'workspace.png', 'evidence.png', 'multimodal.png', 'cover.png',
+          }
+          data = json.loads(subprocess.check_output([
+              'gh', 'release', 'view', os.environ['ASSET_TAG'], '--json', 'assets,isPrerelease,url'
+          ], text=True))
+          assets = {asset['name'] for asset in data['assets']}
+          assert names <= assets, (names - assets)
+          assert data['isPrerelease'] is True, data
+          print('release-assets-ok', sorted(names), data['url'])
           PY
       - name: Commit refreshed screenshots
         run: |
