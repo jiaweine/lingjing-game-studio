@@ -8,8 +8,9 @@ from worldforge.envs import get_scenario
 from worldforge.models import RunConfig, WorldState
 
 from .engine import WorldForgeEngine as FrozenWorldForgeEngine
-from .harness_evolution import HarnessEvolutionEngine, TraceReflector
+from .harness_evolution import TraceReflector
 from .harness_genome import HarnessGenomeStore
+from .harness_search import HarnessEvolutionEngine
 from .plugin import PluginDescriptor
 
 
@@ -35,7 +36,6 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
         HarnessGenomeStore.configure(self.harness_path)
         super().__init__(db_path, **kwargs)
 
-        # Remove the legacy category-specific patcher from the active execution path.
         self.evolver = _DisabledLegacySkillEvolver()
         self.plugins.unmount("failure-evolver")
 
@@ -65,6 +65,8 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
                     "pareto_selection": True,
                     "heldout_gate": True,
                     "topology_search": True,
+                    "skill_mutation": True,
+                    "memory_mutation": True,
                     "meta_mutation": True,
                 },
             ),
@@ -102,8 +104,6 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
                 if action:
                     action_counts[action] += 1
 
-        # Evolution is evidence-triggered. Successful, clean trajectories remain useful
-        # as held-out evaluation data but do not cause gratuitous harness churn.
         should_evolve = bool(
             summary.outcome != "victory"
             or findings
