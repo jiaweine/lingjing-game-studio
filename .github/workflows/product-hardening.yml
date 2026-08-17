@@ -20,6 +20,8 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Repair hardening target
+        run: python scripts/_fix_hardening_target.py
       - name: Apply lifecycle hardening
         run: python scripts/_harden_product_completion.py
       - name: Compile Python
