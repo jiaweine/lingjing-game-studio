@@ -228,4 +228,5 @@ jobs:
               assert not image_failures, image_failures
               print(f'readme-browser-ok images={len(verified)} url={url}')
               browser.close()
+          PY
       # README Gallery is refreshed separately by .github/workflows/readme-gallery.yml on main.
