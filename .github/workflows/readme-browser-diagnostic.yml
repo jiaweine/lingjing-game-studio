@@ -21,7 +21,7 @@ jobs:
           python - <<'PY'
           from playwright.sync_api import sync_playwright
 
-          expected_alts = {
+          expected_alts = [
               '灵境游戏研发执行工作台总览',
               '登录与工作空间入口',
               '空任务工作台',
@@ -31,18 +31,21 @@ jobs:
               '证据核验',
               '多模态任务上下文',
               '产品总览',
-          }
+          ]
           url = 'https://github.com/jiaweine/lingjing-game-studio/tree/agent/diagnose-readme-browser-images'
+
           with sync_playwright() as p:
               browser = p.chromium.launch()
               context = browser.new_context(viewport={'width': 1440, 'height': 1000})
               page = context.new_page()
               image_responses = []
               failed_requests = []
+
               page.on('requestfailed', lambda request: failed_requests.append({
                   'url': request.url,
                   'failure': request.failure,
               }))
+
               def capture_response(response):
                   u = response.url.lower()
                   if 'raw.githubusercontent.com/jiaweine/lingjing-game-studio/' in u:
@@ -51,36 +54,57 @@ jobs:
                           'status': response.status,
                           'content_type': response.headers.get('content-type'),
                       })
+
               page.on('response', capture_response)
               response = page.goto(url, wait_until='domcontentloaded', timeout=90000)
               print('page-status', response.status if response else None)
-              page.wait_for_timeout(10000)
-              images = page.locator('img').evaluate_all('''imgs => imgs.map(img => ({
-                  alt: img.alt,
-                  src: img.getAttribute('src'),
-                  currentSrc: img.currentSrc,
-                  naturalWidth: img.naturalWidth,
-                  naturalHeight: img.naturalHeight,
-                  complete: img.complete
-              }))''')
-              targets = [img for img in images if img.get('alt') in expected_alts]
-              print('target-count', len(targets))
-              for img in targets:
-                  print('README-IMAGE', img)
+              assert response and response.status == 200
+
+              final_images = []
+              for alt in expected_alts:
+                  locator = page.locator(f'img[alt="{alt}"]').first
+                  locator.wait_for(state='attached', timeout=30000)
+                  locator.scroll_into_view_if_needed(timeout=30000)
+                  locator.evaluate('img => img.loading = "eager"')
+                  locator.evaluate('img => img.decode ? img.decode().catch(() => {}) : Promise.resolve()')
+                  page.wait_for_function(
+                      '(img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0',
+                      arg=locator.element_handle(),
+                      timeout=45000,
+                  )
+                  data = locator.evaluate('''img => ({
+                      alt: img.alt,
+                      src: img.getAttribute('src'),
+                      currentSrc: img.currentSrc,
+                      naturalWidth: img.naturalWidth,
+                      naturalHeight: img.naturalHeight,
+                      complete: img.complete
+                  })''')
+                  final_images.append(data)
+                  print('README-IMAGE', data)
+                  assert data['currentSrc'].startswith('https://raw.githubusercontent.com/jiaweine/lingjing-game-studio/main/docs/assets/readme/'), data
+                  assert data['naturalWidth'] == 3840 and data['naturalHeight'] == 2400, data
+
               for item in image_responses:
                   print('IMAGE-RESPONSE', item)
               for failure in failed_requests:
                   if '.png' in failure['url'].lower() or 'raw.githubusercontent' in failure['url'].lower():
                       print('FAILED-REQUEST', failure)
-              missing = sorted(expected_alts - {img.get('alt') for img in targets})
-              broken = [img for img in targets if not img.get('complete') or int(img.get('naturalWidth') or 0) <= 0]
-              bad_responses = [r for r in image_responses if r['status'] != 200 or r['content_type'] != 'image/png']
-              print('missing-alts', missing)
-              print('broken-images', broken)
+
+              bad_responses = [
+                  r for r in image_responses
+                  if r['status'] != 200 or r['content_type'] != 'image/png'
+              ]
+              image_failures = [
+                  f for f in failed_requests
+                  if '.png' in f['url'].lower() or 'raw.githubusercontent' in f['url'].lower()
+              ]
               print('bad-responses', bad_responses)
+              print('image-failures', image_failures)
+              print('verified-images', len(final_images))
+
+              assert len(final_images) == 9, len(final_images)
+              assert not bad_responses, bad_responses
+              assert not image_failures, image_failures
               browser.close()
-              assert not missing, f'Missing README images in fixed branch DOM: {missing}'
-              assert not broken, f'Broken README images in fixed branch DOM: {broken}'
-              assert not bad_responses, f'Non-image README responses: {bad_responses}'
-              assert len(targets) == 9, f'Expected 9 visible README image nodes, got {len(targets)}'
           PY
