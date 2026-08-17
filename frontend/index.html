@@ -24,13 +24,15 @@
       </div>
     </div>
 
-    <div class="workspace-switch workspace-static" aria-label="当前工作空间">
+    <button class="workspace-switch" id="workspaceSwitchBtn" type="button" aria-label="切换工作空间" aria-expanded="false">
       <span class="workspace-beacon"></span>
       <span class="workspace-copy">
         <small>工作空间</small>
         <b id="workspaceName">本地演示空间</b>
       </span>
-    </div>
+      <span class="workspace-caret">⌄</span>
+    </button>
+    <div class="workspace-menu" id="workspaceMenu" hidden></div>
 
     <div class="top-spacer"></div>
     <div class="service-pill" id="serviceStatus">
@@ -88,8 +90,15 @@
 
     <div class="side-section recent-section">
       <div class="side-title row">
-        <span>最近任务</span>
+        <span>任务</span>
         <button class="icon-button" id="refreshConvBtn" type="button" title="刷新">↻</button>
+      </div>
+      <div class="task-index-tools">
+        <input id="taskSearch" type="search" placeholder="搜索任务" aria-label="搜索任务" />
+        <div class="task-scope">
+          <button class="active" data-task-scope="active" type="button">进行中</button>
+          <button data-task-scope="archived" type="button">已归档</button>
+        </div>
       </div>
       <div id="conversationList" class="conversation-list"></div>
     </div>
@@ -104,9 +113,16 @@
         <p id="conversationMeta">把目标说清楚，系统会持续执行到得到可核验结果。</p>
       </div>
       <div class="head-actions">
+        <button class="ghost-button" id="retryTaskBtn" type="button" hidden>重新执行</button>
+        <button class="ghost-button" id="renameTaskBtn" type="button">重命名</button>
+        <button class="ghost-button" id="pinTaskBtn" type="button">置顶</button>
+        <button class="ghost-button" id="archiveTaskBtn" type="button">归档</button>
+        <button class="ghost-button danger-text" id="deleteTaskBtn" type="button">删除</button>
         <button class="ghost-button" id="copyLinkBtn" type="button">复制链接</button>
       </div>
     </div>
+
+    <div class="approval-card" id="approvalCard" hidden></div>
 
     <div class="work-scroll" id="chatScroll">
       <section class="welcome" id="welcomePanel">
@@ -214,7 +230,9 @@
     <div class="right-tabs">
       <button class="right-tab active" data-panel="progress" type="button">执行</button>
       <button class="right-tab" data-panel="evidence" type="button">证据</button>
+      <button class="right-tab" data-panel="deliverables" type="button">交付</button>
       <button class="right-tab" data-panel="assets" type="button">素材</button>
+      <button class="right-tab" data-panel="team" type="button">团队</button>
     </div>
 
     <div class="right-scroll">
@@ -267,6 +285,15 @@
         </div>
       </section>
 
+      <section class="right-panel" id="panel-deliverables">
+        <div class="panel-intro">
+          <span class="eyebrow">研发交付</span>
+          <b>可直接交接的结果</b>
+          <p>复现卡、回归清单、风险项和证据包会随任务结果一起保留。</p>
+        </div>
+        <div id="deliverableList" class="deliverable-list"><div class="empty-side">完成一次任务后显示。</div></div>
+      </section>
+
       <section class="right-panel" id="panel-assets">
         <div class="panel-intro">
           <span class="eyebrow">任务上下文</span>
@@ -276,6 +303,25 @@
         <div id="assetList" class="asset-list">
           <div class="empty-side">还没有上传素材。</div>
         </div>
+      </section>
+
+      <section class="right-panel" id="panel-team">
+        <div class="panel-intro">
+          <span class="eyebrow">协作与质量</span>
+          <b>团队控制台</b>
+          <p>任务负责人、成员权限、邀请链接和结果质量门都在工作空间内管理。</p>
+        </div>
+        <label class="assignee-field"><span>任务负责人</span><select id="assigneeSelect"></select></label>
+        <div id="memberList" class="member-list"></div>
+        <form id="inviteForm" class="invite-form">
+          <input id="inviteEmail" type="email" placeholder="成员邮箱（可选）" />
+          <select id="inviteRole"><option value="member">成员</option><option value="viewer">只读</option><option value="admin">管理员</option></select>
+          <button type="submit">创建邀请链接</button>
+        </form>
+        <div id="inviteList" class="invite-list"></div>
+        <div class="panel-label">产品结果</div>
+        <div id="qualityGate" class="quality-gate"></div>
+        <div id="metricGrid" class="metric-grid"></div>
       </section>
     </div>
   </aside>

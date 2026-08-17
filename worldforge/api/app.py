@@ -33,6 +33,7 @@ from worldforge.observability import (
 from worldforge.product import (
     ConversationStore, ProductAnalyzer, extract_video_frames, probe_media,
 )
+from worldforge.product.control import build_control_router
 from worldforge.product.fanout import TaskEventFanoutHub
 from worldforge.product.store import DEMO_USER_ID, DEMO_WORKSPACE_ID
 from worldforge.providers import ProviderRegistry
@@ -179,6 +180,14 @@ async def require_principal(
     return principal
 
 
+async def require_editor(
+    principal: Principal = Depends(require_principal),
+) -> Principal:
+    if principal.role == "viewer":
+        raise HTTPException(403, "只读成员不能修改任务")
+    return principal
+
+
 @app.middleware("http")
 async def auth_boundary(request: Request, call_next):
     path = request.url.path
@@ -223,6 +232,7 @@ class RegisterRequest(BaseModel):
     workspace_name: str = Field(
         default="我的游戏团队", min_length=1, max_length=120
     )
+    invite_token: str | None = Field(default=None, max_length=96)
 
 
 class LoginRequest(BaseModel):
@@ -270,12 +280,20 @@ def auth_register(req: RegisterRequest, response: Response, request: Request):
     host = request.client.host if request.client else "unknown"
     rate_limiter.check(f"auth:{host}")
     try:
-        row = product_store.create_user_workspace(
-            email=req.email,
-            name=req.name,
-            password_hash=hash_password(req.password),
-            workspace_name=req.workspace_name,
-        )
+        if req.invite_token:
+            row = product_store.create_user_from_invite(
+                token=req.invite_token,
+                email=req.email,
+                name=req.name,
+                password_hash=hash_password(req.password),
+            )
+        else:
+            row = product_store.create_user_workspace(
+                email=req.email,
+                name=req.name,
+                password_hash=hash_password(req.password),
+                workspace_name=req.workspace_name,
+            )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     principal = Principal(
@@ -397,10 +415,15 @@ def audit_list(
 @app.get("/api/conversations")
 def conversation_list(
     limit: int = Query(default=30, ge=1, le=100),
+    q: str | None = Query(default=None, max_length=120),
+    archived: bool = Query(default=False),
     principal: Principal = Depends(require_principal),
 ):
     return product_store.list_conversations(
-        limit, workspace_id=principal.workspace_id
+        limit,
+        workspace_id=principal.workspace_id,
+        query=q,
+        archived=archived,
     )
 
 
@@ -408,7 +431,7 @@ def conversation_list(
 def conversation_create(
     req: ConversationCreate,
     request: Request,
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     row = product_store.create_conversation(
         req.title,
@@ -498,15 +521,19 @@ async def asset_upload(
     request: Request,
     file: UploadFile = File(...),
     conversation_id: str | None = Form(default=None),
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     if conversation_id:
         try:
-            product_store.get_conversation(
+            conversation = product_store.get_conversation(
                 conversation_id, workspace_id=principal.workspace_id
             )
         except KeyError:
             raise HTTPException(404, "任务不存在")
+        if conversation.get("archived_at") is not None:
+            raise HTTPException(409, "已归档任务需要先恢复，才能添加素材")
+        if conversation["status"] == "waiting_approval":
+            raise HTTPException(409, "删除确认处理中，不能添加素材")
 
     filename = _safe_filename(file.filename)
     declared_mime = (file.content_type or "").strip().lower()
@@ -566,17 +593,27 @@ async def asset_upload(
         if frame_keys:
             meta["keyframes"] = frame_keys
 
-    row = product_store.add_asset(
-        conversation_id,
-        name=filename,
-        mime=mime,
-        path=object_key,
-        size=size,
-        meta=meta,
-        workspace_id=principal.workspace_id,
-        created_by=principal.user_id,
-        storage_backend=storage.name,
-    )
+    try:
+        row = product_store.add_asset(
+            conversation_id,
+            name=filename,
+            mime=mime,
+            path=object_key,
+            size=size,
+            meta=meta,
+            workspace_id=principal.workspace_id,
+            created_by=principal.user_id,
+            storage_backend=storage.name,
+        )
+    except Exception as exc:
+        for key in [object_key, *frame_keys]:
+            try:
+                storage.delete(key)
+            except Exception:
+                logger.exception("failed to clean rejected asset upload", extra={"object_key": key})
+        if isinstance(exc, ValueError):
+            raise HTTPException(409, str(exc)) from exc
+        raise
     product_store.add_audit(
         request_id=request.state.request_id,
         action="asset.upload",
@@ -679,12 +716,16 @@ async def _run_analysis_job(
 
         ensure_active()
         prepared = _materialize_assets(assets)
+        quality_gate = product_store.feedback_gate(
+            conversation_id, workspace_id=workspace_id
+        )
         result = await product_analyzer.run(
             text=text,
             assets=prepared,
             provider_key=provider_key,
             sink=sink,
             history=history,
+            human_feedback_gate=bool(quality_gate["approved"]),
         )
         if job_id:
             message = product_store.complete_job_answer(
@@ -711,17 +752,60 @@ async def _run_analysis_job(
     except AnalysisCancelled:
         return False
     except Exception as exc:
+        if job_id:
+            try:
+                if product_store.get_job(job_id, workspace_id=workspace_id)["status"] == "cancelled":
+                    return False
+            except KeyError:
+                return False
         logger.exception(
-            "analysis job failed",
-            extra={"conversation_id": conversation_id},
-        )
-        await _product_emit(
-            conversation_id,
-            workspace_id,
-            "answer.error",
-            {"message": "处理过程中出现问题", "detail": repr(exc)},
+            "analysis job attempt failed",
+            extra={"conversation_id": conversation_id, "job_id": job_id},
         )
         raise
+
+
+async def _fail_product_job(job_id: str, error: str, *, max_attempts: int = 3):
+    failed = product_store.fail_job(job_id, error, max_attempts=max_attempts)
+    if failed and failed["status"] == "failed":
+        await _product_emit(
+            failed["conversation_id"],
+            failed["workspace_id"],
+            "answer.error",
+            {"message": "处理过程中出现问题", "detail": error, "job_id": job_id},
+        )
+    return failed
+
+
+async def _schedule_product_job(job, background_tasks: BackgroundTasks, principal: Principal):
+    if settings.queue_mode == "external":
+        return
+
+    async def work():
+        claimed = product_store.claim_job("api-inprocess", job_id=job["id"])
+        if not claimed:
+            return
+        payload = claimed["payload"]
+        assets = []
+        for asset_id in payload.get("asset_ids", []):
+            try:
+                assets.append(product_store.get_asset(asset_id, workspace_id=claimed["workspace_id"]))
+            except KeyError:
+                continue
+        try:
+            await _run_analysis_job(
+                conversation_id=claimed["conversation_id"],
+                workspace_id=claimed["workspace_id"],
+                text=str(payload.get("text", "")),
+                provider_key=str(payload.get("provider", "auto")),
+                history=list(payload.get("history", [])),
+                assets=assets,
+                job_id=claimed["id"],
+            )
+        except Exception as exc:
+            await _fail_product_job(claimed["id"], repr(exc), max_attempts=1)
+
+    background_tasks.add_task(work)
 
 
 @app.post("/api/conversations/{conversation_id}/messages")
@@ -730,65 +814,54 @@ async def conversation_message(
     req: ChatRequest,
     background_tasks: BackgroundTasks,
     request: Request,
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     try:
-        product_store.get_conversation(
-            conversation_id, workspace_id=principal.workspace_id
-        )
+        conversation = product_store.get_conversation(conversation_id, workspace_id=principal.workspace_id)
     except KeyError:
         raise HTTPException(404, "任务不存在")
+    if conversation.get("archived_at") is not None:
+        raise HTTPException(409, "已归档任务需要先恢复，才能继续执行")
+    if conversation["status"] == "waiting_approval":
+        raise HTTPException(409, "删除确认处理中，不能继续执行")
 
-    history = product_store.list_messages(
-        conversation_id, workspace_id=principal.workspace_id
-    )
-    assets = product_store.list_assets(
-        conversation_id, workspace_id=principal.workspace_id
-    )
-    asset_by_id = {asset["id"]: asset for asset in assets}
+    history = product_store.list_messages(conversation_id, workspace_id=principal.workspace_id)
+    context_assets = product_store.list_assets(conversation_id, workspace_id=principal.workspace_id)
+    context_by_id = {asset["id"]: asset for asset in context_assets}
+    selected_asset_ids: list[str] = []
     for asset_id in req.asset_ids:
-        if asset_id in asset_by_id:
-            continue
-        try:
-            asset = product_store.get_asset(
-                asset_id, workspace_id=principal.workspace_id
-            )
-            assets.append(asset)
-            asset_by_id[asset_id] = asset
-        except KeyError:
-            continue
+        asset = context_by_id.get(asset_id)
+        if asset is None:
+            try:
+                asset = product_store.get_asset(asset_id, workspace_id=principal.workspace_id)
+            except KeyError:
+                continue
+            context_assets.append(asset)
+            context_by_id[asset["id"]] = asset
+        if asset["id"] not in selected_asset_ids:
+            selected_asset_ids.append(asset["id"])
 
-    user_message = product_store.add_message(
-        conversation_id,
-        "user",
-        req.content,
-        {"asset_ids": req.asset_ids},
-        workspace_id=principal.workspace_id,
-    )
-    if not history:
-        product_store.touch(
-            conversation_id,
-            title=req.content.strip().replace("\n", " ")[:36] or "新的研发任务",
-            workspace_id=principal.workspace_id,
-        )
-
-    await _product_emit(
-        conversation_id,
-        principal.workspace_id,
-        "message.accepted",
-        {"message_id": user_message["id"], "asset_count": len(assets)},
-    )
+    context_asset_ids = list(dict.fromkeys(asset["id"] for asset in context_assets))
     job_payload = {
         "text": req.content,
         "provider": req.provider,
         "history": history,
-        "asset_ids": [asset["id"] for asset in assets],
+        "asset_ids": context_asset_ids,
     }
-    job = product_store.enqueue_job(
-        workspace_id=principal.workspace_id,
-        conversation_id=conversation_id,
-        payload=job_payload,
-    )
+    try:
+        user_message, job = product_store.create_message_job(
+            workspace_id=principal.workspace_id,
+            conversation_id=conversation_id,
+            content=req.content,
+            asset_ids=selected_asset_ids,
+            job_payload=job_payload,
+            title_if_first=req.content if not history else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
     product_store.add_audit(
         request_id=request.state.request_id,
         action="message.create",
@@ -796,52 +869,13 @@ async def conversation_message(
         user_id=principal.user_id,
         resource_type="conversation",
         resource_id=conversation_id,
-        payload={"job_id": job["id"], "asset_count": len(assets)},
+        payload={"job_id": job["id"], "asset_count": len(context_asset_ids)},
     )
 
     if settings.queue_mode == "external":
-        return {
-            "status": "queued",
-            "message": user_message,
-            "job_id": job["id"],
-        }
-
-    async def work():
-        try:
-            with product_store.engine.begin() as connection:
-                claimed = connection.execute(
-                    product_store.jobs.update()
-                    .where(
-                        (product_store.jobs.c.id == job["id"])
-                        & (product_store.jobs.c.status == "queued")
-                    )
-                    .values(
-                        status="running",
-                        worker_id="api-inprocess",
-                        claimed_at=time.time(),
-                        attempts=1,
-                    )
-                )
-            if claimed.rowcount == 0:
-                return
-            await _run_analysis_job(
-                conversation_id=conversation_id,
-                workspace_id=principal.workspace_id,
-                text=req.content,
-                provider_key=req.provider,
-                history=history,
-                assets=assets,
-                job_id=job["id"],
-            )
-        except Exception as exc:
-            product_store.fail_job(job["id"], repr(exc), max_attempts=1)
-
-    background_tasks.add_task(work)
-    return {
-        "status": "accepted",
-        "message": user_message,
-        "job_id": job["id"],
-    }
+        return {"status": "queued", "message": user_message, "job_id": job["id"]}
+    await _schedule_product_job(job, background_tasks, principal)
+    return {"status": "accepted", "message": user_message, "job_id": job["id"]}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -861,7 +895,7 @@ def job_get(
 async def job_cancel(
     job_id: str,
     request: Request,
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     try:
         job = product_store.get_job(job_id, workspace_id=principal.workspace_id)
@@ -888,6 +922,17 @@ async def job_cancel(
             resource_id=job_id,
         )
     return cancelled
+
+
+app.include_router(
+    build_control_router(
+        store=product_store,
+        storage=storage,
+        require_principal=require_principal,
+        session_response=_session_response,
+        schedule_retry=_schedule_product_job,
+    )
+)
 
 
 @app.websocket("/ws/conversations/{conversation_id}")

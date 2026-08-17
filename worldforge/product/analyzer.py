@@ -81,7 +81,7 @@ class ProductAnalyzer:
         verified = .34 if runtime_result else 0.0
         return round(min(.92, .18 + diversity + volume + verified), 2)
 
-    async def run(self, *, text, assets, provider_key, sink, history=None):
+    async def run(self, *, text, assets, provider_key, sink, history=None, human_feedback_gate=False):
         history = history or []
         intent = self.intent(text, assets, history)
         detail = f"已关联 {len(assets)} 份任务素材"
@@ -143,9 +143,10 @@ class ProductAnalyzer:
                     branch_width=3,
                     rollout_horizon=2,
                     rollouts_per_branch=2,
-                    enable_evolution=False,
+                    enable_evolution=bool(human_feedback_gate),
                 ),
                 demo_delay=0,
+                session_meta={"human_feedback_gate": bool(human_feedback_gate)},
             )
             runtime_result = summary.model_dump()
             evidence.append({
@@ -167,7 +168,6 @@ class ProductAnalyzer:
         model_assets = self._model_assets(assets)
         provider = self.providers.choose(provider_key, model_assets)
         generated = None
-        route_label = "自动路由"
 
         # If no full-capability route is available, keep useful visual evidence rather
         # than discarding the entire inference pass because one audio asset is present.
@@ -228,8 +228,8 @@ class ProductAnalyzer:
         return {
             "answer": generated or self._demo_answer(intent),
             "intent": intent,
-            "provider": route_label,
             "evidence": evidence,
+            "deliverables": self._deliverables(intent, evidence, runtime_result),
             "runtime": runtime_result,
             "context": {
                 "history_messages": len(history),
@@ -239,6 +239,91 @@ class ProductAnalyzer:
             },
             "suggestions": self._suggestions(intent),
         }
+
+    def _deliverables(self, intent, evidence, runtime_result):
+        evidence_ids = [item.get("id") for item in evidence if item.get("id")]
+        evidence_pack = {
+            "type": "evidence_pack",
+            "title": "证据包",
+            "summary": "保留本次判断使用的素材索引与主动复核结果，方便团队复查。",
+            "items": [item.get("title", "") for item in evidence if item.get("title")],
+            "evidence_ids": evidence_ids,
+        }
+        if intent == "battle_review":
+            return [
+                {
+                    "type": "reproduction_card",
+                    "title": "问题复现卡",
+                    "summary": "把当前异常窗口固化成可交接的复现入口。",
+                    "items": ["使用当前素材作为复现基线", "锁定异常阶段与资源窗口", "修复后按同条件再次执行"],
+                    "evidence_ids": evidence_ids,
+                },
+                {
+                    "type": "regression_checklist",
+                    "title": "回归检查清单",
+                    "summary": "覆盖触发条件、邻近条件与修复后复核。",
+                    "items": ["原触发条件不再复现", "相邻时间窗无新增异常", "资源与伤害变化符合预期"],
+                    "evidence_ids": evidence_ids,
+                },
+                evidence_pack,
+            ]
+        if intent == "balance":
+            return [
+                {
+                    "type": "risk_register",
+                    "title": "数值风险清单",
+                    "summary": "把高波动组合与需要继续验证的边界分开记录。",
+                    "items": ["优先复核极端收益组合", "检查资源曲线断点", "覆盖不同玩家策略"],
+                    "evidence_ids": evidence_ids,
+                },
+                {
+                    "type": "tuning_plan",
+                    "title": "调参验证方案",
+                    "summary": "每次调整都保留前后对照和回归条件。",
+                    "items": ["一次只改变一个主要变量", "保留调整前基线", "重新检查极端与常规打法"],
+                    "evidence_ids": evidence_ids,
+                },
+                evidence_pack,
+            ]
+        if intent == "regression":
+            return [
+                {
+                    "type": "reproduction_card",
+                    "title": "回归复现卡",
+                    "summary": "把历史异常、当前复现条件和验证基线放在同一交付物。",
+                    "items": ["复用当前异常条件", "核对版本差异", "修复后重复同条件验证"],
+                    "evidence_ids": evidence_ids,
+                },
+                {
+                    "type": "release_checklist",
+                    "title": "发布前检查项",
+                    "summary": "只有关键路径重新通过后才适合关闭问题。",
+                    "items": ["原问题不可复现", "关键邻接路径通过", "证据与结果已人工复核"],
+                    "evidence_ids": evidence_ids,
+                },
+                evidence_pack,
+            ]
+        if intent == "npc":
+            return [
+                {
+                    "type": "behavior_checklist",
+                    "title": "角色行为检查表",
+                    "summary": "将目标切换、连续交互和上下文一致性变成可重复检查项。",
+                    "items": ["连续交互保持上下文", "冲突指令下行为可解释", "目标切换没有异常跳变"],
+                    "evidence_ids": evidence_ids,
+                },
+                evidence_pack,
+            ]
+        return [
+            {
+                "type": "action_brief",
+                "title": "研发行动摘要",
+                "summary": "把当前结论转成可继续执行和复核的团队任务。",
+                "items": ["保留当前基线", "补齐最高不确定性证据", "完成后再次核验结论"],
+                "evidence_ids": evidence_ids,
+            },
+            evidence_pack,
+        ]
 
     def _progress_detail(self, intent):
         return {

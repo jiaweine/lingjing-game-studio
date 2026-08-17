@@ -514,6 +514,7 @@ class WorldForgeEngine:
             )
 
         evolved = False
+        human_feedback_gate = bool((session_meta or {}).get("human_feedback_gate", True))
         # Policy / Skill / global Memory are shared learning state. Commit those
         # updates in one short critical section while keeping the expensive run
         # itself fully concurrent.
@@ -538,6 +539,7 @@ class WorldForgeEngine:
                         lambda candidate: self._regression_eval(
                             config.scenario_id, candidate, self.policy_model
                         ),
+                        human_approved=human_feedback_gate,
                     )
                     evolved = patch.accepted
                     await self._emit(
@@ -555,7 +557,8 @@ class WorldForgeEngine:
                         config.scenario_id, None, candidate_policy
                     )
                     policy_accepted = (
-                        optimization["updates"] > 0
+                        human_feedback_gate
+                        and optimization["updates"] > 0
                         and candidate_score >= baseline + .001
                         and optimization["mean_kl"] <= self.policy_optimizer.kl_limit
                     )
@@ -581,6 +584,7 @@ class WorldForgeEngine:
                         "regression_before": round(baseline, 4),
                         "regression_after": round(candidate_score, 4),
                         "accepted": policy_accepted,
+                        "human_feedback_gate": human_feedback_gate,
                         "generation": (
                             self.policy_model.card.generation
                             if policy_accepted
