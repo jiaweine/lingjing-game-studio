@@ -5,6 +5,10 @@ on:
     branches:
       - agent/product-control-cleanup
 
+concurrency:
+  group: product-control-cleanup
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -20,7 +24,18 @@ jobs:
         with:
           python-version: '3.11'
       - name: Apply cleanup
-        run: python scripts/_product_cleanup.py
+        run: |
+          python scripts/_product_cleanup.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/product_ui_e2e.py')
+          text = path.read_text(encoding='utf-8')
+          old = "if(u.endsWith('/api/jobs/job-e2e/cancel')&&method==='POST') return jsonResponse({id:'job-e2e',status:'cancelled'});\n  }\n  return jsonResponse({detail:'not mocked: '+u},404);"
+          new = "if(u.endsWith('/api/jobs/job-e2e/cancel')&&method==='POST') return jsonResponse({id:'job-e2e',status:'cancelled'});\n  return jsonResponse({detail:'not mocked: '+u},404);"
+          if old not in text:
+              raise SystemExit('expected E2E mock cleanup pattern not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
