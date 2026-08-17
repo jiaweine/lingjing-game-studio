@@ -180,6 +180,14 @@ async def require_principal(
     return principal
 
 
+async def require_editor(
+    principal: Principal = Depends(require_principal),
+) -> Principal:
+    if principal.role == "viewer":
+        raise HTTPException(403, "只读成员不能修改任务")
+    return principal
+
+
 @app.middleware("http")
 async def auth_boundary(request: Request, call_next):
     path = request.url.path
@@ -423,7 +431,7 @@ def conversation_list(
 def conversation_create(
     req: ConversationCreate,
     request: Request,
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     row = product_store.create_conversation(
         req.title,
@@ -513,7 +521,7 @@ async def asset_upload(
     request: Request,
     file: UploadFile = File(...),
     conversation_id: str | None = Form(default=None),
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     if conversation_id:
         try:
@@ -792,7 +800,7 @@ async def conversation_message(
     req: ChatRequest,
     background_tasks: BackgroundTasks,
     request: Request,
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     try:
         conversation = product_store.get_conversation(
@@ -898,7 +906,7 @@ def job_get(
 async def job_cancel(
     job_id: str,
     request: Request,
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     try:
         job = product_store.get_job(job_id, workspace_id=principal.workspace_id)

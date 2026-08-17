@@ -62,6 +62,10 @@ def build_control_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    def require_editor(principal: Principal) -> None:
+        if principal.role == "viewer":
+            raise HTTPException(403, "只读成员不能修改任务")
+
     def require_manager(principal: Principal) -> None:
         if principal.role not in {"owner", "admin"}:
             raise HTTPException(403, "只有工作空间管理员可以执行此操作")
@@ -210,6 +214,7 @@ def build_control_router(
         request: Request,
         principal: Principal = Depends(require_principal),
     ):
+        require_editor(principal)
         try:
             row = store.update_conversation(
                 conversation_id,
@@ -232,6 +237,7 @@ def build_control_router(
         request: Request,
         principal: Principal = Depends(require_principal),
     ):
+        require_editor(principal)
         try:
             row = store.archive_conversation(conversation_id, workspace_id=principal.workspace_id)
         except KeyError as exc:
@@ -248,6 +254,7 @@ def build_control_router(
         request: Request,
         principal: Principal = Depends(require_principal),
     ):
+        require_editor(principal)
         try:
             row = store.restore_conversation(conversation_id, workspace_id=principal.workspace_id)
         except KeyError as exc:
@@ -262,6 +269,7 @@ def build_control_router(
         request: Request,
         principal: Principal = Depends(require_principal),
     ):
+        require_editor(principal)
         latest = store.latest_job(conversation_id, workspace_id=principal.workspace_id)
         if latest and latest["status"] in {"queued", "running"}:
             raise HTTPException(409, "执行中的任务需要先停止，才能请求永久删除")
@@ -350,6 +358,7 @@ def build_control_router(
         request: Request,
         principal: Principal = Depends(require_principal),
     ):
+        require_editor(principal)
         try:
             job = store.retry_job(job_id, workspace_id=principal.workspace_id)
         except KeyError as exc:
@@ -368,6 +377,7 @@ def build_control_router(
         request: Request,
         principal: Principal = Depends(require_principal),
     ):
+        require_editor(principal)
         try:
             feedback = store.upsert_feedback(
                 workspace_id=principal.workspace_id,

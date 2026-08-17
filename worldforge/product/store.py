@@ -456,8 +456,10 @@ class ConversationStore:
         if title is not None:
             values["title"] = title.strip()[:240] or "未命名任务"
         if assigned_to is not ...:
-            if assigned_to is not None and not self.get_membership(workspace_id, str(assigned_to)):
-                raise ValueError("负责人必须是当前工作空间成员")
+            if assigned_to is not None:
+                membership = self.get_membership(workspace_id, str(assigned_to))
+                if not membership or membership["role"] == "viewer":
+                    raise ValueError("负责人必须是可执行任务的工作空间成员")
             values["assigned_to"] = assigned_to
         if pinned is not None:
             values["pinned"] = 1 if pinned else 0

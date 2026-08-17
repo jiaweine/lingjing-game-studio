@@ -305,6 +305,17 @@ def test_role_demotion_and_removal_take_effect_without_relogin():
     assert admin_client.post(
         "/api/workspace/invites", json={"role": "member", "email": None}
     ).status_code == 403
+    assert admin_client.get("/api/conversations").status_code == 200
+    assert admin_client.post(
+        "/api/conversations", json={"title": "viewer cannot write", "scene": "regression"}
+    ).status_code == 403
+    owner_task = owner_client.post(
+        "/api/conversations", json={"title": "owner task", "scene": "regression"}
+    ).json()
+    assert admin_client.post(
+        f"/api/conversations/{owner_task['id']}/messages",
+        json={"content": "viewer should not execute", "asset_ids": [], "provider": "auto"},
+    ).status_code == 403
 
     removed = owner_client.delete(f"/api/workspace/members/{member['id']}")
     assert removed.status_code == 200
@@ -361,3 +372,25 @@ async def test_product_analyzer_enables_evolution_only_after_human_gate():
     config, kwargs = engine.calls[-1]
     assert config.enable_evolution is True
     assert kwargs["session_meta"]["human_feedback_gate"] is True
+
+
+
+def test_read_only_member_cannot_be_task_assignee(tmp_path):
+    store = ConversationStore(tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False)
+    owner = _store_owner(store)
+    viewer_workspace = store.create_user_workspace(
+        email=_email("viewer-assignee"),
+        name="Viewer",
+        password_hash="hashed",
+        workspace_name="Viewer Home",
+    )
+    store.add_member_by_email(owner["workspace_id"], viewer_workspace["email"], "viewer")
+    conversation = store.create_conversation(
+        workspace_id=owner["workspace_id"], created_by=owner["user_id"]
+    )
+    with pytest.raises(ValueError, match="可执行任务"):
+        store.update_conversation(
+            conversation["id"],
+            workspace_id=owner["workspace_id"],
+            assigned_to=viewer_workspace["user_id"],
+        )

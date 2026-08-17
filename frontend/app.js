@@ -140,6 +140,8 @@ function applySession(session) {
   const email = session?.user?.email || "demo@local";
   $("userAvatar").textContent = (email.split("@")[0].slice(0, 1) || "游").toUpperCase();
   $("userAvatar").title = `${email} · ${session?.user?.role || "member"}`;
+  $("newTaskBtn").disabled = !canEdit();
+  $("newTaskBtn").title = canEdit() ? "新建任务" : "只读成员不能新建任务";
 }
 
 function configureInviteAuth() {
@@ -895,6 +897,10 @@ function taskStatusLabel(status) {
   return {active: "进行中", waiting_approval: "等待确认", blocked: "受阻", verified: "已验证", stopped: "已停止"}[status] || "进行中";
 }
 
+function canEdit() {
+  return state.session?.user?.role !== "viewer";
+}
+
 function isManager() {
   return ["owner", "admin"].includes(state.session?.user?.role);
 }
@@ -923,14 +929,19 @@ async function loadConversationControl() {
 function renderTaskActions() {
   if (!state.conversation) return;
   const jobStatus = state.conversation.job?.status;
-  $("retryTaskBtn").hidden = !["failed", "cancelled"].includes(jobStatus);
+  const editable = canEdit();
+  $("retryTaskBtn").hidden = !editable || !["failed", "cancelled"].includes(jobStatus);
+  $("renameTaskBtn").hidden = !editable;
+  $("pinTaskBtn").hidden = !editable;
+  $("archiveTaskBtn").hidden = !editable;
   $("pinTaskBtn").textContent = state.conversation.pinned ? "取消置顶" : "置顶";
   $("archiveTaskBtn").textContent = state.conversation.archived_at ? "恢复" : "归档";
   $("deleteTaskBtn").hidden = !isManager();
   const archived = Boolean(state.conversation.archived_at);
-  $("messageInput").disabled = archived;
-  $("sendBtn").disabled = state.busy || archived;
-  document.querySelectorAll(".attach-action").forEach(button => { button.disabled = archived; });
+  $("messageInput").disabled = archived || !editable;
+  $("messageInput").placeholder = editable ? "描述你要完成的研发任务…" : "只读成员可以查看任务，但不能修改或执行";
+  $("sendBtn").disabled = state.busy || archived || !editable;
+  document.querySelectorAll(".attach-action").forEach(button => { button.disabled = archived || !editable; });
 }
 
 function pendingDeleteApproval() {
@@ -1059,9 +1070,20 @@ function renderFeedbackState() {
   $("messageList").querySelectorAll(".msg.assistant[data-message-id]").forEach(article => {
     const messageId = article.dataset.messageId;
     const feedback = state.feedback[messageId];
-    article.querySelectorAll("[data-feedback]").forEach(button => button.classList.toggle("active", feedback?.verdict === button.dataset.feedback));
-    article.querySelector("[data-evidence-useful]")?.classList.toggle("active", feedback?.evidence_useful === 1 || feedback?.evidence_useful === true);
-    article.querySelector("[data-human-verify]")?.classList.toggle("active", Boolean(feedback?.human_verified));
+    article.querySelectorAll("[data-feedback]").forEach(button => {
+      button.classList.toggle("active", feedback?.verdict === button.dataset.feedback);
+      button.disabled = !canEdit();
+    });
+    const evidenceButton = article.querySelector("[data-evidence-useful]");
+    if (evidenceButton) {
+      evidenceButton.classList.toggle("active", feedback?.evidence_useful === 1 || feedback?.evidence_useful === true);
+      evidenceButton.disabled = !canEdit();
+    }
+    const verifyButton = article.querySelector("[data-human-verify]");
+    if (verifyButton) {
+      verifyButton.classList.toggle("active", Boolean(feedback?.human_verified));
+      verifyButton.disabled = !canEdit();
+    }
   });
 }
 
@@ -1127,7 +1149,7 @@ function renderTeamPanel() {
   if (!assignee) return;
   assignee.innerHTML = '<option value="">未指定</option>' + state.members.map(member => `<option value="${esc(member.id)}">${esc(member.name || member.email)}</option>`).join("");
   assignee.value = state.conversation?.assigned_to || "";
-  assignee.disabled = !state.conversation;
+  assignee.disabled = !state.conversation || !canEdit();
 
   $("memberList").innerHTML = state.members.length ? state.members.map(member => {
     const controls = isManager() ? `<select data-member-role="${esc(member.id)}"><option value="owner">所有者</option><option value="admin">管理员</option><option value="member">成员</option><option value="viewer">只读</option></select><button type="button" data-remove-member="${esc(member.id)}">移除</button>` : `<em>${esc(member.role)}</em>`;
@@ -1367,7 +1389,7 @@ function bindUI() {
       && !event.ctrlKey
       && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)
     ) {
-      newConversation(state.scene);
+      if (canEdit()) newConversation(state.scene);
     }
   });
 }
@@ -1386,8 +1408,13 @@ async function bootWorkspace() {
   }
   if (rows.length) {
     await openConversation(rows[0].id);
-  } else {
+  } else if (canEdit()) {
     await newConversation("battle_review");
+  } else {
+    state.conversation = null;
+    state.messages = [];
+    state.assets = [];
+    toast("当前工作空间还没有任务");
   }
 }
 
