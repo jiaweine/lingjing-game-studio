@@ -16,7 +16,7 @@ from worldforge.models import BeliefState, GoalState, WorldState
 
 
 class LinearGate(BaseModel):
-    """Smooth, evolvable activation gate over normalized world features."""
+    """Smooth evolvable activation gate over normalized world features."""
 
     weights: dict[str, float] = Field(default_factory=dict)
     threshold: float = 0.0
@@ -27,6 +27,26 @@ class LinearGate(BaseModel):
         temperature = max(0.05, float(self.temperature))
         x = max(-40.0, min(40.0, (score - self.threshold) / temperature))
         return 1.0 / (1.0 + math.exp(-x))
+
+
+class FeatureGene(BaseModel):
+    """Evolvable representation scales; no game-policy thresholds live in Python."""
+
+    scales: dict[str, float] = Field(default_factory=lambda: {
+        "gold": 50.0,
+        "attack": 32.0,
+        "armor": 14.0,
+        "enemy_attack": 35.0,
+        "enemy_variance": 15.0,
+        "score_gap": 80.0,
+        "combo": 5.0,
+        "stage": 3.0,
+    })
+    gold_cap: float = 2.0
+    score_clip: float = 2.5
+
+    def scale(self, name: str) -> float:
+        return max(1e-6, float(self.scales.get(name, 1.0)))
 
 
 class SpecialistGene(BaseModel):
@@ -52,11 +72,39 @@ class SpecialistGene(BaseModel):
         return self.raw_score(action, features) * self.activation(features) * self.confidence
 
 
+class SkillGene(BaseModel):
+    gate: LinearGate = Field(default_factory=LinearGate)
+    action_bias: dict[str, float] = Field(default_factory=dict)
+    reliability: float = 1.0
+    enabled: bool = True
+
+
 class BeliefGene(BaseModel):
     observed_uncertainty: float = 0.12
     latent_base: float = 0.35
     variance_scale: float = 20.0
     uncertainty_cap: float = 0.90
+
+
+class MemoryGene(BaseModel):
+    """Evolvable retrieval kernel for continual harness memory."""
+
+    feature_weights: dict[str, float] = Field(default_factory=lambda: {
+        "hp": 1.2,
+        "enemy_hp": 1.2,
+        "energy": 0.8,
+        "gold": 0.4,
+        "attack": 0.4,
+        "armor": 0.4,
+        "enemy_attack": 0.8,
+        "enemy_variance": 0.6,
+        "threat": 1.0,
+        "combo": 0.3,
+        "stage": 0.3,
+    })
+    similarity_temperature: float = 0.7
+    success_bonus: float = 0.15
+    recency_decay: float = 0.002
 
 
 class PlannerGene(BaseModel):
@@ -132,11 +180,13 @@ class UtilityGene(BaseModel):
 
 
 class MutationPolicyGene(BaseModel):
-    """Self-referential mutation policy, inspired by Promptbreeder."""
+    """Self-referential mutation policy inspired by Promptbreeder."""
 
     operator_logits: dict[str, float] = Field(default_factory=lambda: {
         "parameter_jitter": 0.0,
         "gate_mutation": 0.0,
+        "skill_mutation": -0.1,
+        "memory_mutation": -0.1,
         "specialist_split": -0.4,
         "specialist_prune": -0.8,
         "recombine": -0.5,
@@ -148,19 +198,30 @@ class MutationPolicyGene(BaseModel):
 
 
 class HarnessGenome(BaseModel):
-    """The evolvable program surface around the frozen Runtime kernel."""
+    """Complete evolvable program surface around the frozen Runtime kernel."""
 
     genome_id: str = Field(default_factory=lambda: f"hg-{uuid.uuid4().hex[:10]}")
     generation: int = 1
     parent_ids: list[str] = Field(default_factory=list)
     origin: str = "bootstrap"
+    features: FeatureGene = Field(default_factory=FeatureGene)
     belief: BeliefGene = Field(default_factory=BeliefGene)
+    memory: MemoryGene = Field(default_factory=MemoryGene)
     planner: PlannerGene = Field(default_factory=PlannerGene)
     search: SearchGene = Field(default_factory=SearchGene)
     utility: UtilityGene = Field(default_factory=UtilityGene)
     specialists: list[SpecialistGene] = Field(default_factory=list)
-    skill_gates: dict[str, LinearGate] = Field(default_factory=dict)
+    skills: dict[str, SkillGene] = Field(default_factory=dict)
+    # Legacy bootstrap compatibility. New genomes serialize only ``skills``.
+    skill_gates: dict[str, LinearGate] = Field(default_factory=dict, exclude=True)
     mutation_policy: MutationPolicyGene = Field(default_factory=MutationPolicyGene)
+
+    def model_post_init(self, __context) -> None:
+        if not self.skills and self.skill_gates:
+            self.skills = {
+                skill_id: SkillGene(gate=gate)
+                for skill_id, gate in self.skill_gates.items()
+            }
 
     def card(self) -> dict:
         return {
@@ -169,6 +230,7 @@ class HarnessGenome(BaseModel):
             "parents": list(self.parent_ids),
             "origin": self.origin,
             "specialists": len([gene for gene in self.specialists if gene.enabled]),
+            "skills": len([gene for gene in self.skills.values() if gene.enabled]),
         }
 
 
@@ -177,9 +239,11 @@ def state_features(
     belief: BeliefState,
     goal: GoalState,
 ) -> dict[str, float]:
+    representation = HarnessGenomeStore.current().features
     hp = state.player_hp / max(1.0, state.player_max_hp)
     enemy = state.enemy_hp / max(1.0, state.enemy_max_hp)
     remaining = max(0.0, goal.max_steps - state.tick) / max(1.0, goal.max_steps)
+    score_gap = (goal.target_score - state.score) / representation.scale("score_gap")
     return {
         "bias": 1.0,
         "hp": hp,
@@ -187,23 +251,19 @@ def state_features(
         "enemy_hp": enemy,
         "finish_window": 1.0 - enemy,
         "energy": state.energy / max(1.0, state.max_energy),
-        "gold": min(2.0, state.gold / 50.0),
-        "attack": state.attack / 32.0,
-        "armor": state.armor / 14.0,
-        "enemy_attack": state.enemy_attack / 35.0,
-        "enemy_variance": state.enemy_variance / 15.0,
+        "gold": min(representation.gold_cap, state.gold / representation.scale("gold")),
+        "attack": state.attack / representation.scale("attack"),
+        "armor": state.armor / representation.scale("armor"),
+        "enemy_attack": state.enemy_attack / representation.scale("enemy_attack"),
+        "enemy_variance": state.enemy_variance / representation.scale("enemy_variance"),
         "threat": state.threat,
         "uncertainty": belief.uncertainty,
         "remaining": remaining,
         "urgency": 1.0 - remaining,
-        "score_gap": max(
-            -2.5,
-            min(
-                2.5,
-                (goal.target_score - state.score) / max(30.0, abs(goal.target_score)),
-            ),
-        ),
+        "score_gap": max(-representation.score_clip, min(representation.score_clip, score_gap)),
         "health_gap": max(0.0, goal.min_health_ratio - hp),
+        "combo": state.combo / representation.scale("combo"),
+        "stage": state.stage / representation.scale("stage"),
         "observed": 1.0 if state.discovered_enemy_attack is not None else 0.0,
         "economy": 1.0 if "economy" in state.tags else 0.0,
         "exploit": 1.0 if "exploit-test" in state.tags else 0.0,
@@ -213,6 +273,7 @@ def state_features(
 
 
 def lightweight_features(state: WorldState, uncertainty: float) -> dict[str, float]:
+    representation = HarnessGenomeStore.current().features
     hp = state.player_hp / max(1.0, state.player_max_hp)
     enemy = state.enemy_hp / max(1.0, state.enemy_max_hp)
     return {
@@ -222,9 +283,15 @@ def lightweight_features(state: WorldState, uncertainty: float) -> dict[str, flo
         "enemy_hp": enemy,
         "finish_window": 1.0 - enemy,
         "energy": state.energy / max(1.0, state.max_energy),
-        "gold": min(2.0, state.gold / 50.0),
+        "gold": min(representation.gold_cap, state.gold / representation.scale("gold")),
+        "attack": state.attack / representation.scale("attack"),
+        "armor": state.armor / representation.scale("armor"),
+        "enemy_attack": state.enemy_attack / representation.scale("enemy_attack"),
+        "enemy_variance": state.enemy_variance / representation.scale("enemy_variance"),
         "threat": state.threat,
         "uncertainty": uncertainty,
+        "combo": state.combo / representation.scale("combo"),
+        "stage": state.stage / representation.scale("stage"),
         "observed": 1.0 if state.discovered_enemy_attack is not None else 0.0,
         "economy": 1.0 if "economy" in state.tags else 0.0,
         "exploit": 1.0 if "exploit-test" in state.tags else 0.0,
@@ -234,11 +301,7 @@ def lightweight_features(state: WorldState, uncertainty: float) -> dict[str, flo
 
 
 class HarnessGenomeStore:
-    """Frozen-kernel owner of the active evolvable harness genome.
-
-    Candidate evaluation uses a ContextVar override, so speculative genomes cannot replace
-    the canonical harness until an independent promotion gate accepts them.
-    """
+    """Frozen-kernel owner of the active evolvable harness genome."""
 
     _lock = RLock()
     _active: HarnessGenome | None = None
