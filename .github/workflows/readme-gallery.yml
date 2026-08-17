@@ -62,7 +62,34 @@ jobs:
           else
             gh release edit "$ASSET_TAG" --prerelease
           fi
-          gh release upload "$ASSET_TAG" docs/assets/readme/*.png --clobber
+
+          publish_asset() {
+            local file="$1"
+            local attempt
+            for attempt in 1 2 3 4 5 6; do
+              echo "Publishing ${file} (attempt ${attempt}/6)"
+              if gh release upload "$ASSET_TAG" "$file" --clobber; then
+                return 0
+              fi
+              sleep $((attempt * 5))
+            done
+            echo "Failed to publish ${file} after 6 attempts" >&2
+            return 1
+          }
+
+          for file in \
+            docs/assets/readme/auth.png \
+            docs/assets/readme/workspace-empty.png \
+            docs/assets/readme/upload.png \
+            docs/assets/readme/task-running.png \
+            docs/assets/readme/workspace.png \
+            docs/assets/readme/evidence.png \
+            docs/assets/readme/multimodal.png \
+            docs/assets/readme/cover.png
+          do
+            publish_asset "$file"
+          done
+
           python - <<'PY'
           import json
           import os
@@ -75,9 +102,13 @@ jobs:
           data = json.loads(subprocess.check_output([
               'gh', 'release', 'view', os.environ['ASSET_TAG'], '--json', 'assets,isPrerelease,url'
           ], text=True))
-          assets = {asset['name'] for asset in data['assets']}
-          assert names <= assets, (names - assets)
+          assets = {asset['name']: asset for asset in data['assets']}
+          assert names <= set(assets), (names - set(assets))
           assert data['isPrerelease'] is True, data
+          for name in names:
+              asset = assets[name]
+              assert int(asset.get('size') or 0) > 0, asset
+              assert asset.get('state') == 'uploaded', asset
           print('release-assets-ok', sorted(names), data['url'])
           PY
       - name: Verify published README images on GitHub
