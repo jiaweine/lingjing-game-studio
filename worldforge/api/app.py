@@ -670,8 +670,11 @@ async def _run_analysis_job(
     try:
         async def sink(type_, payload):
             ensure_active()
+            event_payload = (
+                {**payload, "job_id": job_id} if job_id else payload
+            )
             await _product_emit(
-                conversation_id, workspace_id, type_, payload
+                conversation_id, workspace_id, type_, event_payload
             )
 
         ensure_active()
@@ -683,7 +686,14 @@ async def _run_analysis_job(
             sink=sink,
             history=history,
         )
-        ensure_active()
+        if job_id:
+            message = product_store.complete_job_answer(
+                job_id,
+                workspace_id=workspace_id,
+                content=result["answer"],
+                payload=result,
+            )
+            return message is not None
         message = product_store.add_message(
             conversation_id,
             "assistant",
@@ -814,7 +824,7 @@ async def conversation_message(
                 )
             if claimed.rowcount == 0:
                 return
-            completed = await _run_analysis_job(
+            await _run_analysis_job(
                 conversation_id=conversation_id,
                 workspace_id=principal.workspace_id,
                 text=req.content,
@@ -823,8 +833,6 @@ async def conversation_message(
                 assets=assets,
                 job_id=job["id"],
             )
-            if completed:
-                product_store.finish_job(job["id"])
         except Exception as exc:
             product_store.fail_job(job["id"], repr(exc), max_attempts=1)
 

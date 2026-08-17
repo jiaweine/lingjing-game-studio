@@ -29,7 +29,7 @@ async def run_worker():
                     )
                 except KeyError:
                     pass
-            completed = await _run_analysis_job(
+            await _run_analysis_job(
                 conversation_id=job["conversation_id"],
                 workspace_id=job["workspace_id"],
                 text=str(payload.get("text", "")),
@@ -38,8 +38,6 @@ async def run_worker():
                 assets=assets,
                 job_id=job["id"],
             )
-            if completed:
-                product_store.finish_job(job["id"])
         except Exception as exc:
             product_store.fail_job(job["id"], repr(exc))
 

@@ -519,14 +519,26 @@ function renderSuggestions(rows = []) {
 }
 
 function renderEventHistory() {
-  const progress = state.events.filter(event => event.type === "progress");
-  if (progress.length) {
-    state.progress = progress.map(event => event.payload);
-    renderProgress();
-  } else if (!state.messages.length) {
-    state.progress = [];
-    renderProgress();
+  const job = state.conversation?.job;
+  const allProgress = state.events.filter(event => event.type === "progress");
+  const taggedProgress = job?.id
+    ? allProgress.filter(event => event.payload?.job_id === job.id)
+    : [];
+  const useTagged = Boolean(
+    job?.id && (["queued", "running"].includes(job.status) || taggedProgress.length)
+  );
+  const progress = useTagged ? taggedProgress : allProgress;
+  state.progress = progress.map(event => event.payload);
+  renderProgress();
+
+  if (["queued", "running"].includes(job?.status) && !progress.length) {
+    $("taskState").textContent = job.status === "queued" ? "等待执行" : "准备执行";
+    $("taskStateHint").textContent = "任务已接收，正在准备执行上下文。";
+    document.querySelector(".task-state-card").className = "task-state-card running";
+    return;
   }
+  if (state.busy) return;
+
   const terminal = [...state.events].reverse().find(event =>
     ["answer.cancelled", "answer.error"].includes(event.type)
   );
@@ -611,6 +623,7 @@ function handleEvent(event) {
   state.events.push(event);
 
   if (event.type === "progress") {
+    if (state.conversation?.job) state.conversation.job.status = "running";
     state.progress.push(event.payload);
     renderProgress();
     $("thinkingCard").hidden = false;
@@ -628,6 +641,7 @@ function handleEvent(event) {
   }
 
   if (event.type === "answer.ready") {
+    if (state.conversation?.job) state.conversation.job.status = "completed";
     setBusy(false);
     $("thinkingCard").hidden = true;
     const message = event.payload.message;
@@ -647,12 +661,15 @@ function handleEvent(event) {
   }
 
   if (event.type === "answer.cancelled") {
+    const wasBusy = state.busy;
+    if (state.conversation?.job) state.conversation.job.status = "cancelled";
     markCancelled();
-    toast("已停止当前任务");
+    if (wasBusy) toast("已停止当前任务");
     return;
   }
 
   if (event.type === "answer.error") {
+    if (state.conversation?.job) state.conversation.job.status = "failed";
     setBusy(false);
     $("thinkingCard").hidden = true;
     $("taskState").textContent = "执行中断";
@@ -728,6 +745,12 @@ async function sendMessage() {
         }),
       }
     );
+    if (response.job_id) {
+      state.conversation.job = {
+        id: response.job_id,
+        status: response.status === "queued" ? "queued" : "running",
+      };
+    }
     setBusy(true, response.job_id || null);
     const serverMessage = response.message;
     if (serverMessage) {
@@ -757,6 +780,7 @@ async function stopCurrentJob() {
       body: JSON.stringify({}),
     });
     if (job.status === "cancelled") {
+      if (state.conversation?.job) state.conversation.job.status = "cancelled";
       markCancelled();
       toast("已停止当前任务");
     }
