@@ -1,0 +1,192 @@
+{
+  "genome_id": "hg-bootstrap",
+  "generation": 1,
+  "parent_ids": [],
+  "origin": "bootstrap-prior",
+  "belief": {
+    "observed_uncertainty": 0.12,
+    "latent_base": 0.35,
+    "variance_scale": 20.0,
+    "uncertainty_cap": 0.9
+  },
+  "planner": {
+    "skill_weight": 1.0,
+    "memory_weight": 2.2,
+    "policy_weight": 1.65,
+    "specialist_weight": 1.0,
+    "specialist_cap": 4.5,
+    "repeat_penalty": 4.8,
+    "disagreement_cap": 4.0,
+    "scout_base": 1.15,
+    "scout_gain": 1.35,
+    "defend_gain": 0.22,
+    "commit_base": 0.28,
+    "commit_threat_gain": 0.42,
+    "retreat_low_gain": -0.12,
+    "retreat_high_gain": 0.08,
+    "retreat_threat_boundary": 0.7,
+    "default_risk_friction": 0.08
+  },
+  "search": {
+    "mean_weight": 1.0,
+    "dispersion_penalty": 0.45,
+    "downside_weight": 0.2,
+    "success_bonus": 16.0,
+    "width_base": 1.5,
+    "width_uncertainty_gain": 2.0,
+    "width_threat_gain": 1.2,
+    "horizon_base": 1.0,
+    "horizon_uncertainty_gain": 2.0,
+    "rollout_base": 1.0,
+    "rollout_uncertainty_gain": 2.0
+  },
+  "utility": {
+    "progress_weight": 24.0,
+    "health_weight": 17.0,
+    "gold_weight": 0.04,
+    "threat_penalty": 26.0,
+    "violation_penalty": 8.0,
+    "victory_bonus": 70.0,
+    "defeat_penalty": 90.0
+  },
+  "specialists": [
+    {
+      "gene_id": "core-combat",
+      "role": "CombatAnalyst",
+      "mode": "core",
+      "gate": {"weights": {"bias": 1.0}, "threshold": 0.0, "temperature": 0.25},
+      "confidence": 0.78,
+      "action_bias": {"attack": 1.0, "heavy_attack": 0.25, "cast": 0.2},
+      "action_feature_weights": {
+        "attack": {"urgency": 1.1},
+        "heavy_attack": {"finish_window": 3.2, "energy": 1.4, "hp_missing": -1.0},
+        "cast": {"finish_window": 2.8, "energy": 1.2, "hp_missing": -0.8}
+      },
+      "enabled": true
+    },
+    {
+      "gene_id": "core-risk",
+      "role": "RiskAnalyst",
+      "mode": "core",
+      "gate": {"weights": {"bias": 1.0}, "threshold": 0.0, "temperature": 0.25},
+      "confidence": 0.86,
+      "action_bias": {"defend": 0.2, "heal": -0.2, "retreat": -1.0},
+      "action_feature_weights": {
+        "defend": {"hp_missing": 2.5, "threat": 1.7},
+        "heal": {"hp_missing": 7.0},
+        "retreat": {"hp_missing": 4.5, "threat": 1.2},
+        "heavy_attack": {"hp_missing": -3.8, "threat": -0.8},
+        "cast": {"hp_missing": -3.4, "threat": -0.7},
+        "scout": {"uncertainty": 2.8}
+      },
+      "enabled": true
+    },
+    {
+      "gene_id": "core-progress",
+      "role": "ProgressAnalyst",
+      "mode": "core",
+      "gate": {"weights": {"bias": 1.0}, "threshold": 0.0, "temperature": 0.25},
+      "confidence": 0.74,
+      "action_bias": {"attack": 0.8, "heavy_attack": 0.7, "cast": 0.65},
+      "action_feature_weights": {
+        "attack": {"urgency": 2.6},
+        "heavy_attack": {"urgency": 2.8},
+        "cast": {"urgency": 2.7},
+        "farm": {"urgency": -3.0},
+        "scout": {"urgency": -1.0}
+      },
+      "enabled": true
+    },
+    {
+      "gene_id": "core-economy",
+      "role": "EconomyAnalyst",
+      "mode": "core",
+      "gate": {"weights": {"economy": 1.4, "exploit": 1.8, "gold": 0.25}, "threshold": 0.55, "temperature": 0.35},
+      "confidence": 0.72,
+      "action_bias": {"farm": 0.4, "buy_armor": 0.6, "buy_blade": 0.5},
+      "action_feature_weights": {
+        "farm": {"gold": -0.8, "exploit": -3.0, "remaining": 0.7},
+        "buy_armor": {"gold": 0.7, "threat": 1.1},
+        "buy_blade": {"gold": 0.65, "finish_window": 0.6}
+      },
+      "enabled": true
+    },
+    {
+      "gene_id": "dynamic-mechanics",
+      "role": "MechanicsProbe",
+      "mode": "dynamic",
+      "gate": {"weights": {"uncertainty": 2.2, "observed": -2.4}, "threshold": 0.55, "temperature": 0.25},
+      "confidence": 0.82,
+      "action_bias": {"scout": 1.3, "defend": 0.15},
+      "action_feature_weights": {
+        "scout": {"uncertainty": 2.4, "threat": 0.3},
+        "heavy_attack": {"uncertainty": -1.2, "threat": -0.8},
+        "cast": {"uncertainty": -1.0, "threat": -0.7}
+      },
+      "enabled": true
+    },
+    {
+      "gene_id": "dynamic-survival",
+      "role": "SurvivalPlanner",
+      "mode": "dynamic",
+      "gate": {"weights": {"hp_missing": 1.8, "threat": 1.35}, "threshold": 1.05, "temperature": 0.3},
+      "confidence": 0.84,
+      "action_bias": {"heal": 0.8, "defend": 0.7, "retreat": 0.1},
+      "action_feature_weights": {
+        "heal": {"hp_missing": 3.6},
+        "defend": {"hp_missing": 2.2, "threat": 1.4},
+        "retreat": {"hp_missing": 1.8, "threat": 0.7},
+        "heavy_attack": {"hp_missing": -2.0, "threat": -0.8},
+        "cast": {"hp_missing": -1.7, "threat": -0.7}
+      },
+      "enabled": true
+    },
+    {
+      "gene_id": "dynamic-burst",
+      "role": "FinishWindowPlanner",
+      "mode": "dynamic",
+      "gate": {"weights": {"finish_window": 2.0, "energy": 1.1}, "threshold": 1.15, "temperature": 0.3},
+      "confidence": 0.76,
+      "action_bias": {"heavy_attack": 0.7, "cast": 0.6, "attack": 0.25},
+      "action_feature_weights": {
+        "heavy_attack": {"finish_window": 2.2, "energy": 1.1},
+        "cast": {"finish_window": 1.9, "energy": 1.0},
+        "farm": {"urgency": -1.5}
+      },
+      "enabled": true
+    },
+    {
+      "gene_id": "dynamic-economy",
+      "role": "EconomyAuditor",
+      "mode": "dynamic",
+      "gate": {"weights": {"economy": 1.7, "exploit": 2.0}, "threshold": 0.8, "temperature": 0.25},
+      "confidence": 0.76,
+      "action_bias": {"farm": 0.25, "buy_armor": 0.5, "buy_blade": 0.35},
+      "action_feature_weights": {
+        "farm": {"exploit": -3.2, "remaining": 0.7},
+        "buy_armor": {"threat": 1.0, "gold": 0.6},
+        "buy_blade": {"finish_window": 0.8, "gold": 0.55}
+      },
+      "enabled": true
+    }
+  ],
+  "skill_gates": {
+    "survival_guard": {"weights": {"hp_missing": 1.7, "threat": 1.3}, "threshold": 0.9, "temperature": 0.3},
+    "burst_window": {"weights": {"finish_window": 1.8, "energy": 1.1}, "threshold": 1.15, "temperature": 0.3},
+    "information_first": {"weights": {"uncertainty": 2.0, "observed": -2.0}, "threshold": 0.55, "temperature": 0.25},
+    "economy_guard": {"weights": {"economy": 1.4, "exploit": 2.0}, "threshold": 0.75, "temperature": 0.25}
+  },
+  "mutation_policy": {
+    "operator_logits": {
+      "parameter_jitter": 0.0,
+      "gate_mutation": 0.0,
+      "specialist_split": -0.4,
+      "specialist_prune": -0.8,
+      "recombine": -0.5,
+      "meta_mutation": -0.7
+    },
+    "sigma": 0.18,
+    "temperature": 0.75,
+    "exploration": 0.55
+  }
+}
