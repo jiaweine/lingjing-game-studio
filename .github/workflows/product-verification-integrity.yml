@@ -1,0 +1,58 @@
+name: Product verification integrity
+
+on:
+  push:
+    branches:
+      - agent/product-completion
+
+permissions:
+  contents: write
+
+jobs:
+  verify-product:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/product-completion
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Apply integrity fixes
+        run: python scripts/_final_verification_integrity.py
+      - name: Compile Python
+        run: python -m compileall -q worldforge migrations scripts tests
+      - name: Run tests
+        run: pytest -q
+      - name: Check frontend syntax
+        run: node --check frontend/app.js
+      - name: Run backend product E2E
+        run: python scripts/product_backend_e2e.py
+      - name: Run browser product E2E
+        run: python scripts/product_ui_e2e.py
+      - name: Verify delivery mechanics are gone
+        run: |
+          test ! -e scripts/_final_verification_integrity.py
+          test ! -e .github/workflows/product-verification-integrity.yml
+          test ! -e scripts/_final_product_audit.py
+          test ! -e scripts/_final_race_audit.py
+          test ! -e .github/workflows/product-final-audit.yml
+          test ! -e scripts/_close_product_gaps.py
+          test ! -e scripts/_finalize_product_completion.py
+          test ! -e scripts/_enforce_product_permissions.py
+      - name: Commit verified product
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "fix: enforce trustworthy product verification"
+            git push origin HEAD:agent/product-completion
+          fi
