@@ -1,0 +1,974 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{path}: expected 1 match, found {count}")
+    file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+# Customer surface: remove hidden/dead controls and make remaining affordances truthful.
+replace_once(
+    "frontend/index.html",
+    '''    <button class="workspace-switch" id="workspaceSwitch" type="button">
+      <span class="workspace-beacon"></span>
+      <span class="workspace-copy">
+        <small>工作空间</small>
+        <b id="workspaceName">本地演示空间</b>
+      </span>
+      <span class="chevron">⌄</span>
+    </button>''',
+    '''    <div class="workspace-switch workspace-static" aria-label="当前工作空间">
+      <span class="workspace-beacon"></span>
+      <span class="workspace-copy">
+        <small>工作空间</small>
+        <b id="workspaceName">本地演示空间</b>
+      </span>
+    </div>''',
+)
+replace_once(
+    "frontend/index.html",
+    '    <button class="top-action" id="providerBtn" type="button">推理服务</button>\n',
+    "",
+)
+replace_once(
+    "frontend/index.html",
+    '''
+    <div class="left-footer">
+      <button id="settingsBtn" class="quiet-button" type="button">
+        <span>设置</span><span>⌘ ,</span>
+      </button>
+    </div>''',
+    "",
+)
+replace_once(
+    "frontend/index.html",
+    '''      <div class="head-actions">
+        <label class="provider-select">
+          <span>推理</span>
+          <select id="providerSelect" aria-label="推理服务">
+            <option value="auto">自动选择</option>
+          </select>
+        </label>
+        <button class="ghost-button" id="shareBtn" type="button">分享</button>
+        <button class="ghost-button square" id="moreBtn" type="button" title="更多">···</button>
+      </div>''',
+    '''      <div class="head-actions">
+        <button class="ghost-button" id="copyLinkBtn" type="button">复制链接</button>
+      </div>''',
+)
+replace_once(
+    "frontend/index.html",
+    '            <strong id="thinkingPercent">0%</strong>',
+    '''            <button id="stopBtn" class="stop-btn" type="button" hidden>停止</button>
+            <strong id="thinkingPercent">0%</strong>''',
+)
+replace_once(
+    "frontend/index.html",
+    '      <div class="privacy-note">任务素材按 工作空间隔离；选择第三方推理服务时遵循对应企业数据策略。</div>',
+    '      <div class="privacy-note">任务素材按工作空间隔离；推理资源由系统按任务输入自动路由。</div>',
+)
+replace_once(
+    "frontend/index.html",
+    '''
+<div class="modal-backdrop" id="providerModal" hidden>
+  <div class="modal provider-modal">
+    <div class="modal-head">
+      <div>
+        <span class="eyebrow">INFERENCE SERVICES</span>
+        <h3>推理服务</h3>
+        <p>系统负责执行策略与结果验证；这里的服务只提供可替换的推理能力。</p>
+      </div>
+      <button class="modal-close" type="button">×</button>
+    </div>
+    <div id="providerGrid" class="provider-grid"></div>
+    <div class="modal-foot">
+      <span>优先按输入类型、可用性与成本自动选择，也可以手动固定。</span>
+    </div>
+  </div>
+</div>
+''',
+    "\n",
+)
+replace_once("frontend/index.html", "<span>Workspace</span>", "<span>工作空间</span>")
+replace_once(
+    "frontend/index.html",
+    "团队任务、素材、结果与审计记录按 工作空间隔离。",
+    "团队任务、素材、结果与审计记录按工作空间隔离。",
+)
+
+# Frontend: remove provider UI code, make job control durable, and avoid redundant replay/fetch work.
+replace_once("frontend/app.js", "  providers: [],\n  pending: [],", "  pending: [],")
+replace_once(
+    "frontend/app.js",
+    "  busy: false,\n  progress: [],",
+    "  busy: false,\n  jobId: null,\n  progress: [],",
+)
+replace_once("frontend/app.js", '      toast("Workspace 已创建");', '      toast("工作空间已创建");')
+replace_once(
+    "frontend/app.js",
+    '''async function loadProviders() {
+  try {
+    state.providers = await api("/api/providers");
+  } catch {
+    state.providers = [];
+  }
+  const select = $("providerSelect");
+  if (select) select.innerHTML = '<option value="auto">自动选择</option>';
+}
+
+function renderProviderModal() {
+  $("providerGrid").innerHTML = state.providers
+    .filter(provider => provider.key !== "auto")
+    .map(provider => `
+      <div class="provider-card">
+        <div class="provider-logo">${esc((provider.name || "?").slice(0, 2))}</div>
+        <div>
+          <b>${esc(provider.name)} <small>${esc(provider.vendor || "")}</small></b>
+          <p>${esc(provider.note || "可替换推理服务")}</p>
+          <small>
+            ${provider.multimodal ? "支持图像 / 多模态" : "文本推理"}
+            ${provider.supports_video ? " · 视频" : ""}
+            ${provider.supports_audio ? " · 音频" : ""}
+            ${provider.model ? ` · ${esc(provider.model)}` : ""}
+          </small>
+        </div>
+        <span class="provider-status ${provider.configured ? "ok" : ""}">
+          ${provider.configured ? "可用" : "未配置"}
+        </span>
+      </div>
+    `).join("");
+}
+
+''',
+    "",
+)
+replace_once(
+    "frontend/app.js",
+    '''  document.querySelectorAll(".conv-item").forEach(item => {
+    item.onclick = () => openConversation(item.dataset.id);
+  });
+}''',
+    '''  document.querySelectorAll(".conv-item").forEach(item => {
+    item.onclick = () => openConversation(item.dataset.id);
+  });
+  return rows;
+}''',
+)
+replace_once(
+    "frontend/app.js",
+    '''function setScene(scene) {
+  state.scene = scene;
+  document.querySelectorAll(".scene-item").forEach(element => {
+    element.classList.toggle("active", element.dataset.scene === scene);
+  });
+  $("conversationTitle").textContent = SCENE_NAME[scene] || "研发任务";
+  $("conversationMeta").textContent = "把目标说清楚，系统会持续执行到得到可核验结果。";
+}
+
+''',
+    '''function setScene(scene) {
+  state.scene = scene;
+  document.querySelectorAll(".scene-item").forEach(element => {
+    element.classList.toggle("active", element.dataset.scene === scene);
+  });
+  $("conversationTitle").textContent = SCENE_NAME[scene] || "研发任务";
+  $("conversationMeta").textContent = "把目标说清楚，系统会持续执行到得到可核验结果。";
+}
+
+function setBusy(busy, jobId = null) {
+  state.busy = busy;
+  state.jobId = busy ? (jobId || state.jobId) : null;
+  $("sendBtn").disabled = busy;
+  $("stopBtn").hidden = !(busy && state.jobId);
+  $("stopBtn").disabled = false;
+  $("stopBtn").textContent = "停止";
+}
+
+function markCancelled() {
+  setBusy(false);
+  $("thinkingCard").hidden = true;
+  $("taskState").textContent = "已停止";
+  $("taskStateHint").textContent = "当前执行已停止，可以修改目标后重新开始。";
+  document.querySelector(".task-state-card").className = "task-state-card cancelled";
+}
+
+''',
+)
+replace_once(
+    "frontend/app.js",
+    '''  state.pending = [];
+  state.ws?.close();
+  syncConversationUrl(conversation.id);''',
+    '''  state.pending = [];
+  setBusy(false);
+  state.ws?.close();
+  syncConversationUrl(conversation.id);''',
+)
+replace_once(
+    "frontend/app.js",
+    '''  state.pending = [];
+  setScene(conversation.scene || "battle_review");
+  state.ws?.close();''',
+    '''  state.pending = [];
+  setBusy(["queued", "running"].includes(conversation.job?.status), conversation.job?.id || null);
+  setScene(conversation.scene || "battle_review");
+  state.ws?.close();''',
+)
+replace_once(
+    "frontend/app.js",
+    '''  $("conversationMeta").textContent = state.messages.length
+    ? `${Math.ceil(state.messages.length / 2)} 次任务推进 · ${state.assets.length} 份素材`
+    : "把目标说清楚，系统会持续执行到得到可核验结果。";''',
+    '''  const turns = state.messages.filter(message => message.role === "user").length;
+  $("conversationMeta").textContent = state.messages.length
+    ? `${turns} 次任务推进 · ${state.assets.length} 份素材`
+    : "把目标说清楚，系统会持续执行到得到可核验结果。";''',
+)
+replace_once(
+    "frontend/app.js",
+    '''function renderEventHistory() {
+  const progress = state.events.filter(event => event.type === "progress");
+  if (progress.length) {
+    state.progress = progress.map(event => event.payload);
+    renderProgress();
+  } else if (!state.messages.length) {
+    state.progress = [];
+    renderProgress();
+  }
+}''',
+    '''function renderEventHistory() {
+  const progress = state.events.filter(event => event.type === "progress");
+  if (progress.length) {
+    state.progress = progress.map(event => event.payload);
+    renderProgress();
+  } else if (!state.messages.length) {
+    state.progress = [];
+    renderProgress();
+  }
+  const terminal = [...state.events].reverse().find(event =>
+    ["answer.cancelled", "answer.error"].includes(event.type)
+  );
+  if (terminal?.type === "answer.cancelled") markCancelled();
+  if (terminal?.type === "answer.error") {
+    setBusy(false);
+    $("taskState").textContent = "执行中断";
+    $("taskStateHint").textContent = "本次执行没有完成，可以重试或补充要求。";
+    document.querySelector(".task-state-card").className = "task-state-card error";
+  }
+}''',
+)
+replace_once(
+    "frontend/app.js",
+    '''  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(
+    `${protocol}://${location.host}/ws/conversations/${conversationId}`
+  );''',
+    '''  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const afterId = state.events.reduce(
+    (latest, event) => Math.max(latest, Number(event.id) || 0),
+    0,
+  );
+  const socket = new WebSocket(
+    `${protocol}://${location.host}/ws/conversations/${conversationId}?after_id=${afterId}`
+  );''',
+)
+replace_once("frontend/app.js", "  socket.onerror = () => {};\n", "")
+replace_once(
+    "frontend/app.js",
+    '''  if (event.type === "answer.ready") {
+    state.busy = false;
+    $("sendBtn").disabled = false;
+    $("thinkingCard").hidden = true;''',
+    '''  if (event.type === "answer.ready") {
+    setBusy(false);
+    $("thinkingCard").hidden = true;''',
+)
+replace_once(
+    "frontend/app.js",
+    '''  if (event.type === "answer.error") {
+    state.busy = false;
+    $("sendBtn").disabled = false;
+    $("thinkingCard").hidden = true;
+    $("taskState").textContent = "执行中断";
+    $("taskStateHint").textContent = "本次执行没有完成，可以重试或补充要求。";
+    toast(event.payload?.message || "执行失败");
+  }
+}''',
+    '''  if (event.type === "answer.cancelled") {
+    markCancelled();
+    toast("已停止当前任务");
+    return;
+  }
+
+  if (event.type === "answer.error") {
+    setBusy(false);
+    $("thinkingCard").hidden = true;
+    $("taskState").textContent = "执行中断";
+    $("taskStateHint").textContent = "本次执行没有完成，可以重试或补充要求。";
+    document.querySelector(".task-state-card").className = "task-state-card error";
+    toast(event.payload?.message || "执行失败");
+  }
+}''',
+)
+replace_once("frontend/app.js", '''  state.busy = true;
+  $("sendBtn").disabled = true;''', "  setBusy(true);")
+replace_once(
+    "frontend/app.js",
+    '''    const serverMessage = response.message;
+    if (serverMessage) {''',
+    '''    setBusy(true, response.job_id || null);
+    const serverMessage = response.message;
+    if (serverMessage) {''',
+)
+replace_once(
+    "frontend/app.js",
+    '''  } catch (error) {
+    state.busy = false;
+    $("sendBtn").disabled = false;
+    $("thinkingCard").hidden = true;''',
+    '''  } catch (error) {
+    setBusy(false);
+    $("thinkingCard").hidden = true;''',
+)
+replace_once(
+    "frontend/app.js",
+    "function autoSize() {",
+    '''async function stopCurrentJob() {
+  if (!state.busy || !state.jobId) return;
+  const button = $("stopBtn");
+  button.disabled = true;
+  button.textContent = "停止中";
+  try {
+    const job = await api(`/api/jobs/${state.jobId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    if (job.status === "cancelled") {
+      markCancelled();
+      toast("已停止当前任务");
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "停止";
+    toast(error.message);
+  }
+}
+
+function autoSize() {''',
+)
+replace_once(
+    "frontend/app.js",
+    '''  $("sendBtn").onclick = sendMessage;
+  $("messageInput").oninput = autoSize;''',
+    '''  $("sendBtn").onclick = sendMessage;
+  $("stopBtn").onclick = stopCurrentJob;
+  $("messageInput").oninput = autoSize;''',
+)
+replace_once(
+    "frontend/app.js",
+    '''  $("providerBtn").onclick = () => {
+    $("providerModal").hidden = false;
+  };
+  $("providerModal").querySelector(".modal-close").onclick = () => {
+    $("providerModal").hidden = true;
+  };
+  $("providerModal").onclick = event => {
+    if (event.target === $("providerModal")) $("providerModal").hidden = true;
+  };
+
+''',
+    "",
+)
+replace_once("frontend/app.js", '  $("shareBtn").onclick = async () => {', '  $("copyLinkBtn").onclick = async () => {')
+replace_once(
+    "frontend/app.js",
+    '''
+  $("moreBtn").onclick = () => toast("更多任务操作会在这里集中管理");
+  $("settingsBtn").onclick = () => toast("Workspace 设置即将开放");
+''',
+    "\n",
+)
+replace_once(
+    "frontend/app.js",
+    '''async function bootWorkspace() {
+  await Promise.allSettled([
+    loadProviders(),
+    loadConversations(),
+    loadServiceHealth(),
+  ]);
+  const rows = await api("/api/conversations");''',
+    '''async function bootWorkspace() {
+  await loadServiceHealth();
+  const rows = await loadConversations();''',
+)
+
+# CSS: no hidden feature shells; semantic motion stays restrained and still obeys reduced-motion.
+replace_once(
+    "frontend/app.css",
+    ".workspace-switch:hover{transform:translateY(-1px);border-color:#bcc7d6;box-shadow:0 8px 22px rgba(36,49,74,.08)}\n",
+    ".workspace-static{cursor:default}\n",
+)
+replace_once("frontend/app.css", "#providerBtn,.provider-select,#providerModal,.answer-provider{display:none!important}\n", "")
+replace_once(
+    "frontend/app.css",
+    ".left-footer{padding-top:10px;border-top:1px solid var(--line)}.quiet-button{width:100%;height:34px;border:0;border-radius:8px;background:transparent;color:var(--ink-3);display:flex;justify-content:space-between;align-items:center;padding:0 8px;font-size:10px}.quiet-button:hover{background:#fff;color:var(--ink-2)}",
+    "",
+)
+replace_once("frontend/app.css", ".ghost-button.square{width:34px;padding:0;font-size:16px}", "")
+replace_once(
+    "frontend/app.css",
+    '''.thinking-main strong{font:720 13px/1 var(--font-display);color:var(--accent)}@keyframes orbit{0%,100%{transform:scale(.78)}50%{transform:scale(1.06)}}''',
+    '''.thinking-main strong{font:720 13px/1 var(--font-display);color:var(--accent)}@keyframes orbit{0%,100%{transform:scale(.78)}50%{transform:scale(1.06)}}
+@keyframes revealUp{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+@keyframes settle{0%{transform:scale(.992)}100%{transform:scale(1)}}
+.thinking-card:not([hidden]){animation:revealUp .24s var(--ease) both}.stop-btn{height:30px;padding:0 10px;border:1px solid #e4bac0;border-radius:9px;background:#fff;color:var(--danger);font-size:10px}.stop-btn:hover{background:var(--danger-soft);border-color:#d99aa2}.stop-btn:disabled{opacity:.55;cursor:wait}''',
+)
+replace_once(
+    "frontend/app.css",
+    ".right-panel{display:none}.right-panel.active{display:block}",
+    ".right-panel{display:none}.right-panel.active{display:block;animation:revealUp .2s var(--ease) both}",
+)
+replace_once(
+    "frontend/app.css",
+    ".task-state-card.done .state-orb i{background:var(--success)}",
+    ".task-state-card.done{animation:settle .22s var(--ease)}.task-state-card.done .state-orb i{background:var(--success)}.task-state-card.cancelled .state-orb{background:var(--warning-soft)}.task-state-card.cancelled .state-orb i{background:var(--warning)}.task-state-card.error .state-orb{background:var(--danger-soft)}.task-state-card.error .state-orb i{background:var(--danger)}",
+)
+replace_once(
+    "frontend/app.css",
+    ".progress-row b{display:block;font-size:10.5px;font-weight:680}",
+    ".progress-row:last-child{animation:revealUp .22s var(--ease) both}.progress-row b{display:block;font-size:10.5px;font-weight:680}",
+)
+replace_once(
+    "frontend/app.css",
+    ".evidence-card,.asset-card{border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden;box-shadow:var(--shadow-sm)}",
+    ".evidence-card,.asset-card{border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden;box-shadow:var(--shadow-sm)}.evidence-card{animation:revealUp .24s var(--ease) both}.evidence-card:nth-child(2){animation-delay:.04s}.evidence-card:nth-child(3){animation-delay:.08s}",
+)
+replace_once(
+    "frontend/app.css",
+    ".modal{width:min(720px,100%);max-height:calc(100vh - 40px);overflow:auto;border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 28px 90px rgba(23,32,51,.20)}.modal-head{padding:22px 22px 14px;display:flex;gap:18px;border-bottom:1px solid var(--line)}.modal-head>div{flex:1}.modal-head h3{margin:5px 0 5px;font:730 20px/1.2 var(--font-display)}.modal-head p{margin:0;color:var(--ink-3);font-size:10px}.modal-close{width:32px;height:32px;border:0;border-radius:9px;background:var(--panel-soft);color:var(--ink-2);font-size:18px}.modal-close:hover{background:#e9edf3}.modal-foot{padding:12px 20px;color:var(--ink-3);font-size:9px;border-top:1px solid var(--line)}",
+    ".modal{width:min(720px,100%);max-height:calc(100vh - 40px);overflow:auto;border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 28px 90px rgba(23,32,51,.20)}",
+)
+
+# Product job control: cancellation is persisted and remains terminal.
+replace_once(
+    "worldforge/product/store.py",
+    " def claim_job(self,worker_id):",
+    ''' def latest_job(self,conversation_id,*,workspace_id):
+  with self.engine.connect() as c:row=c.execute(select(self.jobs).where((self.jobs.c.conversation_id==conversation_id)&(self.jobs.c.workspace_id==workspace_id)).order_by(self.jobs.c.created_at.desc()).limit(1)).first()
+  return self._json_row(row) if row else None
+ def cancel_job(self,job_id,*,workspace_id):
+  with self.engine.begin() as c:c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id)&(self.jobs.c.status.in_((\'queued\',\'running\')))).values(status=\'cancelled\',completed_at=time.time()))
+  return self.get_job(job_id,workspace_id=workspace_id)
+ def claim_job(self,worker_id):''',
+)
+replace_once(
+    "worldforge/product/store.py",
+    ''' def finish_job(self,job_id):
+  with self.engine.begin() as c:c.execute(update(self.jobs).where(self.jobs.c.id==job_id).values(status='completed',completed_at=time.time(),last_error=None))''',
+    ''' def finish_job(self,job_id):
+  with self.engine.begin() as c:c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.status=='running')).values(status='completed',completed_at=time.time(),last_error=None))''',
+)
+replace_once(
+    "worldforge/product/store.py",
+    "   c.execute(update(self.jobs).where(self.jobs.c.id==job_id).values(**values))",
+    "   c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.status=='running')).values(**values))",
+)
+
+replace_once(
+    "worldforge/api/app.py",
+    'logger = logging.getLogger("worldforge.api")\n\n\n@asynccontextmanager',
+    '''logger = logging.getLogger("worldforge.api")
+
+
+class AnalysisCancelled(Exception):
+    pass
+
+
+@asynccontextmanager''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''@app.get("/api/config")
+def public_config():
+    return {
+        "environment": settings.env,
+        "auth_required": settings.auth_mode == "required",
+        "max_upload_mb": settings.max_upload_mb,
+        "storage": settings.storage_backend,
+        "queue_mode": settings.queue_mode,
+        "version": "1.0.0",
+    }''',
+    '''@app.get("/api/config")
+def public_config():
+    return {"auth_required": settings.auth_mode == "required"}''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''        "events": product_store.list_events(
+            conversation_id, workspace_id=principal.workspace_id
+        ),
+    }''',
+    '''        "events": product_store.list_events(
+            conversation_id, workspace_id=principal.workspace_id
+        ),
+        "job": product_store.latest_job(
+            conversation_id, workspace_id=principal.workspace_id
+        ),
+    }''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''async def _run_analysis_job(
+    *,
+    conversation_id,
+    workspace_id,
+    text,
+    provider_key,
+    history,
+    assets,
+):
+    try:
+        async def sink(type_, payload):
+            await _product_emit(
+                conversation_id, workspace_id, type_, payload
+            )
+
+        prepared = _materialize_assets(assets)
+        result = await product_analyzer.run(
+            text=text,
+            assets=prepared,
+            provider_key=provider_key,
+            sink=sink,
+            history=history,
+        )
+        message = product_store.add_message(
+            conversation_id,
+            "assistant",
+            result["answer"],
+            result,
+            workspace_id=workspace_id,
+        )
+        await _product_emit(
+            conversation_id,
+            workspace_id,
+            "answer.ready",
+            {"message": message, "result": result},
+        )
+    except Exception as exc:
+        logger.exception(
+            "analysis job failed",
+            extra={"conversation_id": conversation_id},
+        )
+        await _product_emit(
+            conversation_id,
+            workspace_id,
+            "answer.error",
+            {"message": "处理过程中出现问题", "detail": repr(exc)},
+        )
+        raise''',
+    '''async def _run_analysis_job(
+    *,
+    conversation_id,
+    workspace_id,
+    text,
+    provider_key,
+    history,
+    assets,
+    job_id=None,
+):
+    def ensure_active():
+        if not job_id:
+            return
+        try:
+            job = product_store.get_job(job_id, workspace_id=workspace_id)
+        except KeyError as exc:
+            raise AnalysisCancelled from exc
+        if job["status"] == "cancelled":
+            raise AnalysisCancelled
+
+    try:
+        async def sink(type_, payload):
+            ensure_active()
+            await _product_emit(
+                conversation_id, workspace_id, type_, payload
+            )
+
+        ensure_active()
+        prepared = _materialize_assets(assets)
+        result = await product_analyzer.run(
+            text=text,
+            assets=prepared,
+            provider_key=provider_key,
+            sink=sink,
+            history=history,
+        )
+        ensure_active()
+        message = product_store.add_message(
+            conversation_id,
+            "assistant",
+            result["answer"],
+            result,
+            workspace_id=workspace_id,
+        )
+        await _product_emit(
+            conversation_id,
+            workspace_id,
+            "answer.ready",
+            {"message": message, "result": result},
+        )
+        return True
+    except AnalysisCancelled:
+        return False
+    except Exception as exc:
+        logger.exception(
+            "analysis job failed",
+            extra={"conversation_id": conversation_id},
+        )
+        await _product_emit(
+            conversation_id,
+            workspace_id,
+            "answer.error",
+            {"message": "处理过程中出现问题", "detail": repr(exc)},
+        )
+        raise''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''            with product_store.engine.begin() as connection:
+                connection.execute(
+                    product_store.jobs.update()
+                    .where(product_store.jobs.c.id == job["id"])
+                    .values(
+                        status="running",
+                        worker_id="api-inprocess",
+                        claimed_at=time.time(),
+                        attempts=1,
+                    )
+                )
+            await _run_analysis_job(
+                conversation_id=conversation_id,
+                workspace_id=principal.workspace_id,
+                text=req.content,
+                provider_key=req.provider,
+                history=history,
+                assets=assets,
+            )
+            product_store.finish_job(job["id"])''',
+    '''            with product_store.engine.begin() as connection:
+                claimed = connection.execute(
+                    product_store.jobs.update()
+                    .where(
+                        (product_store.jobs.c.id == job["id"])
+                        & (product_store.jobs.c.status == "queued")
+                    )
+                    .values(
+                        status="running",
+                        worker_id="api-inprocess",
+                        claimed_at=time.time(),
+                        attempts=1,
+                    )
+                )
+            if claimed.rowcount == 0:
+                return
+            completed = await _run_analysis_job(
+                conversation_id=conversation_id,
+                workspace_id=principal.workspace_id,
+                text=req.content,
+                provider_key=req.provider,
+                history=history,
+                assets=assets,
+                job_id=job["id"],
+            )
+            if completed:
+                product_store.finish_job(job["id"])''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''@app.get("/api/jobs/{job_id}")
+def job_get(
+    job_id: str,
+    principal: Principal = Depends(require_principal),
+):
+    try:
+        return product_store.get_job(
+            job_id, workspace_id=principal.workspace_id
+        )
+    except KeyError:
+        raise HTTPException(404, "任务不存在")
+
+
+@app.websocket''',
+    '''@app.get("/api/jobs/{job_id}")
+def job_get(
+    job_id: str,
+    principal: Principal = Depends(require_principal),
+):
+    try:
+        return product_store.get_job(
+            job_id, workspace_id=principal.workspace_id
+        )
+    except KeyError:
+        raise HTTPException(404, "任务不存在")
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def job_cancel(
+    job_id: str,
+    request: Request,
+    principal: Principal = Depends(require_principal),
+):
+    try:
+        job = product_store.get_job(job_id, workspace_id=principal.workspace_id)
+    except KeyError:
+        raise HTTPException(404, "任务不存在")
+    if job["status"] in {"completed", "failed", "cancelled"}:
+        return job
+    cancelled = product_store.cancel_job(
+        job_id, workspace_id=principal.workspace_id
+    )
+    if cancelled["status"] == "cancelled":
+        await _product_emit(
+            job["conversation_id"],
+            principal.workspace_id,
+            "answer.cancelled",
+            {"job_id": job_id},
+        )
+        product_store.add_audit(
+            request_id=request.state.request_id,
+            action="job.cancel",
+            workspace_id=principal.workspace_id,
+            user_id=principal.user_id,
+            resource_type="job",
+            resource_id=job_id,
+        )
+    return cancelled
+
+
+@app.websocket''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''@app.get("/api/health/live")
+def liveness():
+    return {
+        "status": "ok",
+        "service": "lingjing-api",
+        "version": "1.0.0",
+    }''',
+    '''@app.get("/api/health/live")
+def liveness():
+    return {"status": "ok"}''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''    checks = {
+        "database": False,
+        "object_storage": False,
+        "storage_backend": storage.name,
+        "providers": len(
+            [item for item in providers.list() if item.get("configured")]
+        ),
+    }''',
+    '''    checks = {"database": False, "object_storage": False}''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''    return JSONResponse(
+        {"status": "ready" if ok else "not_ready", "checks": checks},
+        status_code=200 if ok else 503,
+    )''',
+    '''    if not ok:
+        logger.warning("readiness check failed", extra={"checks": checks})
+    return JSONResponse(
+        {"status": "ready" if ok else "not_ready"},
+        status_code=200 if ok else 503,
+    )''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''@app.get("/api/health")
+def health():
+    return {
+        "status": "ok",
+        "product": "灵境游戏工作台",
+        "version": "1.0.0",
+        "locale": "zh-CN",
+        "environment": settings.env,
+        "auth": settings.auth_mode,
+        "storage": storage.name,
+        "queue": settings.queue_mode,
+        "providers": len(
+            [item for item in providers.list() if item.get("configured")]
+        ),
+    }''',
+    '''@app.get("/api/health")
+def health():
+    return {"status": "ok", "product": "灵境游戏工作台"}''',
+)
+replace_once(
+    "worldforge/api/app.py",
+    '''
+@app.get("/api/showcase")
+def showcase(principal: Principal = Depends(require_principal)):
+    return {
+        "product": {
+            "name": "WorldForge Runtime",
+            "cn_name": "游戏自主执行运行时",
+            "tagline": "把研发目标变成可执行、可验证、可恢复的长期任务",
+            "policy": manager.engine.policy_model.card.name,
+            "external_model_api": False,
+        },
+        "business_scenarios": [
+            {"name": "数值平衡测试", "value": "自动探索极端组合、资源曲线与胜负边界"},
+            {"name": "版本回归", "value": "复现历史失败轨迹并验证修复结果"},
+            {"name": "漏洞发现", "value": "通过多策略探索发现异常收益路径"},
+            {"name": "智能 NPC 验证", "value": "验证长周期策略稳定性与行为一致性"},
+        ],
+    }
+
+''',
+    "\n",
+)
+
+Path("worldforge/worker.py").write_text(
+    '''from __future__ import annotations
+
+import asyncio
+import os
+import socket
+
+from worldforge.api.app import _run_analysis_job, product_store
+
+
+async def run_worker():
+    worker_id = os.getenv(
+        "WORLDFORGE_WORKER_ID", f"{socket.gethostname()}-{os.getpid()}"
+    )
+    idle = float(os.getenv("WORLDFORGE_WORKER_IDLE_SECONDS", "0.8"))
+    while True:
+        job = product_store.claim_job(worker_id)
+        if not job:
+            await asyncio.sleep(idle)
+            continue
+        payload = job["payload"]
+        try:
+            assets = []
+            for asset_id in payload.get("asset_ids", []):
+                try:
+                    assets.append(
+                        product_store.get_asset(
+                            asset_id, workspace_id=job["workspace_id"]
+                        )
+                    )
+                except KeyError:
+                    pass
+            completed = await _run_analysis_job(
+                conversation_id=job["conversation_id"],
+                workspace_id=job["workspace_id"],
+                text=str(payload.get("text", "")),
+                provider_key=str(payload.get("provider", "auto")),
+                history=list(payload.get("history", [])),
+                assets=assets,
+                job_id=job["id"],
+            )
+            if completed:
+                product_store.finish_job(job["id"])
+        except Exception as exc:
+            product_store.fail_job(job["id"], repr(exc))
+
+
+def main():
+    asyncio.run(run_worker())
+
+
+if __name__ == "__main__":
+    main()
+''',
+    encoding="utf-8",
+)
+
+# Regression coverage.
+replace_once("tests/test_api.py", "from worldforge.api.app import app", "from worldforge.api.app import app, product_store")
+replace_once(
+    "tests/test_api.py",
+    "\ndef test_spoofed_image_upload_is_rejected():",
+    '''
+def test_product_job_can_be_cancelled():
+    client = TestClient(app)
+    conversation = client.post(
+        "/api/conversations",
+        json={"title": "停止测试", "scene": "battle_review"},
+    ).json()
+    job = product_store.enqueue_job(
+        workspace_id=conversation["workspace_id"],
+        conversation_id=conversation["id"],
+        payload={"text": "test", "provider": "auto", "history": [], "asset_ids": []},
+    )
+    response = client.post(f"/api/jobs/{job['id']}/cancel")
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert client.post(f"/api/jobs/{job['id']}/cancel").json()["status"] == "cancelled"
+
+
+def test_spoofed_image_upload_is_rejected():''',
+)
+replace_once(
+    "tests/test_saas.py",
+    "def test_security_headers_and_readiness():",
+    '''def test_cancelled_job_is_terminal(tmp_path):
+    store=ConversationStore(tmp_path/"jobs.db",tmp_path/"assets");conv=store.create_conversation("Job");job=store.enqueue_job(workspace_id=conv["workspace_id"],conversation_id=conv["id"],payload={});store.cancel_job(job["id"],workspace_id=conv["workspace_id"]);store.finish_job(job["id"]);store.fail_job(job["id"],"late failure");assert store.get_job(job["id"],workspace_id=conv["workspace_id"])["status"]=="cancelled"
+
+def test_security_headers_and_readiness():''',
+)
+replace_once(
+    "tests/test_saas.py",
+    'assert ready.status_code==200;assert ready.json()["checks"]["database"] is True',
+    'assert ready.status_code==200;assert ready.json()["status"]=="ready"',
+)
+replace_once(
+    "scripts/product_ui_e2e.py",
+    "  if(u.endsWith('/api/config')) return jsonResponse({environment:'production',auth_required:true,max_upload_mb:120,storage:'s3',queue_mode:'external',version:'1.0.0'});",
+    "  if(u.endsWith('/api/config')) return jsonResponse({auth_required:true});",
+)
+replace_once(
+    "scripts/product_ui_e2e.py",
+    '''  if(u.endsWith('/api/providers')) return jsonResponse([
+    {key:'auto',name:'自动选择',vendor:'Lingjing',configured:true,multimodal:true,note:'按输入类型、可用性与成本自动路由'},
+    {key:'demo',name:'内置演示',vendor:'Lingjing',configured:true,multimodal:true,note:'本地验证任务链路'},
+    {key:'openai',name:'OpenAI',vendor:'OpenAI',configured:false,multimodal:true,supports_video:true,note:'图像与关键帧多模态推理'},
+    {key:'anthropic',name:'Claude',vendor:'Anthropic',configured:false,multimodal:true,note:'图像输入与文本推理'},
+    {key:'deepseek',name:'DeepSeek',vendor:'DeepSeek',configured:false,multimodal:false,note:'文本推理服务'},
+    {key:'gemini',name:'Gemini',vendor:'Google',configured:false,multimodal:true,supports_video:true,supports_audio:true,note:'图像、视频与音频输入'}
+  ]);
+''',
+    "",
+)
+replace_once("scripts/product_ui_e2e.py", "payload:{provider:'内置演示',evidence:", "payload:{evidence:")
+replace_once(
+    "scripts/product_ui_e2e.py",
+    '''    return jsonResponse({status:'queued',message:user,job_id:'job-e2e'});''',
+    '''    return jsonResponse({status:'queued',message:user,job_id:'job-e2e'});
+  }
+  if(u.endsWith('/api/jobs/job-e2e/cancel')&&method==='POST') return jsonResponse({id:'job-e2e',status:'cancelled'});''',
+)
+replace_once(
+    "scripts/product_ui_e2e.py",
+    '''    shot("task-running.png")
+    report["checks"]["running_state"] = True''',
+    '''    shot("task-running.png")
+    report["checks"]["running_state"] = True
+    report["checks"]["stop_control"] = page.locator("#stopBtn").is_visible()
+    report["checks"]["no_dead_controls"] = page.locator(
+        "#providerBtn,#providerModal,#settingsBtn,#moreBtn"
+    ).count() == 0''',
+)
+
+# Temporary machinery must not survive the patch commit.
+Path(".github/workflows/product-control-cleanup.yml").unlink(missing_ok=True)
+Path(__file__).unlink(missing_ok=True)
