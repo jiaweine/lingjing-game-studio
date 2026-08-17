@@ -202,16 +202,16 @@ sequenceDiagram
 
 # Agent Method · Core Equations
 
-下面的公式不是概念化包装，而是对应当前实现中的实际评分、试演、验证与更新规则。为了避免 GitHub 页面把公式当普通文本，块公式统一使用 GitHub 原生 `math` fenced block。
+下面的公式不是概念化包装，而是对应当前实现中的实际评分、试演、验证与更新规则。块公式使用 GitHub 原生 `math` fenced block；正文中的变量与符号使用 inline math。公式展示以 GitHub 实际 MathML 渲染结果为准。
 
 ### 01 · Dynamic Specialist Aggregation
 
-每个动态 Specialist 返回动作偏置 `b_j(a)` 与置信度 `c_j`。Runtime 只接受有界建议：
+每个动态 Specialist 返回动作偏置 $b_j(a)$ 与置信度 $c_j$。Runtime 只接受有界建议：
 
 ```math
 B_{\mathrm{agent}}(a)
 =
-\operatorname{clip}
+\mathrm{clip}
 \left(
 \sum_{j \in \mathcal{A}(s)} c_j\,b_j(a),
 -4.5,
@@ -219,7 +219,7 @@ B_{\mathrm{agent}}(a)
 \right)
 ```
 
-`\mathcal{A}(s)` 是当前状态真正激活的 Specialist 集合。专家意见可以累积，但最终会被裁剪，不能无限放大。
+$\mathcal{A}(s)$ 是当前状态真正激活的 Specialist 集合。专家意见可以累积，但最终会被裁剪，不能无限放大。
 
 `worldforge/runtime/recursive.py`
 
@@ -227,7 +227,7 @@ B_{\mathrm{agent}}(a)
 
 ### 02 · Unified Action Score
 
-Planner 对每个合法动作 `a` 融合固定 Analyst、Skill、Memory、Policy、动态 Specialist 与 epistemic adjustment：
+Planner 对每个合法动作 $a$ 融合固定 Analyst、Skill、Memory、Policy、动态 Specialist 与 epistemic adjustment：
 
 ```math
 S(a)
@@ -249,13 +249,13 @@ R_{\mathrm{repeat}}(a)
 
 其中：
 
-- `v_i(a)`：Combat / Risk / Economy / Progress Analyst 的投票；
-- `B_skill(a)`：Skill Bank 的状态条件偏置；
-- `M(s,a)`：Memory 中相似状态—动作历史先验；
-- `Z_θ(a|s)`：Policy 对合法动作 logit 的标准化先验；
-- `B_agent(a)`：动态 Specialist Tree 的有界建议；
-- `E(a)`：不确定性 × 专家分歧产生的 epistemic adjustment；
-- `R_repeat(a)`：重复 `farm / scout / defend` 的停滞摩擦。
+- $v_i(a)$：Combat / Risk / Economy / Progress Analyst 的投票；
+- $B_{\mathrm{skill}}(a)$：Skill Bank 的状态条件偏置；
+- $M(s,a)$：Memory 中相似状态—动作历史先验；
+- $Z_{\theta}(a\mid s)$：Policy 对合法动作 logit 的标准化先验；
+- $B_{\mathrm{agent}}(a)$：动态 Specialist Tree 的有界建议；
+- $E(a)$：不确定性 × 专家分歧产生的 epistemic adjustment；
+- $R_{\mathrm{repeat}}(a)$：重复 `farm / scout / defend` 的停滞摩擦。
 
 Policy prior 本身先标准化：
 
@@ -281,12 +281,12 @@ T(a)
 \min
 \left(
 4,\;
-\operatorname{Std}(v_1(a),\ldots,v_n(a))
+\mathrm{Std}(v_1(a),\ldots,v_n(a))
 \right)
 \cdot u
 ```
 
-`u` 是 belief uncertainty，`T(a)` 是 epistemic tension。
+$u$ 是 belief uncertainty，$T(a)$ 是 epistemic tension。
 
 对信息获取动作：
 
@@ -304,7 +304,7 @@ E(\mathrm{commit})
 -T\left(0.28 + 0.42\,\tau\right)
 ```
 
-`\tau` 是 threat。世界越不确定、专家越分裂，系统越倾向先获得证据；关键机制被观测后，uncertainty 下降，探索奖励自然衰减。
+$\tau$ 是 threat。世界越不确定、专家越分裂，系统越倾向先获得证据；关键机制被观测后，uncertainty 下降，探索奖励自然衰减。
 
 `worldforge/runtime/planner.py`
 
@@ -334,13 +334,13 @@ r_k
 90\mathbf{1}_{\mathrm{defeat}}
 ```
 
-- `r_k`：累计 reward；
-- `e_k`：敌方生命比例；
-- `h_k`：玩家生命比例；
-- `g_k`：gold；
-- `\tau_k`：threat；
-- `\rho`：目标 risk tolerance；
-- `\mathcal{V}_k`：该 rollout 实际出现的 verifier violations。
+- $r_k$：累计 reward；
+- $e_k$：敌方生命比例；
+- $h_k$：玩家生命比例；
+- $g_k$：gold；
+- $\tau_k$：threat；
+- $\rho$：目标 risk tolerance；
+- $\mathcal{V}_k$：该 rollout 实际出现的 verifier violations。
 
 一个动作最终按风险调整后的分支分数排序：
 
@@ -349,7 +349,7 @@ Q(a)
 =
 \mathbb{E}[U]
 -
-0.45\,\operatorname{Std}(U)
+0.45\,\mathrm{Std}(U)
 +
 0.20\,\min(U)
 +
@@ -369,7 +369,7 @@ Q(a)
 ```math
 R_{\mathrm{state}}
 =
-\operatorname{clip}
+\mathrm{clip}
 \left(
 0.65\,\tau + 0.55(1-h),
 0,
@@ -407,7 +407,7 @@ z
 hW_2+b_2
 ```
 
-合法动作集合 `\mathcal{L}(s)` 上：
+合法动作集合 $\mathcal{L}(s)$ 上：
 
 ```math
 \pi_{\theta}(a\mid s)
@@ -429,7 +429,7 @@ hW_2+b_2
 ```math
 A_i
 =
-\operatorname{clip}
+\mathrm{clip}
 \left(
 \frac{r_i-\bar{r}}
 {\sigma_r+\varepsilon},
@@ -458,11 +458,11 @@ L_{\mathrm{clip}}
 \min
 \left(
 \rho_iA_i,\;
-\operatorname{clip}(\rho_i,1-\epsilon,1+\epsilon)A_i
+\mathrm{clip}(\rho_i,1-\epsilon,1+\epsilon)A_i
 \right)
 ```
 
-默认 `\epsilon = 0.18`，并要求 empirical KL 留在 trust region：
+默认 $\epsilon=0.18$，并要求 empirical KL 留在 trust region：
 
 ```math
 D_{\mathrm{KL}}
