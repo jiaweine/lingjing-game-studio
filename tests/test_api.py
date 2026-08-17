@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from worldforge.api.app import app
+from worldforge.api.app import app, product_store
 
 
 def test_health_and_runtime():
@@ -52,6 +52,23 @@ def test_conversation_roundtrip():
     response = client.get(f"/api/conversations/{conversation['id']}")
     assert response.status_code == 200
     assert response.json()["title"] == "测试任务"
+
+
+def test_product_job_can_be_cancelled():
+    client = TestClient(app)
+    conversation = client.post(
+        "/api/conversations",
+        json={"title": "停止测试", "scene": "battle_review"},
+    ).json()
+    job = product_store.enqueue_job(
+        workspace_id=conversation["workspace_id"],
+        conversation_id=conversation["id"],
+        payload={"text": "test", "provider": "auto", "history": [], "asset_ids": []},
+    )
+    response = client.post(f"/api/jobs/{job['id']}/cancel")
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert client.post(f"/api/jobs/{job['id']}/cancel").json()["status"] == "cancelled"
 
 
 def test_spoofed_image_upload_is_rejected():

@@ -24,21 +24,19 @@
       </div>
     </div>
 
-    <button class="workspace-switch" id="workspaceSwitch" type="button">
+    <div class="workspace-switch workspace-static" aria-label="当前工作空间">
       <span class="workspace-beacon"></span>
       <span class="workspace-copy">
         <small>工作空间</small>
         <b id="workspaceName">本地演示空间</b>
       </span>
-      <span class="chevron">⌄</span>
-    </button>
+    </div>
 
     <div class="top-spacer"></div>
     <div class="service-pill" id="serviceStatus">
       <i></i><span>正在连接</span>
     </div>
     <button class="top-action" id="assetLibraryBtn" type="button">素材</button>
-    <button class="top-action" id="providerBtn" type="button">推理服务</button>
     <button class="team-avatar" id="userAvatar" type="button" title="账户">游</button>
   </header>
 
@@ -96,11 +94,6 @@
       <div id="conversationList" class="conversation-list"></div>
     </div>
 
-    <div class="left-footer">
-      <button id="settingsBtn" class="quiet-button" type="button">
-        <span>设置</span><span>⌘ ,</span>
-      </button>
-    </div>
   </aside>
 
   <main class="work-area">
@@ -111,14 +104,7 @@
         <p id="conversationMeta">把目标说清楚，系统会持续执行到得到可核验结果。</p>
       </div>
       <div class="head-actions">
-        <label class="provider-select">
-          <span>推理</span>
-          <select id="providerSelect" aria-label="推理服务">
-            <option value="auto">自动选择</option>
-          </select>
-        </label>
-        <button class="ghost-button" id="shareBtn" type="button">分享</button>
-        <button class="ghost-button square" id="moreBtn" type="button" title="更多">···</button>
+        <button class="ghost-button" id="copyLinkBtn" type="button">复制链接</button>
       </div>
     </div>
 
@@ -188,6 +174,7 @@
               <b id="thinkingStep">准备任务</b>
               <p id="thinkingDetail">正在建立任务上下文</p>
             </div>
+            <button id="stopBtn" class="stop-btn" type="button" hidden>停止</button>
             <strong id="thinkingPercent">0%</strong>
           </div>
         </div>
@@ -219,7 +206,7 @@
         </div>
         <input id="fileInput" type="file" multiple hidden />
       </div>
-      <div class="privacy-note">任务素材按 工作空间隔离；选择第三方推理服务时遵循对应企业数据策略。</div>
+      <div class="privacy-note">任务素材按工作空间隔离；推理资源由系统按任务输入自动路由。</div>
     </div>
   </main>
 
@@ -302,22 +289,6 @@
   </div>
 </div>
 
-<div class="modal-backdrop" id="providerModal" hidden>
-  <div class="modal provider-modal">
-    <div class="modal-head">
-      <div>
-        <span class="eyebrow">INFERENCE SERVICES</span>
-        <h3>推理服务</h3>
-        <p>系统负责执行策略与结果验证；这里的服务只提供可替换的推理能力。</p>
-      </div>
-      <button class="modal-close" type="button">×</button>
-    </div>
-    <div id="providerGrid" class="provider-grid"></div>
-    <div class="modal-foot">
-      <span>优先按输入类型、可用性与成本自动选择，也可以手动固定。</span>
-    </div>
-  </div>
-</div>
 
 <div class="modal-backdrop auth-backdrop" id="authModal" hidden>
   <div class="modal auth-modal">
@@ -329,7 +300,7 @@
     <div class="auth-copy">
       <span class="eyebrow">你的执行空间</span>
       <h2>把问题、执行过程和验证证据留在一个工作空间。</h2>
-      <p>团队任务、素材、结果与审计记录按 工作空间隔离。</p>
+      <p>团队任务、素材、结果与审计记录按工作空间隔离。</p>
     </div>
 
     <div class="auth-tabs">
@@ -356,7 +327,7 @@
           <input id="registerName" autocomplete="name" placeholder="例如：林澈" />
         </label>
         <label>
-          <span>Workspace</span>
+          <span>工作空间</span>
           <input id="registerWorkspace" placeholder="例如：星火工作室" required />
         </label>
       </div>

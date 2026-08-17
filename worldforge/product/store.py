@@ -123,6 +123,22 @@ class ConversationStore:
   with self.engine.connect() as c:row=c.execute(select(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id))).first()
   if not row:raise KeyError(job_id)
   return self._json_row(row)
+ def latest_job(self,conversation_id,*,workspace_id):
+  with self.engine.connect() as c:row=c.execute(select(self.jobs).where((self.jobs.c.conversation_id==conversation_id)&(self.jobs.c.workspace_id==workspace_id)).order_by(self.jobs.c.created_at.desc()).limit(1)).first()
+  return self._json_row(row) if row else None
+ def cancel_job(self,job_id,*,workspace_id):
+  with self.engine.begin() as c:c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id)&(self.jobs.c.status.in_(('queued','running')))).values(status='cancelled',completed_at=time.time()))
+  return self.get_job(job_id,workspace_id=workspace_id)
+ def complete_job_answer(self,job_id,*,workspace_id,content,payload):
+  now=time.time();mid=_id('msg')
+  with self.engine.begin() as c:
+   job=c.execute(select(self.jobs.c.conversation_id).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id)&(self.jobs.c.status=='running'))).first()
+   if not job:return None
+   cid=job[0];result=c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.workspace_id==workspace_id)&(self.jobs.c.status=='running')).values(status='completed',completed_at=now,last_error=None))
+   if result.rowcount!=1:return None
+   message={'id':mid,'conversation_id':cid,'role':'assistant','content':content,'payload':payload,'created_at':now}
+   c.execute(insert(self.messages).values(id=mid,conversation_id=cid,role='assistant',content=content,payload=json.dumps(payload,ensure_ascii=False),created_at=now));c.execute(update(self.conversations).where((self.conversations.c.id==cid)&(self.conversations.c.workspace_id==workspace_id)).values(updated_at=now));event_payload={'message':message,'result':payload};c.execute(insert(self.task_events).values(workspace_id=workspace_id,conversation_id=cid,type='answer.ready',payload=json.dumps(event_payload,ensure_ascii=False),created_at=now))
+  return message
  def claim_job(self,worker_id):
   now=time.time()
   with self.engine.begin() as c:
@@ -132,11 +148,9 @@ class ConversationStore:
    if result.rowcount==0:return None
    claimed=c.execute(select(self.jobs).where(self.jobs.c.id==job_id)).first()
   return self._json_row(claimed)
- def finish_job(self,job_id):
-  with self.engine.begin() as c:c.execute(update(self.jobs).where(self.jobs.c.id==job_id).values(status='completed',completed_at=time.time(),last_error=None))
  def fail_job(self,job_id,error,*,retry_delay=15.,max_attempts=3):
   with self.engine.begin() as c:
    row=c.execute(select(self.jobs.c.attempts).where(self.jobs.c.id==job_id)).first();attempts=int(row[0]) if row else max_attempts;values={'last_error':error[:4000]}
    if attempts<max_attempts:values.update(status='queued',worker_id=None,claimed_at=None,available_at=time.time()+retry_delay*attempts)
    else:values.update(status='failed',completed_at=time.time())
-   c.execute(update(self.jobs).where(self.jobs.c.id==job_id).values(**values))
+   c.execute(update(self.jobs).where((self.jobs.c.id==job_id)&(self.jobs.c.status=='running')).values(**values))

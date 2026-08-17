@@ -1,18 +1,12 @@
 <div align="center">
 
-# 灵境 · 游戏研发执行工作台
+# 灵境
 
-### 把研发目标交给系统，持续执行到得到可核验的结果
+### 游戏研发执行工作台
 
-**问题复现 · 数值检查 · 版本回归 · 角色行为 · 多模态证据 · 长周期任务**
+**给出目标和素材，系统持续执行、复核、留证；需要时随时停止。**
 
-<p>
-  <img alt="Autonomous" src="https://img.shields.io/badge/Execution-Autonomous-172033?style=flat-square">
-  <img alt="Multimodal" src="https://img.shields.io/badge/Input-Multimodal-315DE8?style=flat-square">
-  <img alt="Verified" src="https://img.shields.io/badge/Result-Verified-148A65?style=flat-square">
-  <img alt="Realtime" src="https://img.shields.io/badge/Runtime-Realtime-168AA1?style=flat-square">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.11+-4F5C70?style=flat-square&logo=python&logoColor=white">
-</p>
+问题复现 · 数值检查 · 版本回归 · 角色行为 · 多素材交叉核对
 
 </div>
 
@@ -20,54 +14,68 @@
 
 ---
 
-## 不是给游戏文件加一个聊天框
+## 30 秒看懂一次任务
 
-灵境的入口可以是自然语言，但产品本体是一条持续运行的研发任务：
+灵境不是给游戏文件加一个聊天框，而是把研发目标变成一条可以持续推进、可以中途控制、最后能检查证据的任务轨迹。
 
-> **目标 → 素材 → 执行 → 复核 → 证据 → 结论 → 下一步**
-
-用户不需要知道内部用了什么规划器、多少分支或哪些推理资源。客户界面只回答五个问题：**我要完成什么、系统正在做什么、哪里需要介入、发现了什么、结论由什么证据支持。**
+> **目标 → 素材 → 执行 → 复核 → 证据 → 交付**
 
 <table>
 <tr>
 <td width="50%" valign="top">
 <img src="docs/assets/readme/workspace-empty.png" alt="创建研发目标" width="100%">
-<br><sub><b>目标入口</b> · 直接描述要完成的研发目标，不要求先拆 Prompt 或流程图。</sub>
+<br><sub><b>1 · 交付目标</b>　直接说要解决什么，不要求先拆 Prompt、Agent 或流程图。</sub>
 </td>
 <td width="50%" valign="top">
 <img src="docs/assets/readme/task-running.png" alt="任务执行中" width="100%">
-<br><sub><b>持续执行</b> · 实时显示正在处理什么，而不是用“思考中”替代真实进度。</sub>
+<br><sub><b>2 · 看见执行</b>　真实进度持续进入任务轨迹；长任务可以停止，不用被黑盒“思考中”绑住。</sub>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 <img src="docs/assets/readme/workspace.png" alt="任务结果" width="100%">
-<br><sub><b>结果工作区</b> · 目标、执行记录、结论和后续动作保留在同一任务轨迹中。</sub>
+<br><sub><b>3 · 拿到交付</b>　目标、执行过程、结论和后续动作留在同一个研发任务里。</sub>
 </td>
 <td width="50%" valign="top">
 <img src="docs/assets/readme/evidence.png" alt="证据面板" width="100%">
-<br><sub><b>证据面板</b> · 日志、截图、录像关键帧和重复复核结果与结论一一对应。</sub>
+<br><sub><b>4 · 检查证据</b>　截图、录像关键帧、日志摘录和复核结果与结论对应。</sub>
 </td>
 </tr>
 </table>
 
+客户界面只回答真正需要知道的事：**我要完成什么、系统正在做什么、我能不能介入、发现了什么、结论由什么证据支持。**
+
 ---
 
-## 多模态输入是第一等能力
+## 为什么敢把任务交给它
+
+| | 产品行为 |
+|---|---|
+| **可控** | 执行状态持久化；进行中的任务可以真实停止，刷新页面后仍恢复到正确的当前状态 |
+| **可核验** | 结论关联证据，并区分观察、推断与待验证项；关键场景可重复复核 |
+| **可恢复** | WorldForge 在提交动作前试演候选未来，失败路径可以 rollback / replan，不把一次错误扩散成整条任务失败 |
+| **可隔离** | 用户、工作空间、任务、素材、运行记录与审计边界在服务端校验，不依赖前端隐藏 |
+
+任务完成与最终结果采用确定性的状态提交：**完成状态、assistant 交付和 `answer.ready` 事件作为同一事务提交**。如果停止先发生，就不会再补写一个“迟到的成功结果”。
+
+---
+
+## 多模态不是附件栏
 
 <img src="docs/assets/readme/upload.png" alt="多模态素材输入" width="100%">
 
-同一个任务可以持续追加：
+一个任务可以持续追加：
 
 **图片 · 视频 · 音频 · 日志 · JSON / CSV · 配置文件 · 文本 / 文档**
 
-处理链路不是“附件上传成功”就结束，而是把不同模态转换为真正可用于判断的证据：
+灵境会把素材变成真正进入判断链路的上下文，而不是只把文件名挂在消息旁边：
 
-- 图片直接进入视觉证据；
-- 视频自适应抽取关键帧，长视频增加采样密度；
-- 音频保留声学输入，交给具备对应能力的本地或远端推理资源；
-- 日志和配置把真实内容摘录写入任务上下文，而不是只把文件名交给模型；
-- 每份素材生成证据索引，最终结论要求区分**观察、推断和待验证项**。
+- **图片**进入视觉证据；
+- **视频**按时长自适应抽取关键帧，并把关键帧作为视觉证据参与判断；
+- **音频**保留声学输入，自动路由到具备对应能力的推理资源；
+- **日志 / 配置**把实际内容摘录写入任务上下文；
+- **素材校验**检查声明类型和真实内容，异常媒体不会伪装成有效图像或音视频；
+- **证据索引**让最终结论可以指回来源，而不是只给一段无法复查的答案。
 
 <img src="docs/assets/readme/multimodal.png" alt="多模态任务上下文" width="100%">
 
@@ -79,15 +87,15 @@
 |---|---|
 | **战斗问题复现** | 对齐录像、日志和状态变化，寻找稳定触发条件并重复核验 |
 | **数值风险检查** | 探索极端 Build、资源曲线与高波动组合，给出优先调整项 |
-| **版本回归验证** | 复现历史异常、验证修复结果并沉淀发布前检查项 |
-| **角色行为检查** | 检查连续交互、目标切换和上下文不一致 |
-| **多素材交叉核对** | 在同一个任务里把视觉、声音、日志、配置和历史对话联合起来 |
+| **版本回归验证** | 复现历史异常、核验修复结果并沉淀发布前检查项 |
+| **角色行为检查** | 检查连续交互、目标切换与上下文不一致 |
+| **多素材交叉核对** | 在同一任务里联合视觉、声音、日志、配置与历史对话 |
 
-### 产品层的三个原则
+### 产品边界
 
-**任务优先。** 页面围绕目标、执行、证据与结果组织，而不是围绕“聊天气泡”组织。  
-**算法隐藏。** 客户不需要理解内部规划、试演、策略优化等工程术语。  
-**推理可替换。** 外部或本地模型只提供感知/推理能力；任务策略、权限、执行、回滚与完成判定属于 WorldForge。
+**任务优先。** 页面围绕目标、执行、证据与交付组织，而不是围绕聊天气泡组织。  
+**算法隐藏。** 客户不需要理解内部规划器、反事实试演或策略优化术语。  
+**推理可替换。** 本地或远端模型只提供感知与推理能力；状态、规划、权限、执行、验证、回滚和完成判定属于 WorldForge。
 
 ---
 
@@ -102,26 +110,29 @@ uvicorn worldforge.api.app:app --reload
 
 浏览器打开本地服务即可进入工作台。
 
-需要独立 Worker 时：
+独立 Worker：
 
 ```bash
 WORLDFORGE_QUEUE_MODE=external python -m worldforge.worker
 ```
 
-需要接入本地开源全模态推理服务时，可配置任意兼容接口：
+接入本地开源全模态推理服务：
 
 ```bash
 export LOCAL_OMNI_BASE_URL=http://127.0.0.1:8901/v1
 export LOCAL_OMNI_MODEL=your-local-multimodal-model
 ```
 
-这条本地推理通道只参与感知与内容理解，不接管 WorldForge 的 Agent 决策。
+本地推理通道只参与感知与内容理解，不接管 WorldForge 的 Agent 决策。
 
 ---
 
-# Engineering · WorldForge Runtime
+<details>
+<summary><b>WorldForge Runtime · 工程实现</b></summary>
 
-产品界面刻意不展示下面这些概念；它们只属于工程实现。
+<br>
+
+WorldForge 是灵境自己的执行内核。外部或本地模型可以提供感知、文本理解和推理资源，但不能直接绕过 WorldForge 提交动作、修改 canonical state、跳过验证或决定一次任务是否完成。
 
 ```mermaid
 flowchart LR
@@ -136,80 +147,47 @@ flowchart LR
     H --> C
 ```
 
-## 1. World-State Runtime
+### World State
 
-`worldforge/runtime/engine.py` 维护可恢复的真实环境状态，而不是只保存一段对话历史：
+`worldforge/runtime/engine.py` 维护可恢复的环境状态，而不是只保存对话文本：Goal / Belief / Game State、append-only hash-chained events、Snapshot / Restore / Checkpoint、Replay / Fork、Sandbox 与 rollback / replan。
 
-- Goal / Belief / Game State；
-- append-only、hash-chained event store；
-- Snapshot / Restore / Checkpoint；
-- Replay / Fork；
-- Sandbox；
-- Durable runtime events；
-- 失败后的 rollback / replan。
+反事实分支只操作克隆环境；只有经过选择和验证的动作才进入 canonical state。
 
-反事实分支只操作克隆环境；只有通过选择与验证的动作才进入 canonical state。
+### Epistemic Disagreement Control
 
-## 2. 自主决策：把“分歧”当作信息
+`worldforge/runtime/planner.py` 会把内部专家分歧和世界状态不确定性组合成 epistemic tension：状态越不确定、专家意见越分裂，低风险信息获取行为越有价值；高威胁下则降低不可逆激进行为的优先级。关键状态被观测确认后，探索奖励自然下降，系统回到执行优先。
 
-`worldforge/runtime/planner.py` 的动作排序不仅融合本地策略、Skill、Memory 与状态条件专家，还加入 **Epistemic Disagreement Control**：
+### Counterfactual + Bounded Specialists
 
-- 内部专家对某个动作意见越分裂，说明该动作附近的不确定性越值得处理；
-- 当世界状态本身也不确定时，低风险信息获取动作得到额外价值；
-- 高威胁下，不确定性与专家分歧会共同降低不可逆激进行为的优先级；
-- 一旦关键状态被观测确认，信息动作价值自动下降，系统回到执行优先。
+动作提交前并行评估候选未来的 expected utility、downside、survival、success probability 与 verifier violations。状态条件专家只提供有界动作偏置，不能直接执行，也不能绕过 Sandbox / Verifier。
 
-这个机制完全属于 WorldForge，不依赖任何第三方模型给出最终动作。
+### Verification + Evolution
 
-## 3. 反事实试演
+Verifier 独立检查状态不变量、非法动作、灾难性风险和异常奖励循环。成功与失败轨迹进入 Memory / Skill；策略更新受 group-relative reward、KL trust region 与 Regression Gate 约束。
 
-`worldforge/runtime/counterfactual.py` 会在提交动作之前并行评估候选未来：
+> **可验证轨迹 → 候选更新 → 回归评估 → 通过才提交。**
 
-- expected utility；
-- downside；
-- survival；
-- success probability；
-- verifier violations。
+### Realtime + Deterministic Job Lifecycle
 
-每个 rollout 的违规集合独立维护，一个失败未来不会污染其他候选的风险评分。
+产品事件通过 durable cursor 读取并 fan-out；WebSocket 使用 subscribe-before-replay、event-id deduplication 与 `after_id` 断点续传，避免重连后重复搬运完整历史。
 
-## 4. 状态条件专家
+产品 job 的完成提交与最终 assistant 消息、`answer.ready` 事件在同一事务中落库；cancelled 状态不会被迟到的完成或失败写回覆盖。每轮 progress 带自己的 `job_id`，刷新页面时只恢复当前/最近一次执行，不把多轮任务进度混在一起。
 
-`worldforge/runtime/recursive.py` 根据当前状态按需派生专家，而不是固定 DAG。专家只输出**有界动作偏置**，不能直接执行动作、绕过 Sandbox 或绕过验证。
-
-最终动作始终由 WorldForge Planner 提交。
-
-## 5. 验证、恢复与策略演进
-
-任务执行后由 Verifier 独立检查状态不变量、非法动作、灾难性风险和异常奖励循环。失败可以触发 rollback / replan。
-
-成功与失败轨迹进入 Memory / Skill；策略更新使用 group-relative reward，并受 KL trust region 与 Regression Gate 约束。新策略只有在回归表现没有退化时才允许持久化。
-
-这意味着“自进化”不是让 Agent 随意改自己，而是：
-
-> **收集可验证轨迹 → 形成候选更新 → 回归评估 → 通过才提交。**
-
-## 6. 并发与实时事件
-
-每个 Runtime session 都拥有隔离的 Planner、Policy、Memory、Skill 与 Sandbox 运行态；共享演进提交串行化，避免多个任务互相污染。
-
-产品实时层采用一个 durable cursor 读取事件，再向多个会话订阅者 fan-out。连接恢复采用 **subscribe-before-replay + event-id deduplication**，减少 replay/live 边界的漏事件风险。
+</details>
 
 ---
 
 ## 质量门禁
 
 ```bash
-python -m compileall -q worldforge scripts tests
+python -m compileall -q worldforge migrations scripts tests
 pytest -q
 node --check frontend/app.js
 python scripts/product_backend_e2e.py
 python scripts/product_ui_e2e.py
 ```
 
-UI E2E 会真实运行注册、Workspace、素材上传、多模态上下文、执行中状态、结果、证据和后续建议，并生成 README Gallery。
-
-Gallery 固定以 `1920×1200` viewport、device scale `2` 采集，因此产品截图为 **3840×2400 PNG**。
+UI E2E 会真实覆盖注册、工作空间、素材上传、执行状态、停止控制、实时结果、证据、后续建议与多模态素材，并生成 README Gallery。截图以 `1920×1200` viewport、device scale `2` 采集，输出为 **3840×2400 PNG**。
 
 ---
 
@@ -219,7 +197,7 @@ Gallery 固定以 `1920×1200` viewport、device scale `2` 采集，因此产品
 frontend/                 客户工作台
 worldforge/
   api/                    API / Auth / Realtime
-  product/                多模态任务与证据层
+  product/                多模态任务、证据与持久化
   runtime/                WorldForge 自主执行内核
   providers/              可替换推理资源
   storage/                本地 / 对象存储
@@ -227,10 +205,8 @@ scripts/                  E2E 与训练入口
 tests/                    Runtime / API / 多模态 / Realtime 回归测试
 ```
 
----
-
 <div align="center">
 
-**目标不是让模型更会描述“它做了什么”，而是让系统真的执行、复核、恢复，并留下可以检查的证据。**
+**目标不是让模型更会描述它做了什么，而是让系统真的执行、复核、恢复，并留下可以检查的证据。**
 
 </div>

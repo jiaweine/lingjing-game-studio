@@ -3,13 +3,13 @@ const $ = id => document.getElementById(id);
 const state = {
   conversation: null,
   scene: "battle_review",
-  providers: [],
   pending: [],
   assets: [],
   messages: [],
   events: [],
   ws: null,
   busy: false,
+  jobId: null,
   progress: [],
   session: null,
   config: null,
@@ -205,7 +205,7 @@ function bindAuth() {
       });
       applySession(session);
       hideAuthModal();
-      toast("Workspace 已创建");
+      toast("工作空间已创建");
       await bootWorkspace();
     } catch (error) {
       toast(error.message);
@@ -254,37 +254,21 @@ function setScene(scene) {
   $("conversationMeta").textContent = "把目标说清楚，系统会持续执行到得到可核验结果。";
 }
 
-async function loadProviders() {
-  try {
-    state.providers = await api("/api/providers");
-  } catch {
-    state.providers = [];
-  }
-  const select = $("providerSelect");
-  if (select) select.innerHTML = '<option value="auto">自动选择</option>';
+function setBusy(busy, jobId = null) {
+  state.busy = busy;
+  state.jobId = busy ? (jobId || state.jobId) : null;
+  $("sendBtn").disabled = busy;
+  $("stopBtn").hidden = !(busy && state.jobId);
+  $("stopBtn").disabled = false;
+  $("stopBtn").textContent = "停止";
 }
 
-function renderProviderModal() {
-  $("providerGrid").innerHTML = state.providers
-    .filter(provider => provider.key !== "auto")
-    .map(provider => `
-      <div class="provider-card">
-        <div class="provider-logo">${esc((provider.name || "?").slice(0, 2))}</div>
-        <div>
-          <b>${esc(provider.name)} <small>${esc(provider.vendor || "")}</small></b>
-          <p>${esc(provider.note || "可替换推理服务")}</p>
-          <small>
-            ${provider.multimodal ? "支持图像 / 多模态" : "文本推理"}
-            ${provider.supports_video ? " · 视频" : ""}
-            ${provider.supports_audio ? " · 音频" : ""}
-            ${provider.model ? ` · ${esc(provider.model)}` : ""}
-          </small>
-        </div>
-        <span class="provider-status ${provider.configured ? "ok" : ""}">
-          ${provider.configured ? "可用" : "未配置"}
-        </span>
-      </div>
-    `).join("");
+function markCancelled() {
+  setBusy(false);
+  $("thinkingCard").hidden = true;
+  $("taskState").textContent = "已停止";
+  $("taskStateHint").textContent = "当前执行已停止，可以修改目标后重新开始。";
+  document.querySelector(".task-state-card").className = "task-state-card cancelled";
 }
 
 async function loadConversations() {
@@ -304,6 +288,7 @@ async function loadConversations() {
   document.querySelectorAll(".conv-item").forEach(item => {
     item.onclick = () => openConversation(item.dataset.id);
   });
+  return rows;
 }
 
 function syncConversationUrl(id) {
@@ -327,6 +312,7 @@ async function newConversation(scene = state.scene) {
   state.events = [];
   state.progress = [];
   state.pending = [];
+  setBusy(false);
   state.ws?.close();
   syncConversationUrl(conversation.id);
   renderConversation();
@@ -343,6 +329,7 @@ async function openConversation(id) {
   state.events = conversation.events || [];
   state.progress = [];
   state.pending = [];
+  setBusy(["queued", "running"].includes(conversation.job?.status), conversation.job?.id || null);
   setScene(conversation.scene || "battle_review");
   state.ws?.close();
   syncConversationUrl(conversation.id);
@@ -355,8 +342,9 @@ function renderConversation() {
   $("welcomePanel").hidden = state.messages.length > 0;
   $("conversationTitle").textContent =
     state.conversation?.title || SCENE_NAME[state.scene];
+  const turns = state.messages.filter(message => message.role === "user").length;
   $("conversationMeta").textContent = state.messages.length
-    ? `${Math.ceil(state.messages.length / 2)} 次任务推进 · ${state.assets.length} 份素材`
+    ? `${turns} 次任务推进 · ${state.assets.length} 份素材`
     : "把目标说清楚，系统会持续执行到得到可核验结果。";
   $("messageList").innerHTML = state.messages.map(renderMessage).join("");
   renderAssets();
@@ -531,13 +519,35 @@ function renderSuggestions(rows = []) {
 }
 
 function renderEventHistory() {
-  const progress = state.events.filter(event => event.type === "progress");
-  if (progress.length) {
-    state.progress = progress.map(event => event.payload);
-    renderProgress();
-  } else if (!state.messages.length) {
-    state.progress = [];
-    renderProgress();
+  const job = state.conversation?.job;
+  const allProgress = state.events.filter(event => event.type === "progress");
+  const taggedProgress = job?.id
+    ? allProgress.filter(event => event.payload?.job_id === job.id)
+    : [];
+  const useTagged = Boolean(
+    job?.id && (["queued", "running"].includes(job.status) || taggedProgress.length)
+  );
+  const progress = useTagged ? taggedProgress : allProgress;
+  state.progress = progress.map(event => event.payload);
+  renderProgress();
+
+  if (["queued", "running"].includes(job?.status) && !progress.length) {
+    $("taskState").textContent = job.status === "queued" ? "等待执行" : "准备执行";
+    $("taskStateHint").textContent = "任务已接收，正在准备执行上下文。";
+    document.querySelector(".task-state-card").className = "task-state-card running";
+    return;
+  }
+  if (state.busy) return;
+
+  const terminal = [...state.events].reverse().find(event =>
+    ["answer.cancelled", "answer.error"].includes(event.type)
+  );
+  if (terminal?.type === "answer.cancelled") markCancelled();
+  if (terminal?.type === "answer.error") {
+    setBusy(false);
+    $("taskState").textContent = "执行中断";
+    $("taskStateHint").textContent = "本次执行没有完成，可以重试或补充要求。";
+    document.querySelector(".task-state-card").className = "task-state-card error";
   }
 }
 
@@ -587,14 +597,17 @@ function connectConversation() {
   if (!state.conversation) return;
   const conversationId = state.conversation.id;
   const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const afterId = state.events.reduce(
+    (latest, event) => Math.max(latest, Number(event.id) || 0),
+    0,
+  );
   const socket = new WebSocket(
-    `${protocol}://${location.host}/ws/conversations/${conversationId}`
+    `${protocol}://${location.host}/ws/conversations/${conversationId}?after_id=${afterId}`
   );
   state.ws = socket;
   socket.onmessage = event => {
     try { handleEvent(JSON.parse(event.data)); } catch {}
   };
-  socket.onerror = () => {};
   socket.onclose = () => {
     if (state.ws !== socket || state.conversation?.id !== conversationId) return;
     clearTimeout(connectConversation.timer);
@@ -610,6 +623,7 @@ function handleEvent(event) {
   state.events.push(event);
 
   if (event.type === "progress") {
+    if (state.conversation?.job) state.conversation.job.status = "running";
     state.progress.push(event.payload);
     renderProgress();
     $("thinkingCard").hidden = false;
@@ -627,8 +641,8 @@ function handleEvent(event) {
   }
 
   if (event.type === "answer.ready") {
-    state.busy = false;
-    $("sendBtn").disabled = false;
+    if (state.conversation?.job) state.conversation.job.status = "completed";
+    setBusy(false);
     $("thinkingCard").hidden = true;
     const message = event.payload.message;
     state.messages.push(message);
@@ -646,12 +660,21 @@ function handleEvent(event) {
     return;
   }
 
+  if (event.type === "answer.cancelled") {
+    const wasBusy = state.busy;
+    if (state.conversation?.job) state.conversation.job.status = "cancelled";
+    markCancelled();
+    if (wasBusy) toast("已停止当前任务");
+    return;
+  }
+
   if (event.type === "answer.error") {
-    state.busy = false;
-    $("sendBtn").disabled = false;
+    if (state.conversation?.job) state.conversation.job.status = "failed";
+    setBusy(false);
     $("thinkingCard").hidden = true;
     $("taskState").textContent = "执行中断";
     $("taskStateHint").textContent = "本次执行没有完成，可以重试或补充要求。";
+    document.querySelector(".task-state-card").className = "task-state-card error";
     toast(event.payload?.message || "执行失败");
   }
 }
@@ -684,8 +707,7 @@ async function sendMessage() {
   if (!content || state.busy) return;
   if (!state.conversation) await newConversation(state.scene);
 
-  state.busy = true;
-  $("sendBtn").disabled = true;
+  setBusy(true);
   const selectedAssets = state.pending.map(asset => asset.id);
   const optimistic = {
     id: `local-${Date.now()}`,
@@ -723,20 +745,48 @@ async function sendMessage() {
         }),
       }
     );
+    if (response.job_id) {
+      state.conversation.job = {
+        id: response.job_id,
+        status: response.status === "queued" ? "queued" : "running",
+      };
+    }
+    setBusy(true, response.job_id || null);
     const serverMessage = response.message;
     if (serverMessage) {
       const index = state.messages.findIndex(item => item.id === optimistic.id);
       if (index >= 0) state.messages[index] = serverMessage;
     }
   } catch (error) {
-    state.busy = false;
-    $("sendBtn").disabled = false;
+    setBusy(false);
     $("thinkingCard").hidden = true;
     state.messages = state.messages.filter(item => item.id !== optimistic.id);
     state.pending = selectedAssets
       .map(id => state.assets.find(asset => asset.id === id))
       .filter(Boolean);
     renderConversation();
+    toast(error.message);
+  }
+}
+
+async function stopCurrentJob() {
+  if (!state.busy || !state.jobId) return;
+  const button = $("stopBtn");
+  button.disabled = true;
+  button.textContent = "停止中";
+  try {
+    const job = await api(`/api/jobs/${state.jobId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    if (job.status === "cancelled") {
+      if (state.conversation?.job) state.conversation.job.status = "cancelled";
+      markCancelled();
+      toast("已停止当前任务");
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "停止";
     toast(error.message);
   }
 }
@@ -790,6 +840,7 @@ function bindUI() {
   };
 
   $("sendBtn").onclick = sendMessage;
+  $("stopBtn").onclick = stopCurrentJob;
   $("messageInput").oninput = autoSize;
   $("messageInput").onkeydown = event => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -815,22 +866,12 @@ function bindUI() {
     };
   });
 
-  $("providerBtn").onclick = () => {
-    $("providerModal").hidden = false;
-  };
-  $("providerModal").querySelector(".modal-close").onclick = () => {
-    $("providerModal").hidden = true;
-  };
-  $("providerModal").onclick = event => {
-    if (event.target === $("providerModal")) $("providerModal").hidden = true;
-  };
-
   $("assetLibraryBtn").onclick = () => {
     document.querySelector('[data-panel="assets"]').click();
     toast("已打开当前任务素材");
   };
 
-  $("shareBtn").onclick = async () => {
+  $("copyLinkBtn").onclick = async () => {
     try {
       await navigator.clipboard?.writeText(location.href);
       toast("任务链接已复制");
@@ -839,8 +880,6 @@ function bindUI() {
     }
   };
 
-  $("moreBtn").onclick = () => toast("更多任务操作会在这里集中管理");
-  $("settingsBtn").onclick = () => toast("Workspace 设置即将开放");
 
   $("messageList").addEventListener("click", event => {
     const button = event.target.closest("[data-copy-result]");
@@ -885,12 +924,8 @@ function bindUI() {
 }
 
 async function bootWorkspace() {
-  await Promise.allSettled([
-    loadProviders(),
-    loadConversations(),
-    loadServiceHealth(),
-  ]);
-  const rows = await api("/api/conversations");
+  await loadServiceHealth();
+  const rows = await loadConversations();
   const requested = new URLSearchParams(location.search).get("conversation");
   if (requested) {
     try {
