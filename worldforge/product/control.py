@@ -272,9 +272,6 @@ def build_control_router(
         principal: Principal = Depends(require_principal),
     ):
         require_editor(principal)
-        latest = store.latest_job(conversation_id, workspace_id=principal.workspace_id)
-        if latest and latest["status"] in {"queued", "running"}:
-            raise HTTPException(409, "执行中的任务需要先停止，才能请求永久删除")
         try:
             approval = store.create_approval(
                 workspace_id=principal.workspace_id,
@@ -286,6 +283,8 @@ def build_control_router(
             store.add_event(conversation_id, "approval.requested", {"approval": approval}, workspace_id=principal.workspace_id)
         except KeyError as exc:
             raise HTTPException(404, "任务不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         audit(request, principal, "approval.request", "approval", approval["id"], {"action": "conversation.delete"})
         return approval
 
@@ -333,10 +332,19 @@ def build_control_router(
             except Exception as exc:
                 audit(request, principal, "conversation.delete.storage_failed", "conversation", conversation_id, {"object_key": key, "error": repr(exc)})
                 raise HTTPException(503, "素材清理失败，任务尚未删除；可以稍后重试") from exc
-        if not store.consume_approval(approval_id, workspace_id=principal.workspace_id, conversation_id=conversation_id, action="conversation.delete"):
-            raise HTTPException(409, "删除审批已被使用")
-        store.delete_conversation(conversation_id, workspace_id=principal.workspace_id)
-        audit(request, principal, "conversation.delete", "conversation", conversation_id, {"asset_objects": len(keys)})
+        try:
+            store.delete_conversation(
+                conversation_id,
+                workspace_id=principal.workspace_id,
+                approval_id=approval_id,
+                request_id=getattr(request.state, "request_id", "product-control"),
+                user_id=principal.user_id,
+                asset_object_count=len(keys),
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "任务或审批不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return {"ok": True}
 
     @router.get("/api/conversations/{conversation_id}/control")

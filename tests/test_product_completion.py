@@ -85,7 +85,7 @@ def test_task_lifecycle_retry_guard_and_metrics(tmp_path):
     assert metrics["result_adoption_rate"] == 1.0
     assert metrics["manual_intervention_rate"] == 1.0
     assert 0 <= metrics["interruption_rate"] <= 1
-    assert metrics["avg_time_to_verified_seconds"] is not None
+    assert metrics["avg_time_to_first_result_seconds"] is not None
 
     archived = store.archive_conversation(conversation["id"], workspace_id=workspace_id)
     assert archived["archived_at"] is not None
@@ -517,3 +517,42 @@ def test_delete_approval_and_execution_are_mutually_exclusive(tmp_path):
     assert approval["status"] == "pending"
     with pytest.raises(ValueError, match="删除确认"):
         store.enqueue_job(workspace_id=workspace_id, conversation_id=conversation["id"], payload={"text": "must not start"})
+
+
+
+def test_message_accepted_counts_full_task_context(tmp_path):
+    store = ConversationStore(tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False)
+    owner = _store_owner(store)
+    workspace_id, user_id = owner["workspace_id"], owner["user_id"]
+    conversation = store.create_conversation(workspace_id=workspace_id, created_by=user_id)
+    first = store.add_asset(conversation["id"], name="a.log", mime="text/plain", path="a", size=1, meta={"kind": "text"}, workspace_id=workspace_id, created_by=user_id)
+    second = store.add_asset(conversation["id"], name="b.png", mime="image/png", path="b", size=1, meta={"kind": "image"}, workspace_id=workspace_id, created_by=user_id)
+    _, job = store.create_message_job(
+        workspace_id=workspace_id,
+        conversation_id=conversation["id"],
+        content="继续分析",
+        asset_ids=[],
+        job_payload={"text": "继续分析", "asset_ids": [first["id"], second["id"]]},
+    )
+    event = store.list_events(conversation["id"], workspace_id=workspace_id)[-1]
+    assert event["type"] == "message.accepted"
+    assert event["payload"]["asset_count"] == 2
+    assert job["payload"]["asset_ids"] == [first["id"], second["id"]]
+
+
+def test_approved_delete_is_validated_and_deleted_in_one_db_transaction(tmp_path):
+    store = ConversationStore(tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False)
+    owner = _store_owner(store)
+    workspace_id, user_id = owner["workspace_id"], owner["user_id"]
+    conversation = store.create_conversation(workspace_id=workspace_id, created_by=user_id)
+    store.add_asset(conversation["id"], name="x.log", mime="text/plain", path="x", size=1, meta={"kind": "text"}, workspace_id=workspace_id, created_by=user_id)
+    approval = store.create_approval(workspace_id=workspace_id, conversation_id=conversation["id"], action="conversation.delete", requested_by=user_id)
+    with pytest.raises(ValueError, match="尚未通过|失效"):
+        store.delete_conversation(conversation["id"], workspace_id=workspace_id, approval_id=approval["id"], request_id="req-before", user_id=user_id)
+    store.resolve_approval(approval["id"], workspace_id=workspace_id, user_id=user_id, approved=True)
+    assets = store.delete_conversation(conversation["id"], workspace_id=workspace_id, approval_id=approval["id"], request_id="req-delete", user_id=user_id, asset_object_count=1)
+    assert len(assets) == 1
+    with pytest.raises(KeyError):
+        store.get_conversation(conversation["id"], workspace_id=workspace_id)
+    audits = store.list_audit(workspace_id=workspace_id)
+    assert any(row["action"] == "conversation.delete" and row["resource_id"] == conversation["id"] for row in audits)

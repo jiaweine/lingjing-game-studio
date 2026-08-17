@@ -1211,7 +1211,7 @@ function renderTeamPanel() {
   const metrics = state.metrics;
   $("metricGrid").innerHTML = metrics ? [
     ["任务完成", `${Math.round((metrics.first_task_completion_rate || 0) * 100)}%`],
-    ["首次可核验", metrics.avg_time_to_verified_seconds == null ? "—" : `${Math.round(metrics.avg_time_to_verified_seconds)}s`],
+    ["首次交付", metrics.avg_time_to_first_result_seconds == null ? "—" : `${Math.round(metrics.avg_time_to_first_result_seconds)}s`],
     ["执行中断", `${Math.round((metrics.interruption_rate || 0) * 100)}%`],
     ["失败恢复", `${Math.round((metrics.recovery_rate || 0) * 100)}%`],
     ["人工介入", `${Math.round((metrics.manual_intervention_rate || 0) * 100)}%`],

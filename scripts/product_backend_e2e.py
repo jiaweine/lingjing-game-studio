@@ -124,6 +124,7 @@ with TestClient(app) as client:
     data = client.get(f"/api/conversations/{conversation_id}").json()
     assert len(data["messages"]) == 4
     assert data["messages"][-1]["payload"].get("context", {}).get("history_messages") == 2
+    assert data["messages"][-1]["payload"].get("context", {}).get("task_assets") == len(asset_ids)
     report["checks"]["followup_context"] = True
 
 report["ok"] = all(report["checks"].values()) and not report["errors"]
@@ -133,3 +134,5 @@ OUT.mkdir(exist_ok=True)
     encoding="utf-8",
 )
 print(json.dumps(report, ensure_ascii=False, indent=2))
+if not report["ok"]:
+    raise SystemExit(1)

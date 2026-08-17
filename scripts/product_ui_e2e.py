@@ -34,7 +34,7 @@ const kindFor=(file)=>file.type.startsWith('image/')?'image':file.type.startsWit
 const fixAssetImages=()=>document.querySelectorAll('img').forEach(img=>{for(const [id,src] of Object.entries(window.__E2E.assetData)){if(img.getAttribute('src')?.includes(id)){img.src=src;break}}});
 new MutationObserver(fixAssetImages).observe(document.documentElement,{childList:true,subtree:true});
 const member=()=>({id:'user-e2e',email:'qa@studio.com',name:'QA Lead',status:'active',role:'owner',created_at:1});
-const metrics=()=>({task_count:1,active_tasks:1,first_task_completion_rate:1,avg_time_to_verified_seconds:4.2,interruption_rate:.5,failure_rate:0,recovery_rate:1,continuation_rate:0,manual_intervention_rate:1,evidence_open_rate:1,result_adoption_rate:1,human_verified_feedback_rate:Object.values(window.__E2E.feedback).some(x=>x.human_verified)?1:0});
+const metrics=()=>({task_count:1,active_tasks:1,first_task_completion_rate:1,avg_time_to_first_result_seconds:4.2,interruption_rate:.5,failure_rate:0,recovery_rate:1,continuation_rate:0,manual_intervention_rate:1,evidence_open_rate:1,result_adoption_rate:1,human_verified_feedback_rate:Object.values(window.__E2E.feedback).some(x=>x.human_verified)?1:0});
 const gate=()=>{
   const rows=Object.values(window.__E2E.feedback),verified=rows.filter(x=>x.human_verified),incorrect=rows.filter(x=>x.verdict==='incorrect');
   const verifiedCorrect=rows.filter(x=>x.human_verified&&x.verdict==='correct'),approved=verifiedCorrect.length>0&&incorrect.length===0;
@@ -108,11 +108,11 @@ window.fetch=async function(url,opt={}){
   }
   const deleteRequest=u.match(/^\/api\/conversations\/([^/]+)\/delete-request$/);
   if(deleteRequest&&method==='POST'){
-    S.approval={id:'approval-e2e',workspace_id:'ws-e2e',conversation_id:deleteRequest[1],action:'conversation.delete',status:'pending',reason:'永久删除任务及其素材需要显式确认',requested_by:'user-e2e',created_at:5,payload:{}};S.conversations[0].status='waiting_approval';return jsonResponse(S.approval);
+    const previousStatus=S.conversations[0].status;S.approval={id:'approval-e2e',workspace_id:'ws-e2e',conversation_id:deleteRequest[1],action:'conversation.delete',status:'pending',reason:'永久删除任务及其素材需要显式确认',requested_by:'user-e2e',created_at:5,payload:{previous_status:previousStatus}};S.conversations[0].status='waiting_approval';return jsonResponse(S.approval);
   }
   const approvalResolve=u.match(/^\/api\/approvals\/([^/]+)\/resolve$/);
   if(approvalResolve&&method==='POST'){
-    const body=JSON.parse(opt.body||'{}');S.approval={...S.approval,status:body.approved?'approved':'rejected',resolved_by:'user-e2e',resolved_at:6};S.conversations[0].status='active';return jsonResponse(S.approval);
+    const body=JSON.parse(opt.body||'{}');S.approval={...S.approval,status:body.approved?'approved':'rejected',resolved_by:'user-e2e',resolved_at:6};S.conversations[0].status=body.approved?'waiting_approval':(S.approval.payload?.previous_status||'active');return jsonResponse(S.approval);
   }
   const convMatch=u.match(/^\/api\/conversations\/([^/]+)$/);
   if(convMatch&&method==='GET'){
@@ -139,7 +139,7 @@ window.fetch=async function(url,opt={}){
   if(u==='/api/jobs/job-e2e/retry'&&method==='POST'){clearTimers();S.conversations[0].job={id:'job-e2e-retry',status:'queued'};S.conversations[0].status='active';emitRun('job-e2e-retry',20);return jsonResponse({status:'queued',job_id:'job-e2e-retry'})}
   const feedbackMatch=u.match(/^\/api\/messages\/([^/]+)\/feedback$/);
   if(feedbackMatch&&method==='PUT'){
-    const body=JSON.parse(opt.body||'{}'),row={message_id:feedbackMatch[1],user_id:'user-e2e',workspace_id:'ws-e2e',conversation_id:'cv-e2e',...body,evidence_useful:body.evidence_useful==null?null:(body.evidence_useful?1:0),human_verified:body.human_verified?1:0,created_at:7,updated_at:7};S.feedback[row.message_id]=row;return jsonResponse(row);
+    const body=JSON.parse(opt.body||'{}'),row={message_id:feedbackMatch[1],user_id:'user-e2e',workspace_id:'ws-e2e',conversation_id:'cv-e2e',...body,evidence_useful:body.evidence_useful==null?null:(body.evidence_useful?1:0),human_verified:body.human_verified?1:0,created_at:7,updated_at:7};S.feedback[row.message_id]=row;S.conversations[0].status=gate().task_status;return jsonResponse(row);
   }
   return jsonResponse({detail:'not mocked: '+method+' '+u},404);
 };
@@ -292,3 +292,5 @@ with sync_playwright() as playwright:
 report["ok"] = all(report["checks"].values()) and not report["errors"]
 (OUT / "product_ui_e2e.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 print(json.dumps(report, ensure_ascii=False, indent=2))
+if not report["ok"]:
+    raise SystemExit(1)

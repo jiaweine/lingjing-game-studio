@@ -826,30 +826,34 @@ async def conversation_message(
         raise HTTPException(409, "删除确认处理中，不能继续执行")
 
     history = product_store.list_messages(conversation_id, workspace_id=principal.workspace_id)
-    assets = product_store.list_assets(conversation_id, workspace_id=principal.workspace_id)
-    asset_by_id = {asset["id"]: asset for asset in assets}
-    selected_assets = []
+    context_assets = product_store.list_assets(conversation_id, workspace_id=principal.workspace_id)
+    context_by_id = {asset["id"]: asset for asset in context_assets}
+    selected_asset_ids: list[str] = []
     for asset_id in req.asset_ids:
-        asset = asset_by_id.get(asset_id)
+        asset = context_by_id.get(asset_id)
         if asset is None:
             try:
                 asset = product_store.get_asset(asset_id, workspace_id=principal.workspace_id)
             except KeyError:
                 continue
-        selected_assets.append(asset)
+            context_assets.append(asset)
+            context_by_id[asset["id"]] = asset
+        if asset["id"] not in selected_asset_ids:
+            selected_asset_ids.append(asset["id"])
 
+    context_asset_ids = list(dict.fromkeys(asset["id"] for asset in context_assets))
     job_payload = {
         "text": req.content,
         "provider": req.provider,
         "history": history,
-        "asset_ids": [asset["id"] for asset in selected_assets],
+        "asset_ids": context_asset_ids,
     }
     try:
         user_message, job = product_store.create_message_job(
             workspace_id=principal.workspace_id,
             conversation_id=conversation_id,
             content=req.content,
-            asset_ids=[asset["id"] for asset in selected_assets],
+            asset_ids=selected_asset_ids,
             job_payload=job_payload,
             title_if_first=req.content if not history else None,
         )
@@ -865,7 +869,7 @@ async def conversation_message(
         user_id=principal.user_id,
         resource_type="conversation",
         resource_id=conversation_id,
-        payload={"job_id": job["id"], "asset_count": len(selected_assets)},
+        payload={"job_id": job["id"], "asset_count": len(context_asset_ids)},
     )
 
     if settings.queue_mode == "external":

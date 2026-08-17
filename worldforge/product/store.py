@@ -581,7 +581,7 @@ class ConversationStore:
                     workspace_id=workspace_id,
                     conversation_id=conversation_id,
                     type="message.accepted",
-                    payload=json.dumps({"message_id": message_id, "asset_count": len(asset_ids)}, ensure_ascii=False),
+                    payload=json.dumps({"message_id": message_id, "asset_count": len(job_payload.get("asset_ids", asset_ids))}, ensure_ascii=False),
                     created_at=now,
                 )
             )
@@ -838,16 +838,76 @@ class ConversationStore:
             connection.execute(update(self.conversations).where(self.conversations.c.id == approval["conversation_id"]).values(status=next_status, updated_at=now))
         return self.get_approval(approval_id, workspace_id=workspace_id)
 
-    def consume_approval(self, approval_id: str, *, workspace_id: str, conversation_id: str, action: str) -> bool:
+    def delete_conversation(
+        self,
+        conversation_id: str,
+        *,
+        workspace_id: str,
+        approval_id: str,
+        request_id: str,
+        user_id: str,
+        asset_object_count: int = 0,
+    ) -> list[dict[str, Any]]:
         with self.engine.begin() as connection:
-            result = connection.execute(update(self.approval_requests).where(and_(self.approval_requests.c.id == approval_id, self.approval_requests.c.workspace_id == workspace_id, self.approval_requests.c.conversation_id == conversation_id, self.approval_requests.c.action == action, self.approval_requests.c.status == "approved")).values(status="consumed"))
-        return result.rowcount == 1
+            conversation_row = connection.execute(
+                select(self.conversations)
+                .where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id))
+                .with_for_update()
+            ).first()
+            if not conversation_row:
+                raise KeyError(conversation_id)
+            conversation = self._dict(conversation_row)
+            approval_row = connection.execute(
+                select(self.approval_requests)
+                .where(and_(self.approval_requests.c.id == approval_id, self.approval_requests.c.workspace_id == workspace_id))
+                .with_for_update()
+            ).first()
+            if not approval_row:
+                raise KeyError(approval_id)
+            approval = self._json_row(approval_row)
+            if (
+                approval["conversation_id"] != conversation_id
+                or approval["action"] != "conversation.delete"
+                or approval["status"] != "approved"
+                or conversation["status"] != "waiting_approval"
+            ):
+                raise ValueError("删除审批尚未通过、已失效或不匹配当前任务")
+            active = connection.execute(
+                select(self.jobs.c.id).where(
+                    and_(
+                        self.jobs.c.workspace_id == workspace_id,
+                        self.jobs.c.conversation_id == conversation_id,
+                        self.jobs.c.status.in_(("queued", "running")),
+                    )
+                ).limit(1)
+            ).first()
+            if active:
+                raise ValueError("执行中的任务需要先停止，才能永久删除")
 
-    def delete_conversation(self, conversation_id: str, *, workspace_id: str) -> list[dict[str, Any]]:
-        self.get_conversation(conversation_id, workspace_id=workspace_id)
-        assets = self.list_assets(conversation_id, workspace_id=workspace_id)
-        with self.engine.begin() as connection:
-            message_ids = [row[0] for row in connection.execute(select(self.messages.c.id).where(self.messages.c.conversation_id == conversation_id)).fetchall()]
+            asset_rows = connection.execute(
+                select(self.assets).where(
+                    and_(self.assets.c.workspace_id == workspace_id, self.assets.c.conversation_id == conversation_id)
+                )
+            ).fetchall()
+            assets = [self._json_row(row, "meta") for row in asset_rows]
+            message_ids = [
+                row[0]
+                for row in connection.execute(
+                    select(self.messages.c.id).where(self.messages.c.conversation_id == conversation_id)
+                ).fetchall()
+            ]
+            connection.execute(
+                insert(self.audit_logs).values(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    action="conversation.delete",
+                    resource_type="conversation",
+                    resource_id=conversation_id,
+                    payload=json.dumps({"asset_objects": asset_object_count}, ensure_ascii=False),
+                    created_at=time.time(),
+                )
+            )
             if message_ids:
                 connection.execute(delete(self.result_feedback).where(self.result_feedback.c.message_id.in_(message_ids)))
             connection.execute(delete(self.product_events).where(and_(self.product_events.c.workspace_id == workspace_id, self.product_events.c.conversation_id == conversation_id)))
@@ -947,7 +1007,7 @@ class ConversationStore:
         }
         recovered = failed_or_cancelled & completed_ids
 
-        first_verified_durations: list[float] = []
+        first_result_durations: list[float] = []
         for conversation_id in completed_ids:
             rows = jobs_by_conversation[conversation_id]
             started_at = min(float(row["created_at"]) for row in rows)
@@ -956,7 +1016,7 @@ class ConversationStore:
                 for row in rows
                 if row["status"] == "completed" and row.get("completed_at") is not None
             )
-            first_verified_durations.append(max(0.0, completed_at - started_at))
+            first_result_durations.append(max(0.0, completed_at - started_at))
 
         user_turns: dict[str, int] = {}
         for row in message_rows:
@@ -989,7 +1049,7 @@ class ConversationStore:
             "task_count": len(conversations),
             "active_tasks": sum(1 for row in conversations if row.get("archived_at") is None),
             "first_task_completion_rate": round(len(completed_ids) / job_denominator, 4),
-            "avg_time_to_verified_seconds": round(sum(first_verified_durations) / len(first_verified_durations), 2) if first_verified_durations else None,
+            "avg_time_to_first_result_seconds": round(sum(first_result_durations) / len(first_result_durations), 2) if first_result_durations else None,
             "interruption_rate": round(sum(1 for job in jobs if job["status"] == "cancelled") / max(1, len(jobs)), 4),
             "failure_rate": round(sum(1 for job in jobs if job["status"] == "failed") / max(1, len(jobs)), 4),
             "recovery_rate": round(len(recovered) / max(1, len(failed_or_cancelled)), 4),
