@@ -12,12 +12,12 @@ migrate:
 	alembic upgrade head
 
 train:
-	python scripts/train_worldforge_m1.py --seeds 16 --epochs 520 --out models/worldforge_m1.json
+	python scripts/train_policy.py --seeds 16 --epochs 520
 
 test:
 	python -m pytest
 	node --check frontend/app.js
-	python -m compileall -q worldforge
+	python -m compileall -q worldforge migrations scripts tests
 
 benchmark:
 	python -m worldforge.cli benchmark --seeds 12
