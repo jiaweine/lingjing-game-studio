@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import uuid
+
 from worldforge.models import BeliefState, GoalState, WorldState
 
 
@@ -13,7 +15,8 @@ class TaskNode:
     depth: int
     status: str = "completed"
     conclusion: str = ""
-    confidence: float = 0.5
+    confidence: float = .5
+    action_bias: dict[str, float] = field(default_factory=dict)
     children: list["TaskNode"] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -25,63 +28,128 @@ class TaskNode:
             "status": self.status,
             "conclusion": self.conclusion,
             "confidence": self.confidence,
-            "children": [c.to_dict() for c in self.children],
+            "action_bias": dict(self.action_bias),
+            "children": [child.to_dict() for child in self.children],
         }
 
 
 class RecursiveAgentScheduler:
-    """State-conditioned sub-agent decomposition.
+    """State-conditioned in-house specialist deliberation.
 
-    Unlike a fixed multi-agent graph, the scheduler only spawns specialists when the current world
-    state justifies them. Children can be nested one level deeper for uncertainty, survival or
-    economy stress. This keeps deliberation adaptive instead of paying a fixed orchestration cost.
+    Specialists are created only when the current state requires them. They return bounded
+    action preferences; the Runtime planner remains the sole authority that combines advice,
+    policy prior, memory, skills, counterfactual evidence and verification.
     """
 
-    def analyze(self, state: WorldState, belief: BeliefState, goal: GoalState) -> TaskNode:
-        root = TaskNode(self._id(), "Coordinator", "Decide next safe high-value action", 0,
-                        conclusion="dynamic specialist set constructed", confidence=.8)
-        combat = TaskNode(self._id(), "CombatAgent", "Estimate progress and finish windows", 1,
-                          conclusion=self._combat(state), confidence=.77)
-        risk = TaskNode(self._id(), "RiskAgent", "Estimate terminal and variance risk", 1,
-                        conclusion=self._risk(state, belief), confidence=.82)
-        root.children.extend([combat, risk])
+    def deliberate(
+        self, state: WorldState, belief: BeliefState, goal: GoalState
+    ) -> TaskNode:
+        root = TaskNode(
+            self._id(), "Coordinator", "Choose the next robust action", 0,
+            conclusion="dynamic specialists completed", confidence=.8,
+        )
+        factories = [self._combat_agent, self._progress_agent]
+        if state.threat > .45 or state.player_hp < state.player_max_hp * .62:
+            factories.append(self._risk_agent)
+        if belief.uncertainty > .38 and state.discovered_enemy_attack is None:
+            factories.append(self._uncertainty_agent)
+        if any(tag in state.tags for tag in ("economy", "exploit-test")):
+            factories.append(self._economy_agent)
 
-        if belief.uncertainty > .45:
-            probe = TaskNode(self._id(), "MechanicsProbe", "Resolve hidden enemy mechanics", 2,
-                             conclusion="prefer information-gathering action before irreversible commitment", confidence=.74)
-            risk.children.append(probe)
-        if state.threat > .62 or state.player_hp < state.player_max_hp * .4:
-            audit = TaskNode(self._id(), "SurvivalAudit", "Find actions that preserve a recovery path", 2,
-                             conclusion="require post-action survival margin and rollbackable branch", confidence=.86)
-            risk.children.append(audit)
-        if any(t in state.tags for t in ["economy","exploit-test"]):
-            econ = TaskNode(self._id(), "EconomyAgent", "Audit resource curve and exploit incentives", 1,
-                            conclusion=self._economy(state), confidence=.73)
-            root.children.append(econ)
-            if "exploit-test" in state.tags:
-                econ.children.append(TaskNode(self._id(), "ExploitProbe", "Stress repeated reward loops", 2,
-                                               conclusion="flag abnormal reward acceleration instead of optimizing it", confidence=.88))
-        root.confidence = round(sum(c.confidence for c in root.children)/max(1,len(root.children)),3)
+        with ThreadPoolExecutor(max_workers=max(1, len(factories))) as executor:
+            futures = [
+                executor.submit(factory, state, belief, goal)
+                for factory in factories
+            ]
+            root.children = [future.result() for future in futures]
+
+        root.confidence = round(
+            sum(child.confidence for child in root.children) / max(1, len(root.children)), 3
+        )
         return root
 
-    @staticmethod
-    def _combat(state: WorldState) -> str:
-        ratio=state.enemy_hp/max(1,state.enemy_max_hp)
-        if ratio < .4 and state.energy>=2: return "enemy is in a potential burst window"
-        if state.energy<2: return "build energy while maintaining progress"
-        return "damage options available; compare with risk-adjusted branches"
+    # Backward-compatible name for callers that used analyze().
+    def analyze(self, state: WorldState, belief: BeliefState, goal: GoalState) -> TaskNode:
+        return self.deliberate(state, belief, goal)
 
-    @staticmethod
-    def _risk(state: WorldState, belief: BeliefState) -> str:
-        hp=state.player_hp/max(1,state.player_max_hp)
-        if hp < .3: return "critical survival margin; avoid irreversible action without branch evidence"
-        if belief.uncertainty>.55: return "high latent-mechanic uncertainty; favor information or robust action"
-        return "risk envelope acceptable for controlled progress"
+    def aggregate_bias(self, tree: TaskNode, *, cap: float = 4.5) -> dict[str, float]:
+        aggregate: dict[str, float] = {}
 
-    @staticmethod
-    def _economy(state: WorldState) -> str:
-        if state.gold > 30: return "capital available; compare upgrade value against delayed inflation"
-        return "resource constrained; farm only when progress budget allows"
+        def walk(node: TaskNode) -> None:
+            for action, value in node.action_bias.items():
+                aggregate[action] = aggregate.get(action, 0.0) + value * node.confidence
+            for child in node.children:
+                walk(child)
+
+        walk(tree)
+        return {
+            action: round(max(-cap, min(cap, value)), 4)
+            for action, value in aggregate.items()
+        }
+
+    def _combat_agent(self, state, belief, goal):
+        ratio = state.enemy_hp / max(1, state.enemy_max_hp)
+        bias = {"attack": 1.0}
+        conclusion = "maintain pressure"
+        if ratio < .45 and state.energy >= 2:
+            bias.update({"heavy_attack": 2.6, "cast": 2.2})
+            conclusion = "finish window is open"
+        elif state.energy < 2:
+            bias.update({"attack": 1.2, "defend": .35})
+            conclusion = "rebuild energy without stalling"
+        return TaskNode(
+            self._id(), "CombatSpecialist", "Estimate finish windows", 1,
+            conclusion=conclusion, confidence=.78, action_bias=bias,
+        )
+
+    def _risk_agent(self, state, belief, goal):
+        hp = state.player_hp / max(1, state.player_max_hp)
+        bias: dict[str, float] = {}
+        if hp < .32:
+            bias = {"heal": 3.4, "defend": 2.8, "retreat": .6, "heavy_attack": -2.1, "cast": -1.7}
+            conclusion = "preserve a recovery path before committing"
+        else:
+            bias = {"defend": state.threat * 1.6, "heavy_attack": -.5 * state.threat}
+            conclusion = "risk is manageable with a survival margin"
+        return TaskNode(
+            self._id(), "RiskSpecialist", "Bound catastrophic downside", 1,
+            conclusion=conclusion, confidence=.86, action_bias=bias,
+        )
+
+    def _uncertainty_agent(self, state, belief, goal):
+        return TaskNode(
+            self._id(), "MechanicsSpecialist", "Resolve hidden mechanics", 1,
+            conclusion="reduce uncertainty before irreversible commitment",
+            confidence=.82,
+            action_bias={"scout": 3.2, "defend": .4},
+        )
+
+    def _economy_agent(self, state, belief, goal):
+        bias = {"farm": .45, "buy_armor": 1.2, "buy_blade": .8}
+        conclusion = "spend only when it improves the remaining horizon"
+        if "exploit-test" in state.tags:
+            bias["farm"] = -2.6
+            conclusion = "avoid optimizing a suspicious reward loop"
+        return TaskNode(
+            self._id(), "EconomySpecialist", "Audit resource trajectory", 1,
+            conclusion=conclusion, confidence=.76, action_bias=bias,
+        )
+
+    def _progress_agent(self, state, belief, goal):
+        remaining = max(1, goal.max_steps - state.tick)
+        urgency = min(2.4, 7.0 / remaining)
+        return TaskNode(
+            self._id(), "ProgressSpecialist", "Protect long-horizon goal progress", 1,
+            conclusion=f"{remaining} decision steps remain",
+            confidence=.74,
+            action_bias={
+                "attack": .6 + urgency,
+                "heavy_attack": .5 + urgency,
+                "cast": .45 + urgency,
+                "farm": -urgency if remaining < 6 else 0.0,
+                "scout": -.8 if state.tick > 4 else 0.0,
+            },
+        )
 
     @staticmethod
     def _id() -> str:

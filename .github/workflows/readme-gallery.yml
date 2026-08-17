@@ -33,37 +33,35 @@ jobs:
           pip install playwright
           python -m playwright install --with-deps chromium
 
-      - name: Capture real product states
+      - name: Capture product states
         run: python scripts/product_ui_e2e.py
 
       - name: Verify gallery
         run: |
-          test -s docs/assets/readme/cover.png
-          test -s docs/assets/readme/workspace.png
-          test -s docs/assets/readme/workspace-empty.png
-          test -s docs/assets/readme/workspace-saas.png
-          test -s docs/assets/readme/evidence.png
-          test -s docs/assets/readme/providers.png
-          test -s docs/assets/readme/auth.png
           python - <<'PY'
-          from PIL import Image
           from pathlib import Path
-          names=['cover','workspace','workspace-empty','workspace-saas','evidence','providers','auth']
+          from PIL import Image
+          names = [
+              'auth', 'workspace-empty', 'upload', 'task-running',
+              'workspace', 'evidence', 'providers', 'cover',
+          ]
           for name in names:
-              p=Path('docs/assets/readme')/f'{name}.png'
-              im=Image.open(p)
-              im.verify()
-              print(name, p.stat().st_size)
+              path = Path('docs/assets/readme') / f'{name}.png'
+              assert path.is_file() and path.stat().st_size > 0, path
+              with Image.open(path) as image:
+                  assert image.format == 'PNG', (name, image.format)
+                  assert image.size == (3840, 2400), (name, image.size)
+              print(name, path.stat().st_size)
           PY
 
       - name: Commit refreshed screenshots
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add docs/assets/readme/*.png outputs/product_ui_e2e.json
+          git add docs/assets/readme/*.png
           if git diff --cached --quiet; then
             echo 'README screenshots are already current.'
           else
-            git commit -m 'docs: refresh real product screenshots'
+            git commit -m 'docs: refresh product screenshots'
             git push
           fi
