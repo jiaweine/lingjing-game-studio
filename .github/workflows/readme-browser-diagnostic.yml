@@ -33,6 +33,7 @@ jobs:
               '产品总览',
           ]
           url = 'https://github.com/jiaweine/lingjing-game-studio/tree/agent/diagnose-readme-browser-images'
+          print('image-host release-assets')
 
           with sync_playwright() as p:
               browser = p.chromium.launch()
