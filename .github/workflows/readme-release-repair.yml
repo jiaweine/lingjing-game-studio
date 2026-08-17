@@ -1,0 +1,65 @@
+name: README Release Repair
+
+on:
+  push:
+    branches: [agent/readme-release-retry]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ASSET_TAG: readme-gallery-assets
+    steps:
+      - uses: actions/checkout@v6
+      - name: Restore all README release assets with retries
+        run: |
+          publish_asset() {
+            local file="$1"
+            local attempt
+            for attempt in 1 2 3 4 5 6; do
+              echo "Repairing ${file} (attempt ${attempt}/6)"
+              if gh release upload "$ASSET_TAG" "$file" --clobber; then
+                return 0
+              fi
+              sleep $((attempt * 5))
+            done
+            return 1
+          }
+
+          for file in \
+            docs/assets/readme/auth.png \
+            docs/assets/readme/workspace-empty.png \
+            docs/assets/readme/upload.png \
+            docs/assets/readme/task-running.png \
+            docs/assets/readme/workspace.png \
+            docs/assets/readme/evidence.png \
+            docs/assets/readme/multimodal.png \
+            docs/assets/readme/cover.png
+          do
+            publish_asset "$file"
+          done
+
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          expected = {
+              'auth.png', 'workspace-empty.png', 'upload.png', 'task-running.png',
+              'workspace.png', 'evidence.png', 'multimodal.png', 'cover.png',
+          }
+          data = json.loads(subprocess.check_output([
+              'gh', 'release', 'view', os.environ['ASSET_TAG'], '--json', 'assets,isPrerelease,url'
+          ], text=True))
+          assets = {asset['name']: asset for asset in data['assets']}
+          assert expected <= set(assets), expected - set(assets)
+          for name in expected:
+              assert assets[name]['state'] == 'uploaded', assets[name]
+              assert int(assets[name]['size']) > 0, assets[name]
+          print('release-repair-ok', sorted(expected), data['url'])
+          PY
