@@ -15,7 +15,7 @@ def _load_seed_skills() -> list[Skill]:
 
 
 class SkillBank:
-    """Persistent skill artifacts whose activation is controlled by HarnessGenome gates."""
+    """Skill metadata/evidence store; executable behavior lives in HarnessGenome."""
 
     def __init__(self) -> None:
         self.skills: dict[str, Skill] = {
@@ -50,10 +50,10 @@ class SkillBank:
         features = self._features(state, uncertainty, goal)
         out: dict[str, float] = {}
         for skill_id, skill in self.skills.items():
-            if skill.status != "active":
+            gene = genome.skills.get(skill_id)
+            if skill.status != "active" or gene is None or not gene.enabled:
                 continue
-            gate = genome.skill_gates.get(skill_id)
-            out[skill_id] = gate.activation(features) if gate else 0.0
+            out[skill_id] = gene.gate.activation(features)
         return out
 
     def active_for(
@@ -83,25 +83,30 @@ class SkillBank:
         activations = self.activations(state, uncertainty, goal=goal)
         total = 0.0
         for skill_id, skill in self.skills.items():
-            if skill.status != "active":
+            gene = genome.skills.get(skill_id)
+            if skill.status != "active" or gene is None or not gene.enabled:
                 continue
             activation = activations.get(skill_id, 0.0)
-            reliability = (
+            evidence_reliability = (
                 planner.skill_base_factor
                 + skill.success_rate * planner.skill_success_factor
             )
-            total += skill.action_bias.get(action, 0.0) * activation * reliability
+            total += (
+                gene.action_bias.get(action, 0.0)
+                * activation
+                * gene.reliability
+                * evidence_reliability
+            )
         return total
 
+    # Compatibility-only artifact operations. Product behavior is promoted through
+    # HarnessGenome, not by mutating these metadata records.
     def propose_patch(self, skill_id: str, action: str, delta: float, reason: str) -> Skill:
         before = self.skills[skill_id]
         patched = before.model_copy(deep=True)
         patched.parent_generation = before.generation
         patched.generation += 1
-        patched.action_bias[action] = round(
-            patched.action_bias.get(action, 0.0) + delta, 3
-        )
-        patched.description = before.description + f" [evolved: {reason}]"
+        patched.description = before.description + f" [legacy candidate: {reason}]"
         patched.status = "candidate"
         return patched
 
@@ -113,4 +118,15 @@ class SkillBank:
         self.skills[patched.skill_id] = patched
 
     def snapshot(self) -> list[dict]:
-        return [skill.model_dump() for skill in self.skills.values()]
+        genome = HarnessGenomeStore.current()
+        return [
+            {
+                **skill.model_dump(),
+                "harness_gene": (
+                    genome.skills[skill.skill_id].model_dump()
+                    if skill.skill_id in genome.skills
+                    else None
+                ),
+            }
+            for skill in self.skills.values()
+        ]
