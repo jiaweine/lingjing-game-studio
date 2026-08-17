@@ -33,6 +33,7 @@ from worldforge.observability import (
 from worldforge.product import (
     ConversationStore, ProductAnalyzer, extract_video_frames, probe_media,
 )
+from worldforge.product.control import build_control_router
 from worldforge.product.fanout import TaskEventFanoutHub
 from worldforge.product.store import DEMO_USER_ID, DEMO_WORKSPACE_ID
 from worldforge.providers import ProviderRegistry
@@ -397,10 +398,15 @@ def audit_list(
 @app.get("/api/conversations")
 def conversation_list(
     limit: int = Query(default=30, ge=1, le=100),
+    q: str | None = Query(default=None, max_length=120),
+    archived: bool = Query(default=False),
     principal: Principal = Depends(require_principal),
 ):
     return product_store.list_conversations(
-        limit, workspace_id=principal.workspace_id
+        limit,
+        workspace_id=principal.workspace_id,
+        query=q,
+        archived=archived,
     )
 
 
@@ -711,6 +717,12 @@ async def _run_analysis_job(
     except AnalysisCancelled:
         return False
     except Exception as exc:
+        if job_id:
+            try:
+                if product_store.get_job(job_id, workspace_id=workspace_id)["status"] == "cancelled":
+                    return False
+            except KeyError:
+                return False
         logger.exception(
             "analysis job failed",
             extra={"conversation_id": conversation_id},
@@ -719,9 +731,40 @@ async def _run_analysis_job(
             conversation_id,
             workspace_id,
             "answer.error",
-            {"message": "处理过程中出现问题", "detail": repr(exc)},
+            {"message": "处理过程中出现问题", "detail": repr(exc), "job_id": job_id},
         )
         raise
+
+
+async def _schedule_product_job(job, background_tasks: BackgroundTasks, principal: Principal):
+    if settings.queue_mode == "external":
+        return
+
+    async def work():
+        claimed = product_store.claim_job("api-inprocess", job_id=job["id"])
+        if not claimed:
+            return
+        payload = claimed["payload"]
+        assets = []
+        for asset_id in payload.get("asset_ids", []):
+            try:
+                assets.append(product_store.get_asset(asset_id, workspace_id=claimed["workspace_id"]))
+            except KeyError:
+                continue
+        try:
+            await _run_analysis_job(
+                conversation_id=claimed["conversation_id"],
+                workspace_id=claimed["workspace_id"],
+                text=str(payload.get("text", "")),
+                provider_key=str(payload.get("provider", "auto")),
+                history=list(payload.get("history", [])),
+                assets=assets,
+                job_id=claimed["id"],
+            )
+        except Exception as exc:
+            product_store.fail_job(claimed["id"], repr(exc), max_attempts=1)
+
+    background_tasks.add_task(work)
 
 
 @app.post("/api/conversations/{conversation_id}/messages")
@@ -806,37 +849,7 @@ async def conversation_message(
             "job_id": job["id"],
         }
 
-    async def work():
-        try:
-            with product_store.engine.begin() as connection:
-                claimed = connection.execute(
-                    product_store.jobs.update()
-                    .where(
-                        (product_store.jobs.c.id == job["id"])
-                        & (product_store.jobs.c.status == "queued")
-                    )
-                    .values(
-                        status="running",
-                        worker_id="api-inprocess",
-                        claimed_at=time.time(),
-                        attempts=1,
-                    )
-                )
-            if claimed.rowcount == 0:
-                return
-            await _run_analysis_job(
-                conversation_id=conversation_id,
-                workspace_id=principal.workspace_id,
-                text=req.content,
-                provider_key=req.provider,
-                history=history,
-                assets=assets,
-                job_id=job["id"],
-            )
-        except Exception as exc:
-            product_store.fail_job(job["id"], repr(exc), max_attempts=1)
-
-    background_tasks.add_task(work)
+    await _schedule_product_job(job, background_tasks, principal)
     return {
         "status": "accepted",
         "message": user_message,
@@ -888,6 +901,17 @@ async def job_cancel(
             resource_id=job_id,
         )
     return cancelled
+
+
+app.include_router(
+    build_control_router(
+        store=product_store,
+        storage=storage,
+        require_principal=require_principal,
+        session_response=_session_response,
+        schedule_retry=_schedule_product_job,
+    )
+)
 
 
 @app.websocket("/ws/conversations/{conversation_id}")

@@ -13,6 +13,13 @@ const state = {
   progress: [],
   session: null,
   config: null,
+  scope: "active",
+  members: [],
+  workspaces: [],
+  control: null,
+  feedback: {},
+  metrics: null,
+  gate: null,
 };
 
 const SCENE_NAME = {
@@ -157,6 +164,7 @@ async function ensureSession() {
     const session = await api("/api/auth/me");
     applySession(session);
     hideAuthModal();
+    await maybeAcceptInvite();
     return true;
   } catch (error) {
     if (error.status === 401 && state.config.auth_required) {
@@ -184,6 +192,7 @@ function bindAuth() {
       });
       applySession(session);
       hideAuthModal();
+      await maybeAcceptInvite();
       toast("登录成功");
       await bootWorkspace();
     } catch (error) {
@@ -205,6 +214,7 @@ function bindAuth() {
       });
       applySession(session);
       hideAuthModal();
+      await maybeAcceptInvite();
       toast("工作空间已创建");
       await bootWorkspace();
     } catch (error) {
@@ -272,15 +282,18 @@ function markCancelled() {
 }
 
 async function loadConversations() {
-  const rows = await api("/api/conversations");
+  const query = $("taskSearch")?.value.trim() || "";
+  const archived = state.scope === "archived";
+  const rows = await api(`/api/conversations?limit=100&archived=${archived}&q=${encodeURIComponent(query)}`);
+  if (query) trackProductEvent("task.search", null, {query_length: query.length});
   $("conversationList").innerHTML = rows.length
     ? rows.map(conversation => `
         <div class="conv-item ${state.conversation?.id === conversation.id ? "active" : ""}"
              data-id="${conversation.id}">
           <span></span>
           <div>
-            <b>${esc(conversation.title)}</b>
-            <small>${esc(SCENE_NAME[conversation.scene] || conversation.scene)}</small>
+            <b>${conversation.pinned ? "⌁ " : ""}${esc(conversation.title)}</b>
+            <small>${esc(SCENE_NAME[conversation.scene] || conversation.scene)} · ${taskStatusLabel(conversation.status)}</small>
           </div>
         </div>
       `).join("")
@@ -333,6 +346,8 @@ async function openConversation(id) {
   setScene(conversation.scene || "battle_review");
   state.ws?.close();
   syncConversationUrl(conversation.id);
+  await loadConversationControl();
+  await loadTeamPanel();
   renderConversation();
   connectConversation();
   await loadConversations();
@@ -350,12 +365,18 @@ function renderConversation() {
   renderAssets();
   renderPending();
   renderEventHistory();
+  renderTaskActions();
+  renderApproval();
 
   const lastAnswer = [...state.messages].reverse().find(message => message.role === "assistant");
   if (lastAnswer?.payload) {
     renderEvidence(lastAnswer.payload.evidence || []);
+    renderDeliverables(lastAnswer.payload.deliverables || []);
     renderSuggestions(lastAnswer.payload.suggestions || []);
+  } else {
+    renderDeliverables([]);
   }
+  renderFeedbackState();
   scrollBottom(false);
 }
 
@@ -388,7 +409,7 @@ function renderMessage(message) {
   }
 
   return `
-    <article class="msg assistant">
+    <article class="msg assistant" data-message-id="${esc(message.id)}">
       <div class="msg-body">
         <div class="msg-label">
           <span class="tag">交付</span>
@@ -398,6 +419,11 @@ function renderMessage(message) {
         <div class="msg-content">${md(message.content)}</div>
         <div class="answer-foot">
           <button class="answer-action" type="button" data-copy-result>复制结果</button>
+          <span class="answer-feedback-label">结果反馈</span>
+          <button class="answer-action feedback-action" type="button" data-feedback="correct">正确</button>
+          <button class="answer-action feedback-action" type="button" data-feedback="partial">部分正确</button>
+          <button class="answer-action feedback-action" type="button" data-feedback="incorrect">有错误</button>
+          <button class="answer-action verify-action" type="button" data-human-verify>人工已验证</button>
         </div>
       </div>
     </article>
@@ -500,6 +526,31 @@ function renderEvidence(rows = []) {
         `;
       }).join("")
     : '<div class="empty-side">完成一次任务后显示。</div>';
+}
+
+function renderDeliverables(rows = []) {
+  const box = $("deliverableList");
+  if (!box) return;
+  box.innerHTML = rows.length ? rows.map((item, index) => `
+    <article class="deliverable-card">
+      <div class="deliverable-head"><span>${String(index + 1).padStart(2, "0")}</span><b>${esc(item.title || "研发交付")}</b></div>
+      <p>${esc(item.summary || "")}</p>
+      <ul>${(item.items || []).map(value => `<li>${esc(value)}</li>`).join("")}</ul>
+      <div class="deliverable-foot">
+        <small>${(item.evidence_ids || []).length} 条证据关联</small>
+        <button type="button" data-copy-deliverable="${index}">复制</button>
+      </div>
+    </article>
+  `).join("") : '<div class="empty-side">完成一次任务后显示。</div>';
+  box.querySelectorAll("[data-copy-deliverable]").forEach(button => {
+    button.onclick = async () => {
+      const item = rows[Number(button.dataset.copyDeliverable)];
+      const text = [item.title, item.summary, ...(item.items || []).map(value => `- ${value}`)].filter(Boolean).join("\n");
+      await navigator.clipboard?.writeText(text);
+      trackProductEvent("deliverable.copy", state.conversation?.id, {type: item.type});
+      toast("交付物已复制");
+    };
+  });
 }
 
 function renderSuggestions(rows = []) {
@@ -649,7 +700,9 @@ function handleEvent(event) {
     const result = event.payload.result || {};
     renderConversation();
     renderEvidence(result.evidence || []);
+    renderDeliverables(result.deliverables || []);
     renderSuggestions(result.suggestions || []);
+    loadConversationControl().then(() => { renderFeedbackState(); renderTeamPanel(); });
     $("taskState").textContent = "验证完成";
     $("taskPercent").textContent = "100%";
     $("taskProgress").style.width = "100%";
@@ -807,6 +860,314 @@ function scrollBottom(smooth = true) {
   });
 }
 
+function taskStatusLabel(status) {
+  return {active: "进行中", waiting_approval: "等待确认", blocked: "受阻", verified: "已验证"}[status] || "进行中";
+}
+
+function isManager() {
+  return ["owner", "admin"].includes(state.session?.user?.role);
+}
+
+async function trackProductEvent(name, conversationId = state.conversation?.id, payload = {}) {
+  try {
+    await api("/api/product-events", {method: "POST", body: JSON.stringify({name, conversation_id: conversationId || null, payload})});
+  } catch {}
+}
+
+async function loadConversationControl() {
+  if (!state.conversation?.id) return;
+  try {
+    state.control = await api(`/api/conversations/${state.conversation.id}/control`);
+    state.gate = state.control.quality_gate || null;
+    state.feedback = {};
+    for (const row of state.control.feedback || []) {
+      if (row.user_id === state.session?.user?.id) state.feedback[row.message_id] = row;
+    }
+  } catch {
+    state.control = {approvals: [], feedback: [], quality_gate: null};
+    state.gate = null;
+  }
+}
+
+function renderTaskActions() {
+  if (!state.conversation) return;
+  const jobStatus = state.conversation.job?.status;
+  $("retryTaskBtn").hidden = !["failed", "cancelled"].includes(jobStatus);
+  $("pinTaskBtn").textContent = state.conversation.pinned ? "取消置顶" : "置顶";
+  $("archiveTaskBtn").textContent = state.conversation.archived_at ? "恢复" : "归档";
+  $("deleteTaskBtn").hidden = !isManager();
+}
+
+function pendingDeleteApproval() {
+  return (state.control?.approvals || []).find(row => row.action === "conversation.delete" && row.status === "pending");
+}
+
+function renderApproval() {
+  const card = $("approvalCard");
+  if (!card) return;
+  const approval = pendingDeleteApproval();
+  card.hidden = !approval;
+  if (!approval) return;
+  const controls = isManager() ? `
+    <div class="approval-actions">
+      <button type="button" data-approval-reject>取消删除</button>
+      <button class="danger" type="button" data-approval-confirm>确认永久删除</button>
+    </div>` : '<small>等待工作空间管理员确认。</small>';
+  card.innerHTML = `<div><span class="eyebrow">需要确认</span><b>永久删除任务和任务素材</b><p>${esc(approval.reason || "此操作不可恢复。")}</p></div>${controls}`;
+  card.querySelector("[data-approval-reject]")?.addEventListener("click", () => resolveDeleteApproval(approval, false));
+  card.querySelector("[data-approval-confirm]")?.addEventListener("click", () => resolveDeleteApproval(approval, true));
+}
+
+async function requestDeleteTask() {
+  if (!state.conversation) return;
+  try {
+    const approval = await api(`/api/conversations/${state.conversation.id}/delete-request`, {method: "POST", body: "{}"});
+    state.control = state.control || {approvals: []};
+    state.control.approvals = [approval, ...(state.control.approvals || []).filter(row => row.id !== approval.id)];
+    state.conversation.status = "waiting_approval";
+    renderConversation();
+    toast("删除请求已进入确认状态");
+  } catch (error) { toast(error.message); }
+}
+
+async function resolveDeleteApproval(approval, approved) {
+  try {
+    const resolved = await api(`/api/approvals/${approval.id}/resolve`, {method: "POST", body: JSON.stringify({approved})});
+    if (!approved) {
+      await loadConversationControl();
+      state.conversation.status = "active";
+      renderConversation();
+      toast("已取消删除");
+      return;
+    }
+    await api(`/api/conversations/${state.conversation.id}?approval_id=${encodeURIComponent(resolved.id)}`, {method: "DELETE"});
+    state.ws?.close();
+    state.conversation = null;
+    state.messages = [];
+    state.assets = [];
+    state.control = null;
+    toast("任务及其素材已永久删除");
+    await bootWorkspace();
+  } catch (error) { toast(error.message); }
+}
+
+async function retryCurrentTask() {
+  const jobId = state.conversation?.job?.id;
+  if (!jobId) return;
+  try {
+    const response = await api(`/api/jobs/${jobId}/retry`, {method: "POST", body: "{}"});
+    state.conversation.job = {id: response.job_id, status: response.status || "queued"};
+    state.progress = [];
+    setBusy(true, response.job_id);
+    $("thinkingCard").hidden = false;
+    $("thinkingStep").textContent = "重新执行";
+    $("thinkingDetail").textContent = "正在从上一次任务上下文恢复执行";
+    renderConversation();
+    toast("已重新执行");
+  } catch (error) { toast(error.message); }
+}
+
+async function renameCurrentTask() {
+  if (!state.conversation) return;
+  const value = window.prompt("任务名称", state.conversation.title || "");
+  if (!value?.trim() || value.trim() === state.conversation.title) return;
+  try {
+    state.conversation = {...state.conversation, ...(await api(`/api/conversations/${state.conversation.id}`, {method: "PATCH", body: JSON.stringify({title: value.trim()})}))};
+    renderConversation();
+    await loadConversations();
+  } catch (error) { toast(error.message); }
+}
+
+async function togglePinTask() {
+  if (!state.conversation) return;
+  try {
+    state.conversation = {...state.conversation, ...(await api(`/api/conversations/${state.conversation.id}`, {method: "PATCH", body: JSON.stringify({pinned: !Boolean(state.conversation.pinned)})}))};
+    renderConversation();
+    await loadConversations();
+  } catch (error) { toast(error.message); }
+}
+
+async function toggleArchiveTask() {
+  if (!state.conversation) return;
+  const restoring = Boolean(state.conversation.archived_at);
+  try {
+    const row = await api(`/api/conversations/${state.conversation.id}/${restoring ? "restore" : "archive"}`, {method: "POST", body: "{}"});
+    state.conversation = {...state.conversation, ...row};
+    renderConversation();
+    await loadConversations();
+    toast(restoring ? "任务已恢复" : "任务已归档");
+  } catch (error) { toast(error.message); }
+}
+
+async function saveFeedback(messageId, patch) {
+  const previous = state.feedback[messageId] || {verdict: "partial", evidence_useful: null, human_verified: 0, note: ""};
+  const payload = {...previous, ...patch};
+  try {
+    const row = await api(`/api/messages/${messageId}/feedback`, {
+      method: "PUT",
+      body: JSON.stringify({
+        verdict: payload.verdict,
+        evidence_useful: payload.evidence_useful,
+        human_verified: Boolean(payload.human_verified),
+        note: payload.note || "",
+      }),
+    });
+    state.feedback[messageId] = row;
+    state.gate = await api(`/api/quality-gate?conversation_id=${encodeURIComponent(state.conversation.id)}`);
+    renderFeedbackState();
+    renderTeamPanel();
+    toast(Boolean(row.human_verified) ? "已标记人工验证" : "结果反馈已记录");
+  } catch (error) { toast(error.message); }
+}
+
+function renderFeedbackState() {
+  $("messageList").querySelectorAll(".msg.assistant[data-message-id]").forEach(article => {
+    const messageId = article.dataset.messageId;
+    const feedback = state.feedback[messageId];
+    article.querySelectorAll("[data-feedback]").forEach(button => button.classList.toggle("active", feedback?.verdict === button.dataset.feedback));
+    article.querySelector("[data-human-verify]")?.classList.toggle("active", Boolean(feedback?.human_verified));
+  });
+}
+
+async function loadWorkspaces() {
+  try {
+    state.workspaces = await api("/api/workspaces");
+    renderWorkspaceMenu();
+  } catch (error) { toast(error.message); }
+}
+
+function renderWorkspaceMenu() {
+  const menu = $("workspaceMenu");
+  if (!menu) return;
+  menu.innerHTML = state.workspaces.map(row => `<button type="button" data-workspace-id="${esc(row.id)}" class="${row.id === state.session?.workspace?.id ? "active" : ""}"><b>${esc(row.name)}</b><small>${esc(row.role)}</small></button>`).join("") || '<div class="empty-side">没有其他工作空间。</div>';
+  menu.querySelectorAll("[data-workspace-id]").forEach(button => {
+    button.onclick = async () => {
+      if (button.dataset.workspaceId === state.session?.workspace?.id) { menu.hidden = true; return; }
+      try {
+        const session = await api(`/api/workspaces/${button.dataset.workspaceId}/switch`, {method: "POST", body: "{}"});
+        applySession(session);
+        menu.hidden = true;
+        state.conversation = null;
+        state.ws?.close();
+        await bootWorkspace();
+      } catch (error) { toast(error.message); }
+    };
+  });
+}
+
+async function maybeAcceptInvite() {
+  const token = new URLSearchParams(location.search).get("invite");
+  if (!token || !state.session) return;
+  try {
+    const session = await api(`/api/invites/${encodeURIComponent(token)}/accept`, {method: "POST", body: "{}"});
+    applySession(session);
+    const url = new URL(location.href);
+    url.searchParams.delete("invite");
+    history.replaceState(null, "", url);
+    toast("已加入工作空间");
+  } catch (error) {
+    if (!/已失效|已使用/.test(error.message)) toast(error.message);
+  }
+}
+
+async function loadTeamPanel() {
+  try {
+    state.members = await api("/api/workspace/members");
+  } catch { state.members = []; }
+  if (isManager()) {
+    try { state.metrics = await api("/api/metrics"); } catch { state.metrics = null; }
+    try { state.invites = await api("/api/workspace/invites"); } catch { state.invites = []; }
+  } else {
+    state.metrics = null;
+    state.invites = [];
+  }
+  renderTeamPanel();
+}
+
+function renderTeamPanel() {
+  const assignee = $("assigneeSelect");
+  if (!assignee) return;
+  assignee.innerHTML = '<option value="">未指定</option>' + state.members.map(member => `<option value="${esc(member.id)}">${esc(member.name || member.email)}</option>`).join("");
+  assignee.value = state.conversation?.assigned_to || "";
+  assignee.disabled = !state.conversation;
+
+  $("memberList").innerHTML = state.members.length ? state.members.map(member => {
+    const controls = isManager() ? `<select data-member-role="${esc(member.id)}"><option value="owner">所有者</option><option value="admin">管理员</option><option value="member">成员</option><option value="viewer">只读</option></select><button type="button" data-remove-member="${esc(member.id)}">移除</button>` : `<em>${esc(member.role)}</em>`;
+    return `<div class="member-row"><span class="member-avatar">${esc((member.name || member.email || "成").slice(0, 1).toUpperCase())}</span><div><b>${esc(member.name || member.email)}</b><small>${esc(member.email)}</small></div><div class="member-controls">${controls}</div></div>`;
+  }).join("") : '<div class="empty-side">还没有团队成员。</div>';
+  $("memberList").querySelectorAll("[data-member-role]").forEach(select => {
+    const member = state.members.find(row => row.id === select.dataset.memberRole);
+    select.value = member?.role || "member";
+    select.onchange = () => updateMemberRole(select.dataset.memberRole, select.value);
+  });
+  $("memberList").querySelectorAll("[data-remove-member]").forEach(button => button.onclick = () => removeMember(button.dataset.removeMember));
+  $("inviteForm").hidden = !isManager();
+  $("inviteList").innerHTML = (state.invites || []).filter(row => row.status === "pending").map(row => `<div class="invite-row"><div><b>${esc(row.email || "通用邀请")}</b><small>${esc(row.role)}</small></div><button type="button" data-copy-invite="${esc(row.token)}">复制链接</button><button type="button" data-revoke-invite="${esc(row.id)}">撤销</button></div>`).join("") || (isManager() ? '<div class="empty-side">没有待使用邀请。</div>' : "");
+  $("inviteList").querySelectorAll("[data-copy-invite]").forEach(button => button.onclick = () => copyInvite(button.dataset.copyInvite));
+  $("inviteList").querySelectorAll("[data-revoke-invite]").forEach(button => button.onclick = () => revokeInvite(button.dataset.revokeInvite));
+
+  const gate = state.gate;
+  $("qualityGate").innerHTML = gate ? `<div class="gate-state ${gate.approved ? "approved" : "pending"}"><b>${gate.approved ? "人工质量门已通过" : "等待人工质量门"}</b><small>${esc(gate.reason || "")}</small></div>` : '<div class="empty-side">任务结果产生后显示质量门。</div>';
+  const metrics = state.metrics;
+  $("metricGrid").innerHTML = metrics ? [
+    ["任务完成", `${Math.round((metrics.first_task_completion_rate || 0) * 100)}%`],
+    ["失败恢复", `${Math.round((metrics.recovery_rate || 0) * 100)}%`],
+    ["证据打开", `${Math.round((metrics.evidence_open_rate || 0) * 100)}%`],
+    ["结果采纳", `${Math.round((metrics.result_adoption_rate || 0) * 100)}%`],
+  ].map(([label, value]) => `<div><b>${value}</b><small>${label}</small></div>`).join("") : "";
+}
+
+async function createInvite(event) {
+  event.preventDefault();
+  try {
+    const invite = await api("/api/workspace/invites", {method: "POST", body: JSON.stringify({email: $("inviteEmail").value.trim() || null, role: $("inviteRole").value})});
+    state.invites = [invite, ...(state.invites || [])];
+    $("inviteEmail").value = "";
+    renderTeamPanel();
+    await copyInvite(invite.token);
+  } catch (error) { toast(error.message); }
+}
+
+async function copyInvite(token) {
+  const url = new URL(location.href);
+  url.search = "";
+  url.searchParams.set("invite", token);
+  await navigator.clipboard?.writeText(url.toString());
+  toast("邀请链接已复制");
+}
+
+async function revokeInvite(inviteId) {
+  try {
+    await api(`/api/workspace/invites/${inviteId}`, {method: "DELETE"});
+    state.invites = (state.invites || []).filter(row => row.id !== inviteId);
+    renderTeamPanel();
+  } catch (error) { toast(error.message); }
+}
+
+async function updateMemberRole(userId, role) {
+  try {
+    await api(`/api/workspace/members/${userId}`, {method: "PATCH", body: JSON.stringify({role})});
+    await loadTeamPanel();
+  } catch (error) { toast(error.message); await loadTeamPanel(); }
+}
+
+async function removeMember(userId) {
+  try {
+    await api(`/api/workspace/members/${userId}`, {method: "DELETE"});
+    await loadTeamPanel();
+  } catch (error) { toast(error.message); }
+}
+
+async function assignTask(userId) {
+  if (!state.conversation) return;
+  try {
+    const row = await api(`/api/conversations/${state.conversation.id}`, {method: "PATCH", body: JSON.stringify({assigned_to: userId || null})});
+    state.conversation = {...state.conversation, ...row};
+    trackProductEvent("task.handoff", state.conversation.id, {assigned: Boolean(userId)});
+    toast("负责人已更新");
+  } catch (error) { toast(error.message); await loadTeamPanel(); }
+}
+
 function bindUI() {
   document.querySelectorAll(".scene-item").forEach(button => {
     button.onclick = () => {
@@ -851,6 +1212,34 @@ function bindUI() {
 
   $("newTaskBtn").onclick = () => newConversation(state.scene);
   $("refreshConvBtn").onclick = loadConversations;
+  let searchTimer;
+  $("taskSearch").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadConversations, 180); };
+  document.querySelectorAll("[data-task-scope]").forEach(button => {
+    button.onclick = () => {
+      state.scope = button.dataset.taskScope;
+      document.querySelectorAll("[data-task-scope]").forEach(item => item.classList.toggle("active", item === button));
+      loadConversations();
+    };
+  });
+  $("retryTaskBtn").onclick = retryCurrentTask;
+  $("renameTaskBtn").onclick = renameCurrentTask;
+  $("pinTaskBtn").onclick = togglePinTask;
+  $("archiveTaskBtn").onclick = toggleArchiveTask;
+  $("deleteTaskBtn").onclick = requestDeleteTask;
+  $("workspaceSwitchBtn").onclick = async () => {
+    const menu = $("workspaceMenu");
+    menu.hidden = !menu.hidden;
+    $("workspaceSwitchBtn").setAttribute("aria-expanded", String(!menu.hidden));
+    if (!menu.hidden) await loadWorkspaces();
+  };
+  document.addEventListener("click", event => {
+    if (!$("workspaceMenu").hidden && !$("workspaceMenu").contains(event.target) && !$("workspaceSwitchBtn").contains(event.target)) {
+      $("workspaceMenu").hidden = true;
+      $("workspaceSwitchBtn").setAttribute("aria-expanded", "false");
+    }
+  });
+  $("assigneeSelect").onchange = event => assignTask(event.target.value);
+  $("inviteForm").onsubmit = createInvite;
 
   document.querySelectorAll(".right-tab").forEach(button => {
     button.onclick = () => {
@@ -863,6 +1252,8 @@ function bindUI() {
           panel.id === `panel-${button.dataset.panel}`
         );
       });
+      if (button.dataset.panel === "evidence") trackProductEvent("evidence.open", state.conversation?.id);
+      if (button.dataset.panel === "team") loadTeamPanel();
     };
   });
 
@@ -882,12 +1273,23 @@ function bindUI() {
 
 
   $("messageList").addEventListener("click", event => {
-    const button = event.target.closest("[data-copy-result]");
-    if (!button) return;
-    const article = button.closest(".msg");
-    const text = article?.querySelector(".msg-content")?.innerText || "";
-    navigator.clipboard?.writeText(text);
-    toast("结果已复制");
+    const article = event.target.closest(".msg.assistant[data-message-id]");
+    if (!article) return;
+    const messageId = article.dataset.messageId;
+    const copy = event.target.closest("[data-copy-result]");
+    if (copy) {
+      const text = article.querySelector(".msg-content")?.innerText || "";
+      navigator.clipboard?.writeText(text);
+      trackProductEvent("result.copy", state.conversation?.id);
+      toast("结果已复制");
+      return;
+    }
+    const feedback = event.target.closest("[data-feedback]");
+    if (feedback) { saveFeedback(messageId, {verdict: feedback.dataset.feedback}); return; }
+    if (event.target.closest("[data-human-verify]")) {
+      const previous = state.feedback[messageId];
+      saveFeedback(messageId, {verdict: previous?.verdict || "correct", human_verified: !Boolean(previous?.human_verified)});
+    }
   });
 
   let dragDepth = 0;
