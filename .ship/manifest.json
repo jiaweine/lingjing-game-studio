@@ -1,0 +1,26 @@
+{
+  "archive_sha256": "5bf577270e07f963bfef3e85841c0c525a2ca1cca4c5a221999e60be0f62384d",
+  "archive_size": 113612,
+  "base64_chars": 151484,
+  "chunks": [
+    {"name":"chunk-000.txt","sha256":"e48b53ba5147db915f534556c5aa29c432ed9b311d5b7277af103310d1bcd484","size":8000},
+    {"name":"chunk-001.txt","sha256":"6bd68d83718173e6291dd08feedac11554ba0d38d22448bcdc79e759556f5bcf","size":8000},
+    {"name":"chunk-002.txt","sha256":"224142de3d7b33e399c0b8b8a7c2c47f147a8ad880f47fce244fabf1afed7e86","size":8000},
+    {"name":"chunk-003.txt","sha256":"f3718f949c26e363f44337a60a3e08ebbb0f8d4ab5401c69fa6f6cb25aba13c9","size":8000},
+    {"name":"chunk-004.txt","sha256":"cce5e09ca893684c760ea9a214afabeb2bfb3904850aaf5748f390f2f5754959","size":8000},
+    {"name":"chunk-005.txt","sha256":"840ca1359d18757029f10dab37f8b6fda2daf1eb35cd0d9a2db19df9f7f501a3","size":8000},
+    {"name":"chunk-006.txt","sha256":"39238a7d6f24f15e4c3fff82dd03e00c8332ad701e490027e8513e122efb176f","size":8000},
+    {"name":"chunk-007.txt","sha256":"a6eb11e642b44e96973d121847cb90a0d684bb1476b989461cbe3c5898a4a50a","size":8000},
+    {"name":"chunk-008.txt","sha256":"abd9f94ac8c6b6a72364d2bb1e007d6b6b47d20600bcb2560920168806ffc07a","size":8000},
+    {"name":"chunk-009.txt","sha256":"caef89c42e75546957eac4a46d507c49ec2396b81db0048e94300c7e2e4c9174","size":8000},
+    {"name":"chunk-010.txt","sha256":"679bb6694e7a1834a4ce4441834e75edd51e01d490ff6cc85c2f26cb3a2cc4b1","size":8000},
+    {"name":"chunk-011.txt","sha256":"25e36a250fa3e7c02a1ad0eddcf8f206c38a166e4e1a4dc45fb92d616b605485","size":8000},
+    {"name":"chunk-012.txt","sha256":"a8503768e5d0a10cb7ca8045dce1cddf37816c11e32ed9e036864c0bdc123b87","size":8000},
+    {"name":"chunk-013.txt","sha256":"a332b219e33436d26aced6f3fc635ad466ef04f124b436118cd9bc4e748f2af7","size":8000},
+    {"name":"chunk-014.txt","sha256":"2d4477e0abcd0f26be31a1b159650435638223bda993f0eb8835a4084ca36691","size":8000},
+    {"name":"chunk-015.txt","sha256":"05c93ee1f57ae79657bbad5114f12263b6a8a554faca191aa15dfcb7d6c1fb8e","size":8000},
+    {"name":"chunk-016.txt","sha256":"9bb797aa34cfcfd4ead685ff41347a302593d50c0cfd689c36da9823dbec008f","size":8000},
+    {"name":"chunk-017.txt","sha256":"82a1a933f42c7737b0beecdbefa6f747c3fd8d315b71a90efb35afb664b508b6","size":8000},
+    {"name":"chunk-018.txt","sha256":"1e0c53f859da776a39956c9b12ac7094d673537c32cc7507ae247a20b47b62a6","size":7484}
+  ]
+}
