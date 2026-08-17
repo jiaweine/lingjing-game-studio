@@ -1,5 +1,3 @@
-<div align="center">
-
 # 灵境
 
 ### 游戏研发执行工作台
@@ -8,9 +6,7 @@
 
 问题复现 · 数值检查 · 版本回归 · 角色行为 · 多素材交叉核对
 
-</div>
-
-<img src="docs/assets/readme/cover.png" alt="灵境游戏研发执行工作台总览" width="100%">
+![灵境游戏研发执行工作台总览](/docs/assets/readme/cover.png)
 
 ---
 
@@ -20,28 +16,10 @@
 
 > **目标 → 素材 → 执行 → 复核 → 证据 → 交付 → 人工确认**
 
-<table>
-<tr>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/workspace-empty.png" alt="创建研发目标" width="100%">
-<br><sub><b>1 · 交付目标</b>　直接说要解决什么，不要求先拆 Prompt、Agent 或流程图。</sub>
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/task-running.png" alt="任务执行中" width="100%">
-<br><sub><b>2 · 看见执行</b>　真实进度持续进入任务轨迹；长任务可以停止，失败或停止后可以安全重试。</sub>
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/workspace.png" alt="任务结果与协作面板" width="100%">
-<br><sub><b>3 · 拿到交付</b>　目标、执行过程、结论、结构化交付和后续动作留在同一个研发任务里。</sub>
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/evidence.png" alt="证据面板" width="100%">
-<br><sub><b>4 · 检查证据</b>　截图、录像关键帧、日志摘录和复核结果与结论对应。</sub>
-</td>
-</tr>
-</table>
+1. **交付目标**：直接说要解决什么，不要求先拆 Prompt、Agent 或流程图。
+2. **看见执行**：真实进度持续进入任务轨迹；长任务可以停止，失败或停止后可以安全重试。
+3. **拿到交付**：目标、执行过程、结论、结构化交付和后续动作留在同一个研发任务里。
+4. **检查证据**：截图、录像关键帧、日志摘录和复核结果与结论对应。
 
 客户界面只回答真正需要知道的事：**我要完成什么、系统正在做什么、我能不能介入、发现了什么、结论由什么证据支持、谁来确认结果。**
 
@@ -49,26 +27,55 @@
 
 ## 当前产品界面
 
-下面 8 张图片全部来自真实浏览器 E2E 产品状态，README Gallery 会在相关界面或截图脚本变化后重新采集，并校验每张图都是 **3840×2400 PNG**。
+下面 **8 张产品截图全部直接展示**。它们来自真实浏览器 E2E 产品状态；README Gallery 会在相关界面或截图脚本变化后重新采集，并校验每张图都是 **3840×2400 PNG**。
 
-<table>
-<tr>
-<td width="50%"><img src="docs/assets/readme/auth.png" alt="登录与工作空间入口" width="100%"><br><sub><b>身份入口</b> · 注册、登录与工作空间身份边界</sub></td>
-<td width="50%"><img src="docs/assets/readme/workspace-empty.png" alt="空任务工作台" width="100%"><br><sub><b>新任务</b> · 从研发目标开始，而不是从模型配置开始</sub></td>
-</tr>
-<tr>
-<td width="50%"><img src="docs/assets/readme/upload.png" alt="多模态素材上传" width="100%"><br><sub><b>素材输入</b> · 图片、视频、音频、日志、配置与文档</sub></td>
-<td width="50%"><img src="docs/assets/readme/task-running.png" alt="任务执行状态" width="100%"><br><sub><b>执行中</b> · 进度、停止与当前任务状态</sub></td>
-</tr>
-<tr>
-<td width="50%"><img src="docs/assets/readme/workspace.png" alt="任务结果工作台" width="100%"><br><sub><b>任务结果</b> · 结论、后续动作、团队与任务管理</sub></td>
-<td width="50%"><img src="docs/assets/readme/evidence.png" alt="证据核验" width="100%"><br><sub><b>证据核验</b> · 让结论能够回到来源</sub></td>
-</tr>
-<tr>
-<td width="50%"><img src="docs/assets/readme/multimodal.png" alt="多模态任务上下文" width="100%"><br><sub><b>持续上下文</b> · 后续追问自动继承任务已有素材</sub></td>
-<td width="50%"><img src="docs/assets/readme/cover.png" alt="产品总览" width="100%"><br><sub><b>产品总览</b> · 控制、证据、交付与协作集中在同一个任务空间</sub></td>
-</tr>
-</table>
+### 1 · 身份入口
+
+注册、登录与工作空间身份边界。
+
+![登录与工作空间入口](/docs/assets/readme/auth.png)
+
+### 2 · 新任务
+
+从研发目标开始，而不是从模型配置开始。
+
+![空任务工作台](/docs/assets/readme/workspace-empty.png)
+
+### 3 · 素材输入
+
+图片、视频、音频、日志、配置与文档进入同一个任务上下文。
+
+![多模态素材上传](/docs/assets/readme/upload.png)
+
+### 4 · 执行中
+
+查看真实进度、当前任务状态，并在需要时停止执行。
+
+![任务执行状态](/docs/assets/readme/task-running.png)
+
+### 5 · 任务结果
+
+结论、后续动作、团队协作和任务管理集中在同一个工作台。
+
+![任务结果工作台](/docs/assets/readme/workspace.png)
+
+### 6 · 证据核验
+
+让结论能够回到截图、关键帧、日志等来源。
+
+![证据核验](/docs/assets/readme/evidence.png)
+
+### 7 · 持续多模态上下文
+
+后续追问自动继承当前任务已有素材，不把上一轮上下文丢掉。
+
+![多模态任务上下文](/docs/assets/readme/multimodal.png)
+
+### 8 · 产品总览
+
+控制、证据、交付与协作集中在同一个任务空间。
+
+![产品总览](/docs/assets/readme/cover.png)
 
 ---
 
@@ -212,7 +219,7 @@ python scripts/product_backend_e2e.py
 python scripts/product_ui_e2e.py
 ```
 
-当前正式产品验证覆盖 Python 回归测试、Python 编译、前端 JavaScript 语法、后端产品 E2E 和真实浏览器产品 E2E。两个产品 E2E 脚本都会在任一关键检查失败时返回非零退出码，避免“报告里有 false 但 CI 仍然绿色”。
+当前正式产品验证覆盖 Python 回归测试、Python 编译、前端 JavaScript 语法、后端产品 E2E、真实浏览器产品 E2E，以及 README 的 GitHub Markdown 渲染与截图可加载性。两个产品 E2E 脚本都会在任一关键检查失败时返回非零退出码，避免“报告里有 false 但 CI 仍然绿色”。
 
 浏览器 E2E 覆盖身份入口、工作空间、任务生命周期、素材上传、多模态上下文、运行状态、停止/重试、实时结果、证据、结构化交付、质量反馈、团队协作、邀请、产品指标、归档保护和永久删除审批，并生成 README Gallery。
 
@@ -234,8 +241,4 @@ tests/                    Runtime / API / 产品 / 多模态 / Realtime 回归�
 docs/                     架构、前端、运行与评测说明
 ```
 
-<div align="center">
-
 **目标不是让模型更会描述它做了什么，而是让系统真的执行、复核、恢复，并留下可以检查、可以交接、可以确认的证据。**
-
-</div>
