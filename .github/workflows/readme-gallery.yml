@@ -19,23 +19,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
-
       - name: Install application dependencies
         run: pip install -r requirements.txt
-
       - name: Install Playwright
         run: |
           pip install playwright
           python -m playwright install --with-deps chromium
-
       - name: Capture product states
         run: python scripts/product_ui_e2e.py
-
       - name: Verify gallery
         run: |
           python - <<'PY'
@@ -43,7 +38,7 @@ jobs:
           from PIL import Image
           names = [
               'auth', 'workspace-empty', 'upload', 'task-running',
-              'workspace', 'evidence', 'providers', 'cover',
+              'workspace', 'evidence', 'multimodal', 'cover',
           ]
           for name in names:
               path = Path('docs/assets/readme') / f'{name}.png'
@@ -53,12 +48,12 @@ jobs:
                   assert image.size == (3840, 2400), (name, image.size)
               print(name, path.stat().st_size)
           PY
-
       - name: Commit refreshed screenshots
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add docs/assets/readme/*.png
+          git rm -f docs/assets/readme/providers.png 2>/dev/null || true
           if git diff --cached --quiet; then
             echo 'README screenshots are already current.'
           else

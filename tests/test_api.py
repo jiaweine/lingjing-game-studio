@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+
 from worldforge.api.app import app
 
 
@@ -25,12 +26,20 @@ def test_provider_gateway_and_product_info():
     providers = client.get("/api/providers").json()
     keys = {item["key"] for item in providers}
     assert {
-        "auto", "demo", "deepseek", "qwen", "doubao",
-        "openai", "anthropic", "gemini",
+        "auto",
+        "demo",
+        "local_omni",
+        "deepseek",
+        "qwen",
+        "doubao",
+        "openai",
+        "anthropic",
+        "gemini",
     } <= keys
     product = client.get("/api/product").json()
     assert product["name"] == "灵境游戏研发执行工作台"
     assert "视频" in product["accepted"]
+    assert "音频" in product["accepted"]
     assert len(product["scenes"]) >= 5
 
 
@@ -40,8 +49,15 @@ def test_conversation_roundtrip():
         "/api/conversations",
         json={"title": "测试任务", "scene": "battle_review"},
     ).json()
-    response = client.get(
-        f"/api/conversations/{conversation['id']}"
-    )
+    response = client.get(f"/api/conversations/{conversation['id']}")
     assert response.status_code == 200
     assert response.json()["title"] == "测试任务"
+
+
+def test_spoofed_image_upload_is_rejected():
+    client = TestClient(app)
+    response = client.post(
+        "/api/assets",
+        files={"file": ("fake.png", b"<html>not-an-image</html>", "image/png")},
+    )
+    assert response.status_code == 415

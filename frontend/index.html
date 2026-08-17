@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="theme-color" content="#090b10" />
-  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#f3f5f9" />
+  <meta name="color-scheme" content="light" />
   <title>灵境 · 游戏研发执行工作台</title>
   <link rel="stylesheet" href="/assets/app.css" />
 </head>
@@ -20,14 +20,14 @@
       </div>
       <div class="brand-copy">
         <b>灵境</b>
-        <span>Game R&D Workspace</span>
+        <span>游戏研发工作台</span>
       </div>
     </div>
 
     <button class="workspace-switch" id="workspaceSwitch" type="button">
       <span class="workspace-beacon"></span>
       <span class="workspace-copy">
-        <small>Workspace</small>
+        <small>工作空间</small>
         <b id="workspaceName">本地演示空间</b>
       </span>
       <span class="chevron">⌄</span>
@@ -106,7 +106,7 @@
   <main class="work-area">
     <div class="mission-head">
       <div>
-        <span class="eyebrow">CURRENT MISSION</span>
+        <span class="eyebrow">当前任务</span>
         <h1 id="conversationTitle">战斗问题复现</h1>
         <p id="conversationMeta">把目标说清楚，系统会持续执行到得到可核验结果。</p>
       </div>
@@ -219,7 +219,7 @@
         </div>
         <input id="fileInput" type="file" multiple hidden />
       </div>
-      <div class="privacy-note">任务素材按 Workspace 隔离；选择第三方推理服务时遵循对应企业数据策略。</div>
+      <div class="privacy-note">任务素材按 工作空间隔离；选择第三方推理服务时遵循对应企业数据策略。</div>
     </div>
   </main>
 
@@ -257,7 +257,7 @@
         <div class="sub-card">
           <div class="sub-head">
             <div>
-              <small>NEXT ACTION</small>
+              <small>下一步</small>
               <b>可以继续要求</b>
             </div>
           </div>
@@ -271,7 +271,7 @@
 
       <section class="right-panel" id="panel-evidence">
         <div class="panel-intro">
-          <span class="eyebrow">RESULT PROOF</span>
+          <span class="eyebrow">关键证据</span>
           <b>关键证据</b>
           <p>录像片段、截图、日志和复核结果都会和结论对应起来。</p>
         </div>
@@ -282,7 +282,7 @@
 
       <section class="right-panel" id="panel-assets">
         <div class="panel-intro">
-          <span class="eyebrow">MISSION CONTEXT</span>
+          <span class="eyebrow">任务上下文</span>
           <b>本次素材</b>
           <p>同一个任务里可以持续追加，不需要重新解释背景。</p>
         </div>
@@ -323,18 +323,18 @@
   <div class="modal auth-modal">
     <div class="auth-brand">
       <div class="brand-mark"><span></span><span></span><span></span></div>
-      <div><b>灵境</b><span>Game R&D Workspace</span></div>
+      <div><b>灵境</b><span>游戏研发工作台</span></div>
     </div>
 
     <div class="auth-copy">
-      <span class="eyebrow">YOUR EXECUTION SPACE</span>
+      <span class="eyebrow">你的执行空间</span>
       <h2>把问题、执行过程和验证证据留在一个工作空间。</h2>
-      <p>团队任务、素材、结果与审计记录按 Workspace 隔离。</p>
+      <p>团队任务、素材、结果与审计记录按 工作空间隔离。</p>
     </div>
 
     <div class="auth-tabs">
       <button class="active" data-auth-tab="login" type="button">登录</button>
-      <button data-auth-tab="register" type="button">创建 Workspace</button>
+      <button data-auth-tab="register" type="button">创建空间</button>
     </div>
 
     <form id="loginForm" class="auth-form">
@@ -373,7 +373,7 @@
 
     <div class="auth-security">
       <span></span>
-      <p>安全会话 · Workspace 隔离 · 审计记录</p>
+      <p>安全会话 · 工作空间隔离 · 审计记录</p>
     </div>
   </div>
 </div>
