@@ -52,3 +52,4 @@ jobs:
             git commit -m "fix: enforce read-only collaboration permissions"
             git push origin HEAD:agent/product-completion
           fi
+# trigger: read-only-permissions
