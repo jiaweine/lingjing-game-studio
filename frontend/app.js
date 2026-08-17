@@ -236,8 +236,8 @@ function bindAuth() {
 async function loadServiceHealth() {
   const element = $("serviceStatus");
   try {
-    const health = await api("/api/health");
-    element.querySelector("span").textContent = `服务正常 · ${health.storage}/${health.queue}`;
+    await api("/api/health");
+    element.querySelector("span").textContent = "服务正常";
     element.classList.remove("bad");
   } catch {
     element.querySelector("span").textContent = "服务异常";
@@ -255,15 +255,13 @@ function setScene(scene) {
 }
 
 async function loadProviders() {
-  state.providers = await api("/api/providers");
+  try {
+    state.providers = await api("/api/providers");
+  } catch {
+    state.providers = [];
+  }
   const select = $("providerSelect");
-  select.innerHTML = state.providers.map(provider => `
-    <option value="${esc(provider.key)}"
-      ${provider.key !== "auto" && provider.key !== "demo" && !provider.configured ? "disabled" : ""}>
-      ${esc(provider.name)}${provider.key !== "auto" && provider.key !== "demo" && !provider.configured ? " · 未配置" : ""}
-    </option>
-  `).join("");
-  renderProviderModal();
+  if (select) select.innerHTML = '<option value="auto">自动选择</option>';
 }
 
 function renderProviderModal() {
@@ -385,7 +383,7 @@ function renderMessage(message) {
       <article class="msg user">
         <div class="msg-body">
           <div class="msg-label">
-            <span class="tag">MISSION</span>
+            <span class="tag">输入</span>
             <b>任务目标</b>
             <time>${message.created_at ? fmtTime(message.created_at) : ""}</time>
           </div>
@@ -405,13 +403,12 @@ function renderMessage(message) {
     <article class="msg assistant">
       <div class="msg-body">
         <div class="msg-label">
-          <span class="tag">RESULT</span>
+          <span class="tag">交付</span>
           <b>执行结果</b>
           <time>${message.created_at ? fmtTime(message.created_at) : ""}</time>
         </div>
         <div class="msg-content">${md(message.content)}</div>
         <div class="answer-foot">
-          <span class="answer-provider">推理服务：${esc(payload.provider || "自动")}</span>
           <button class="answer-action" type="button" data-copy-result>复制结果</button>
         </div>
       </div>
@@ -588,14 +585,23 @@ function renderProgress() {
 
 function connectConversation() {
   if (!state.conversation) return;
+  const conversationId = state.conversation.id;
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  state.ws = new WebSocket(
-    `${protocol}://${location.host}/ws/conversations/${state.conversation.id}`
+  const socket = new WebSocket(
+    `${protocol}://${location.host}/ws/conversations/${conversationId}`
   );
-  state.ws.onmessage = event => {
-    handleEvent(JSON.parse(event.data));
+  state.ws = socket;
+  socket.onmessage = event => {
+    try { handleEvent(JSON.parse(event.data)); } catch {}
   };
-  state.ws.onerror = () => {};
+  socket.onerror = () => {};
+  socket.onclose = () => {
+    if (state.ws !== socket || state.conversation?.id !== conversationId) return;
+    clearTimeout(connectConversation.timer);
+    connectConversation.timer = setTimeout(() => {
+      if (state.conversation?.id === conversationId) connectConversation();
+    }, 900);
+  };
 }
 
 function handleEvent(event) {
@@ -713,7 +719,7 @@ async function sendMessage() {
         body: JSON.stringify({
           content,
           asset_ids: selectedAssets,
-          provider: $("providerSelect").value,
+          provider: "auto",
         }),
       }
     );
@@ -726,6 +732,11 @@ async function sendMessage() {
     state.busy = false;
     $("sendBtn").disabled = false;
     $("thinkingCard").hidden = true;
+    state.messages = state.messages.filter(item => item.id !== optimistic.id);
+    state.pending = selectedAssets
+      .map(id => state.assets.find(asset => asset.id === id))
+      .filter(Boolean);
+    renderConversation();
     toast(error.message);
   }
 }
@@ -749,8 +760,12 @@ function scrollBottom(smooth = true) {
 function bindUI() {
   document.querySelectorAll(".scene-item").forEach(button => {
     button.onclick = () => {
-      setScene(button.dataset.scene);
-      if (state.messages.length) newConversation(button.dataset.scene);
+      const targetScene = button.dataset.scene;
+      if (!state.conversation || state.conversation.scene !== targetScene) {
+        newConversation(targetScene);
+      } else {
+        setScene(targetScene);
+      }
     };
   });
 
@@ -870,7 +885,7 @@ function bindUI() {
 }
 
 async function bootWorkspace() {
-  await Promise.all([
+  await Promise.allSettled([
     loadProviders(),
     loadConversations(),
     loadServiceHealth(),

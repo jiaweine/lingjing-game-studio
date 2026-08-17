@@ -33,9 +33,7 @@ def test_counterfactual_keeps_canonical_state():
     planner = AdaptivePlanner(SkillBank(), EpisodicMemory())
     verifier = StateVerifier()
     brancher = CounterfactualBrancher(planner, verifier)
-    ranked = planner.rank(
-        state, env.legal_actions(state), scenario.goal
-    )
+    ranked = planner.rank(state, env.legal_actions(state), scenario.goal)
     before = env.state.model_dump()
     results = brancher.evaluate(
         env,
@@ -49,8 +47,6 @@ def test_counterfactual_keeps_canonical_state():
     assert env.state.model_dump() == before
 
 
-
-
 def test_counterfactual_rollouts_do_not_share_violations():
     from dataclasses import dataclass
     from worldforge.models import GameAction
@@ -62,6 +58,7 @@ def test_counterfactual_rollouts_do_not_share_violations():
     class FakeVerifier:
         def verify(self, before, after, info, goal, anomalies):
             return Verification(["bad_rollout"] if info["bad"] else [])
+
         def branch_score(self, state, reward, goal, violations):
             return reward - (100 if violations else 0)
 
@@ -74,10 +71,13 @@ def test_counterfactual_rollouts_do_not_share_violations():
             self.state = WorldState()
             self.bad = bad
             self.anomalies = []
+
         def clone(self, seed_offset=0):
             return FakeEnv(bad=(seed_offset == 0))
+
         def legal_actions(self, state):
             return ["attack"]
+
         def step(self, action: GameAction):
             next_state = self.state.model_copy(deep=True)
             next_state.tick += 1
@@ -94,7 +94,6 @@ def test_counterfactual_rollouts_do_not_share_violations():
         horizon=1,
         rollouts=2,
     )[0]
-    # First rollout: 1 - 100 = -99. Second rollout: 1.
     assert result.expected_score == -49.0
     assert result.violations == ["bad_rollout"]
 
@@ -126,6 +125,31 @@ def test_recursive_specialists_influence_planner():
     ).aggregate["heal"]
 
 
+def test_epistemic_disagreement_favors_information_before_risky_commitment():
+    planner = AdaptivePlanner(SkillBank(), EpisodicMemory())
+    goal = GoalState(primary="finish safely")
+    uncertain = WorldState(
+        player_hp=72,
+        player_max_hp=100,
+        enemy_hp=80,
+        enemy_max_hp=100,
+        enemy_attack=22,
+        enemy_variance=12,
+        discovered_enemy_attack=None,
+        threat=.78,
+        energy=3,
+    )
+    observed = uncertain.model_copy(deep=True)
+    observed.discovered_enemy_attack = 22
+    legal = ["scout", "defend", "heavy_attack", "attack"]
+
+    uncertain_rank = planner.rank(uncertain, legal, goal)
+    observed_rank = planner.rank(observed, legal, goal)
+
+    assert uncertain_rank.aggregate["scout"] > observed_rank.aggregate["scout"]
+    assert uncertain_rank.aggregate["heavy_attack"] < observed_rank.aggregate["heavy_attack"]
+
+
 def test_group_relative_optimizer_is_finite():
     policy = WorldForgePolicy()
     planner = AdaptivePlanner(SkillBank(), EpisodicMemory(), policy)
@@ -149,15 +173,17 @@ def test_group_relative_optimizer_is_finite():
 
 def test_engine_completes_and_trace_valid(tmp_path):
     engine = WorldForgeEngine(tmp_path / "wf.db")
-    summary = asyncio.run(engine.run(
-        RunConfig(
-            scenario_id="boss_burst",
-            seed=9,
-            max_steps=12,
-            rollouts_per_branch=1,
-        ),
-        demo_delay=0,
-    ))
+    summary = asyncio.run(
+        engine.run(
+            RunConfig(
+                scenario_id="boss_burst",
+                seed=9,
+                max_steps=12,
+                rollouts_per_branch=1,
+            ),
+            demo_delay=0,
+        )
+    )
     assert summary.status == "completed"
     assert engine.events.verify_chain(summary.session_id)
     types = {

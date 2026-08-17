@@ -200,13 +200,14 @@ with sync_playwright() as playwright:
     )
     shot("evidence.png")
 
-    page.click("#providerBtn")
-    page.wait_for_selector("#providerModal:not([hidden])")
-    report["checks"]["provider_modal"] = (
-        page.locator("#providerGrid .provider-card").count() >= 4
+    page.click('[data-panel="assets"]')
+    page.wait_for_function(
+        "document.querySelector('#panel-assets').classList.contains('active')"
     )
-    shot("providers.png")
-    page.click(".modal-close")
+    report["checks"]["multimodal_assets"] = (
+        page.locator("#assetList .asset-card").count() == 3
+    )
+    shot("multimodal.png")
 
     report["workspace"] = page.locator("#workspaceName").inner_text()
     report["message_count"] = page.locator("#messageList .msg").count()

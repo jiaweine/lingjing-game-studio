@@ -509,10 +509,12 @@ async def asset_upload(
             raise HTTPException(404, "任务不存在")
 
     filename = _safe_filename(file.filename)
+    declared_mime = (file.content_type or "").strip().lower()
+    guessed_mime = mimetypes.guess_type(filename)[0]
     mime = (
-        file.content_type
-        or mimetypes.guess_type(filename)[0]
-        or "application/octet-stream"
+        guessed_mime
+        if declared_mime in {"", "application/octet-stream"} and guessed_mime
+        else declared_mime or guessed_mime or "application/octet-stream"
     )
     suffix = Path(filename).suffix[:16]
     max_bytes = settings.max_upload_mb * 1024 * 1024
@@ -533,9 +535,19 @@ async def asset_upload(
                 handle.write(chunk)
 
         meta = probe_media(tmp, mime)
+        claimed_kind = (
+            "image" if mime.startswith("image/")
+            else "video" if mime.startswith("video/")
+            else "audio" if mime.startswith("audio/")
+            else None
+        )
+        if claimed_kind and (
+            meta.get("valid") is False or meta.get("kind") != claimed_kind
+        ):
+            raise HTTPException(415, "素材内容与声明类型不匹配")
         frame_paths = (
             extract_video_frames(tmp, Path(tmpdir) / "frames", 3)
-            if mime.startswith("video/")
+            if meta.get("kind") == "video"
             else []
         )
         asset_uuid = uuid.uuid4().hex
@@ -599,7 +611,7 @@ def asset_preview(
             if local is not None
             else Response(storage.get_bytes(key), media_type="image/jpeg")
         )
-    if str(row.get("mime", "")).startswith("image/"):
+    if row.get("meta", {}).get("kind") == "image":
         local = storage.local_path(row["path"])
         return (
             FileResponse(local, media_type=row["mime"])
