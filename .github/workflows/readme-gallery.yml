@@ -117,6 +117,7 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import time
           from playwright.sync_api import sync_playwright
 
           repository = os.environ['GH_REPOSITORY']
@@ -146,22 +147,27 @@ jobs:
 
               verified = []
               for alt in expected_alts:
-                  locator = page.locator(f'img[alt="{alt}"]').first
-                  locator.wait_for(state='attached', timeout=30000)
-                  locator.scroll_into_view_if_needed(timeout=30000)
-                  page.wait_for_function(
-                      '(img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0',
-                      arg=locator.element_handle(),
-                      timeout=45000,
-                  )
-                  data = locator.evaluate('''img => ({
-                      alt: img.alt,
-                      src: img.getAttribute('src'),
-                      currentSrc: img.currentSrc,
-                      naturalWidth: img.naturalWidth,
-                      naturalHeight: img.naturalHeight,
-                      complete: img.complete
-                  })''')
+                  deadline = time.monotonic() + 45
+                  data = None
+                  while time.monotonic() < deadline:
+                      data = page.evaluate('''alt => {
+                          const img = Array.from(document.images).find(node => node.alt === alt);
+                          if (!img) return null;
+                          img.scrollIntoView({block: 'center'});
+                          return {
+                              alt: img.alt,
+                              src: img.getAttribute('src'),
+                              currentSrc: img.currentSrc,
+                              naturalWidth: img.naturalWidth,
+                              naturalHeight: img.naturalHeight,
+                              complete: img.complete
+                          };
+                      }''', alt)
+                      if data and data['complete'] and data['naturalWidth'] > 0 and data['naturalHeight'] > 0:
+                          break
+                      page.wait_for_timeout(500)
+                  assert data, f'Missing README image node: {alt}'
+                  assert data['complete'] and data['naturalWidth'] > 0 and data['naturalHeight'] > 0, data
                   assert 'releases/download/readme-gallery-assets/' in data['src'], data
                   assert data['naturalWidth'] == 3840 and data['naturalHeight'] == 2400, data
                   verified.append(data)
