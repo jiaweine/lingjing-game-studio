@@ -3,19 +3,54 @@
   "generation": 1,
   "parent_ids": [],
   "origin": "bootstrap-prior",
+  "features": {
+    "scales": {
+      "gold": 50.0,
+      "attack": 32.0,
+      "armor": 14.0,
+      "enemy_attack": 35.0,
+      "enemy_variance": 15.0,
+      "score_gap": 80.0,
+      "combo": 5.0,
+      "stage": 3.0
+    },
+    "gold_cap": 2.0,
+    "score_clip": 2.5
+  },
   "belief": {
     "observed_uncertainty": 0.12,
     "latent_base": 0.35,
     "variance_scale": 20.0,
     "uncertainty_cap": 0.9
   },
+  "memory": {
+    "feature_weights": {
+      "hp": 1.2,
+      "enemy_hp": 1.2,
+      "energy": 0.8,
+      "gold": 0.4,
+      "attack": 0.4,
+      "armor": 0.4,
+      "enemy_attack": 0.8,
+      "enemy_variance": 0.6,
+      "threat": 1.0,
+      "combo": 0.3,
+      "stage": 0.3
+    },
+    "similarity_temperature": 0.7,
+    "success_bonus": 0.15,
+    "recency_decay": 0.002
+  },
   "planner": {
     "skill_weight": 1.0,
+    "skill_base_factor": 0.7,
+    "skill_success_factor": 0.5,
     "memory_weight": 2.2,
+    "memory_scale": 10.0,
     "policy_weight": 1.65,
     "specialist_weight": 1.0,
     "specialist_cap": 4.5,
-    "repeat_penalty": 4.8,
+    "repeat_penalties": {"farm": 4.8, "scout": 4.8, "defend": 4.8},
     "disagreement_cap": 4.0,
     "scout_base": 1.15,
     "scout_gain": 1.35,
@@ -48,6 +83,32 @@
     "violation_penalty": 8.0,
     "victory_bonus": 70.0,
     "defeat_penalty": 90.0
+  },
+  "skills": {
+    "survival_guard": {
+      "gate": {"weights": {"hp_missing": 1.7, "threat": 1.3}, "threshold": 0.9, "temperature": 0.3},
+      "action_bias": {"defend": 2.4, "heal": 4.2, "scout": 0.8},
+      "reliability": 1.0,
+      "enabled": true
+    },
+    "burst_window": {
+      "gate": {"weights": {"finish_window": 1.8, "energy": 1.1}, "threshold": 1.15, "temperature": 0.3},
+      "action_bias": {"heavy_attack": 4.0, "cast": 3.4, "attack": 1.2},
+      "reliability": 1.0,
+      "enabled": true
+    },
+    "information_first": {
+      "gate": {"weights": {"uncertainty": 2.0, "observed": -2.0}, "threshold": 0.55, "temperature": 0.25},
+      "action_bias": {"scout": 4.2, "defend": 0.8},
+      "reliability": 1.0,
+      "enabled": true
+    },
+    "economy_guard": {
+      "gate": {"weights": {"economy": 1.4, "exploit": 2.0}, "threshold": 0.75, "temperature": 0.25},
+      "action_bias": {"farm": 0.4, "buy_armor": 1.7, "buy_blade": 1.0, "attack": 0.7},
+      "reliability": 1.0,
+      "enabled": true
+    }
   },
   "specialists": [
     {
@@ -170,16 +231,12 @@
       "enabled": true
     }
   ],
-  "skill_gates": {
-    "survival_guard": {"weights": {"hp_missing": 1.7, "threat": 1.3}, "threshold": 0.9, "temperature": 0.3},
-    "burst_window": {"weights": {"finish_window": 1.8, "energy": 1.1}, "threshold": 1.15, "temperature": 0.3},
-    "information_first": {"weights": {"uncertainty": 2.0, "observed": -2.0}, "threshold": 0.55, "temperature": 0.25},
-    "economy_guard": {"weights": {"economy": 1.4, "exploit": 2.0}, "threshold": 0.75, "temperature": 0.25}
-  },
   "mutation_policy": {
     "operator_logits": {
       "parameter_jitter": 0.0,
       "gate_mutation": 0.0,
+      "skill_mutation": -0.1,
+      "memory_mutation": -0.1,
       "specialist_split": -0.4,
       "specialist_prune": -0.8,
       "recombine": -0.5,
