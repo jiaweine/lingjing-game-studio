@@ -25,6 +25,8 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Apply final lifecycle fixes
         run: python scripts/_finalize_product_completion.py
+      - name: Close remaining product gaps
+        run: python scripts/_close_product_gaps.py
       - name: Compile Python
         run: python -m compileall -q worldforge migrations scripts tests
       - name: Run tests
@@ -37,6 +39,7 @@ jobs:
         run: python scripts/product_ui_e2e.py
       - name: Verify no temporary product files remain
         run: |
+          test ! -e scripts/_close_product_gaps.py
           test ! -e scripts/_finalize_product_completion.py
           test ! -e .github/workflows/product-final-verification.yml
           test ! -e scripts/_harden_product_completion.py
