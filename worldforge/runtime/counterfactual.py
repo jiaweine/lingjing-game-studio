@@ -10,11 +10,26 @@ from .harness_genome import HarnessGenomeStore
 
 
 class CounterfactualBrancher:
+    """Counterfactual search whose budget and risk aggregation are genome-controlled.
+
+    The caller supplies only hard resource caps. The active harness decides how much of that
+    budget to spend for the current uncertainty/threat state.
+    """
+
     def __init__(self, planner, verifier):
         self.planner = planner
         self.verifier = verifier
 
     def evaluate(self, env, candidates, goal, width=4, horizon=3, rollouts=3):
+        gene = HarnessGenomeStore.current().search
+        belief = self.planner.make_belief(env.state)
+        width, horizon, rollouts = gene.allocate(
+            uncertainty=belief.uncertainty,
+            threat=env.state.threat,
+            width_cap=width,
+            horizon_cap=horizon,
+            rollout_cap=rollouts,
+        )
         selected = candidates[:width]
         if not selected:
             return []
@@ -85,12 +100,12 @@ class CounterfactualBrancher:
             downside = min(scores)
             dispersion = statistics.pstdev(scores) if len(scores) > 1 else 0.0
             success_probability = statistics.mean(successes)
-            gene = HarnessGenomeStore.current().search
+            active = HarnessGenomeStore.current().search
             risk_adjusted = (
-                gene.mean_weight * mean
-                - gene.dispersion_penalty * dispersion
-                + gene.downside_weight * downside
-                + gene.success_bonus * success_probability
+                active.mean_weight * mean
+                - active.dispersion_penalty * dispersion
+                + active.downside_weight * downside
+                + active.success_bonus * success_probability
             )
             return BranchResult(
                 branch_id=f"b-{uuid.uuid4().hex[:8]}",
