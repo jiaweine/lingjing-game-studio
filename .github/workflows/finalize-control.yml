@@ -1,0 +1,45 @@
+name: Finalize product control
+
+on:
+  push:
+    branches:
+      - agent/product-control-cleanup
+
+concurrency:
+  group: finalize-product-control
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/product-control-cleanup
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply lifecycle hardening
+        run: python scripts/_finalize_control.py
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install playwright
+          python -m playwright install chromium
+      - name: Validate
+        run: |
+          python -m compileall -q worldforge migrations scripts tests
+          pytest -q
+          node --check frontend/app.js
+          python scripts/product_ui_e2e.py
+      - name: Commit final cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: make product job lifecycle deterministic"
+          git push origin HEAD:agent/product-control-cleanup
