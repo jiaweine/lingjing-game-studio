@@ -39,3 +39,4 @@ jobs:
             git commit -m "feat: complete product lifecycle and collaboration"
             git push origin HEAD:agent/product-completion
           fi
+# trigger: product-completion
