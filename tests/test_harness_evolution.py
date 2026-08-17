@@ -8,6 +8,7 @@ from worldforge.runtime import (
     EpisodicMemory,
     EvolutionConfig,
     EvolutionEvidence,
+    GameHarnessMutator,
     HarnessEvolutionEngine,
     HarnessGenomeStore,
     SelfEvolvingWorldForgeEngine,
@@ -15,7 +16,6 @@ from worldforge.runtime import (
     StateVerifier,
     WorldForgeEngine,
 )
-from worldforge.runtime.harness_evolution import HarnessMutator
 
 
 def _evidence():
@@ -31,6 +31,13 @@ def _evidence():
         summary="uncertainty=1.0, urgency=0.8",
         prediction="reduce timeout without safety regression",
     )
+
+
+def _force_operator(genome, operator):
+    for name in genome.mutation_policy.operator_logits:
+        genome.mutation_policy.operator_logits[name] = -20.0
+    genome.mutation_policy.operator_logits[operator] = 20.0
+    genome.mutation_policy.exploration = 0.0
 
 
 def test_runtime_entrypoint_is_self_evolving():
@@ -62,11 +69,9 @@ def test_specialist_topology_is_data_not_python_roles():
 def test_mutation_policy_can_evolve_specialist_topology():
     HarnessGenomeStore.configure(None)
     baseline = HarnessGenomeStore.current().model_copy(deep=True)
-    for name in baseline.mutation_policy.operator_logits:
-        baseline.mutation_policy.operator_logits[name] = -20.0
-    baseline.mutation_policy.operator_logits["specialist_split"] = 20.0
+    _force_operator(baseline, "specialist_split")
     before = len(baseline.specialists)
-    child, operator = HarnessMutator(random.Random(7)).propose(
+    child, operator = GameHarnessMutator(random.Random(7)).propose(
         baseline,
         _evidence(),
         direction=1.0,
@@ -77,10 +82,41 @@ def test_mutation_policy_can_evolve_specialist_topology():
     assert child.parent_ids == [baseline.genome_id]
 
 
+def test_skill_behavior_is_part_of_evolvable_genome():
+    HarnessGenomeStore.configure(None)
+    baseline = HarnessGenomeStore.current().model_copy(deep=True)
+    _force_operator(baseline, "skill_mutation")
+    before = {
+        key: value.model_dump()
+        for key, value in baseline.skills.items()
+    }
+    child, operator = GameHarnessMutator(random.Random(13)).propose(
+        baseline,
+        _evidence(),
+        direction=1.0,
+    )
+    assert operator == "skill_mutation"
+    assert {key: value.model_dump() for key, value in child.skills.items()} != before
+
+
+def test_memory_retrieval_policy_is_evolvable():
+    HarnessGenomeStore.configure(None)
+    baseline = HarnessGenomeStore.current().model_copy(deep=True)
+    _force_operator(baseline, "memory_mutation")
+    before = baseline.memory.model_dump()
+    child, operator = GameHarnessMutator(random.Random(17)).propose(
+        baseline,
+        _evidence(),
+        direction=1.0,
+    )
+    assert operator == "memory_mutation"
+    assert child.memory.model_dump() != before
+
+
 def test_mutation_policy_is_self_referential():
     HarnessGenomeStore.configure(None)
     genome = HarnessGenomeStore.current().model_copy(deep=True)
-    mutator = HarnessMutator(random.Random(11))
+    mutator = GameHarnessMutator(random.Random(11))
     before = genome.mutation_policy.operator_logits["gate_mutation"]
     mutator.reinforce_operator(genome, "gate_mutation", gain=.1)
     assert genome.mutation_policy.operator_logits["gate_mutation"] > before
@@ -148,5 +184,8 @@ def test_shadow_evolution_builds_evaluated_population(tmp_path):
     assert len(result.candidates) == 2
     assert all(candidate.train is not None for candidate in result.candidates)
     assert all(candidate.heldout is not None for candidate in result.candidates)
-    assert all(candidate.genome.generation == baseline.generation + 1 for candidate in result.candidates)
+    assert all(
+        candidate.genome.generation == baseline.generation + 1
+        for candidate in result.candidates
+    )
     assert (tmp_path / "archive.json").exists()
