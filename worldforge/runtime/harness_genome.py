@@ -16,7 +16,7 @@ from worldforge.models import BeliefState, GoalState, WorldState
 
 
 class LinearGate(BaseModel):
-    """A learned/evolved gate over normalized world features."""
+    """Smooth, evolvable activation gate over normalized world features."""
 
     weights: dict[str, float] = Field(default_factory=dict)
     threshold: float = 0.0
@@ -42,13 +42,14 @@ class SpecialistGene(BaseModel):
     def activation(self, features: dict[str, float]) -> float:
         return self.gate.activation(features) if self.enabled else 0.0
 
-    def score(self, action: str, features: dict[str, float]) -> float:
-        base = self.action_bias.get(action, 0.0)
-        linear = sum(
+    def raw_score(self, action: str, features: dict[str, float]) -> float:
+        return self.action_bias.get(action, 0.0) + sum(
             features.get(name, 0.0) * weight
             for name, weight in self.action_feature_weights.get(action, {}).items()
         )
-        return (base + linear) * self.activation(features) * self.confidence
+
+    def score(self, action: str, features: dict[str, float]) -> float:
+        return self.raw_score(action, features) * self.activation(features) * self.confidence
 
 
 class BeliefGene(BaseModel):
@@ -60,11 +61,18 @@ class BeliefGene(BaseModel):
 
 class PlannerGene(BaseModel):
     skill_weight: float = 1.0
+    skill_base_factor: float = 0.7
+    skill_success_factor: float = 0.5
     memory_weight: float = 2.2
+    memory_scale: float = 10.0
     policy_weight: float = 1.65
     specialist_weight: float = 1.0
     specialist_cap: float = 4.5
-    repeat_penalty: float = 4.8
+    repeat_penalties: dict[str, float] = Field(default_factory=lambda: {
+        "farm": 4.8,
+        "scout": 4.8,
+        "defend": 4.8,
+    })
     disagreement_cap: float = 4.0
     scout_base: float = 1.15
     scout_gain: float = 1.35
@@ -99,7 +107,11 @@ class SearchGene(BaseModel):
         horizon_cap: int,
         rollout_cap: int,
     ) -> tuple[int, int, int]:
-        width = round(self.width_base + self.width_uncertainty_gain * uncertainty + self.width_threat_gain * threat)
+        width = round(
+            self.width_base
+            + self.width_uncertainty_gain * uncertainty
+            + self.width_threat_gain * threat
+        )
         horizon = round(self.horizon_base + self.horizon_uncertainty_gain * uncertainty)
         rollouts = round(self.rollout_base + self.rollout_uncertainty_gain * uncertainty)
         return (
@@ -120,6 +132,8 @@ class UtilityGene(BaseModel):
 
 
 class MutationPolicyGene(BaseModel):
+    """Self-referential mutation policy, inspired by Promptbreeder."""
+
     operator_logits: dict[str, float] = Field(default_factory=lambda: {
         "parameter_jitter": 0.0,
         "gate_mutation": 0.0,
@@ -134,6 +148,8 @@ class MutationPolicyGene(BaseModel):
 
 
 class HarnessGenome(BaseModel):
+    """The evolvable program surface around the frozen Runtime kernel."""
+
     genome_id: str = Field(default_factory=lambda: f"hg-{uuid.uuid4().hex[:10]}")
     generation: int = 1
     parent_ids: list[str] = Field(default_factory=list)
@@ -180,8 +196,35 @@ def state_features(
         "uncertainty": belief.uncertainty,
         "remaining": remaining,
         "urgency": 1.0 - remaining,
-        "score_gap": max(-2.5, min(2.5, (goal.target_score - state.score) / max(30.0, abs(goal.target_score)))),
+        "score_gap": max(
+            -2.5,
+            min(
+                2.5,
+                (goal.target_score - state.score) / max(30.0, abs(goal.target_score)),
+            ),
+        ),
         "health_gap": max(0.0, goal.min_health_ratio - hp),
+        "observed": 1.0 if state.discovered_enemy_attack is not None else 0.0,
+        "economy": 1.0 if "economy" in state.tags else 0.0,
+        "exploit": 1.0 if "exploit-test" in state.tags else 0.0,
+        "boss": 1.0 if "boss" in state.tags else 0.0,
+        "glass_cannon": 1.0 if "glass-cannon" in state.tags else 0.0,
+    }
+
+
+def lightweight_features(state: WorldState, uncertainty: float) -> dict[str, float]:
+    hp = state.player_hp / max(1.0, state.player_max_hp)
+    enemy = state.enemy_hp / max(1.0, state.enemy_max_hp)
+    return {
+        "bias": 1.0,
+        "hp": hp,
+        "hp_missing": 1.0 - hp,
+        "enemy_hp": enemy,
+        "finish_window": 1.0 - enemy,
+        "energy": state.energy / max(1.0, state.max_energy),
+        "gold": min(2.0, state.gold / 50.0),
+        "threat": state.threat,
+        "uncertainty": uncertainty,
         "observed": 1.0 if state.discovered_enemy_attack is not None else 0.0,
         "economy": 1.0 if "economy" in state.tags else 0.0,
         "exploit": 1.0 if "exploit-test" in state.tags else 0.0,
@@ -193,14 +236,16 @@ def state_features(
 class HarnessGenomeStore:
     """Frozen-kernel owner of the active evolvable harness genome.
 
-    Candidate evaluation uses a ContextVar override, so a speculative genome can never
-    replace the canonical harness until the independent promotion gate accepts it.
+    Candidate evaluation uses a ContextVar override, so speculative genomes cannot replace
+    the canonical harness until an independent promotion gate accepts them.
     """
 
     _lock = RLock()
     _active: HarnessGenome | None = None
     _path: Path | None = None
-    _override: ContextVar[HarnessGenome | None] = ContextVar("worldforge_harness_override", default=None)
+    _override: ContextVar[HarnessGenome | None] = ContextVar(
+        "worldforge_harness_override", default=None
+    )
 
     @classmethod
     def configure(cls, path: str | Path | None) -> None:
@@ -223,7 +268,9 @@ class HarnessGenomeStore:
                 configured = cls._path
                 if configured and configured.exists():
                     try:
-                        cls._active = HarnessGenome.model_validate_json(configured.read_text(encoding="utf-8"))
+                        cls._active = HarnessGenome.model_validate_json(
+                            configured.read_text(encoding="utf-8")
+                        )
                     except (ValueError, json.JSONDecodeError):
                         cls._active = cls._bootstrap()
                 else:
