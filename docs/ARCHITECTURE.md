@@ -1,155 +1,215 @@
-# WorldForge Architecture
+# WorldForge / 灵境 Architecture
 
-## 1. 核心边界
+## 1. 系统边界
 
-WorldForge 将动态游戏环境本身作为 Harness 的核心运行对象。系统里只有一个 **Canonical World State** 是真实世界；所有候选未来都运行在精确快照的隔离副本里。
+灵境分成两层：
 
-模型和 Runtime 分工明确：
+1. **产品控制面**：身份、工作空间、任务、消息、素材、执行 Job、证据、交付、人工反馈、审批、指标、审计与实时事件。
+2. **WorldForge Runtime**：世界状态、规划、候选未来试演、Sandbox、Verifier、Memory / Skill / Policy 与回归约束。
 
-- `WorldForge-M1`：动作先验、置信度、因素解释。
-- `Adaptive Planner`：根据 Goal / Belief / World State / Skill / Memory 形成动态候选空间。
-- `RecursiveAgentScheduler`：按需派生专家 Agent，而不是预先写死 Agent 拓扑。
-- `CounterfactualBrancher`：在多个未来中试演候选动作。
-- `ActionSandbox`：真实执行前检查动作契约与风险预算。
-- `StateVerifier`：执行后检查状态不变量、灾难风险、异常奖励、terminal failure。
-- `EventStore`：记录所有状态与决策事件，支持审计、replay、fork。
-- `FailureDrivenEvolver`：从失败轨迹生成受约束 Skill patch，经 regression gate 后才合并。
-
-因此，Agent 的自主性不依赖固定 DAG，也不等同于“大模型自由发挥”。
-
-## 2. 自主决策循环
-
-每一个 tick：
-
-1. 读取当前 Canonical World State。
-2. 更新 Belief State 与隐藏机制不确定性。
-3. WorldForge-M1 输出动作先验。
-4. Planner 融合模型、Skill、Memory 与专家投票形成候选动作。
-5. 根据当前状态按需派生 Recursive Agents。
-6. Counterfactual Brancher 对 top-K 候选创建隔离环境副本。
-7. 每个分支包含一个与 canonical RNG 完全一致的未来作为锚点，再加入随机扰动 rollout 估计方差与尾部风险。
-8. Verifier 计算进度、风险、胜率、生存率与违规项。
-9. 选择风险调整后最优分支。
-10. Action Sandbox 检查真实提交动作。
-11. 只在 canonical environment 上执行一个动作。
-12. Post-action Verifier 判断 accept / replan / rollback。
-13. 将结果写入事件链与 Memory。
-14. 任务结束后进行失败归因与策略演进。
-
-## 3. 为什么必须有 canonical future anchor
-
-纯随机 Monte Carlo rollout 可能在高方差游戏中低估当前真实随机状态对应的灾难风险。WorldForge 的每个候选动作至少包含一个 `seed_offset=0` 的精确未来，再用额外扰动未来估计泛化风险。
-
-这样 Counterfactual Search 同时回答两个问题：
-
-- **如果现在真的执行，最接近当前真实世界的后果是什么？**
-- **如果随机性变化，这个策略的稳定性如何？**
-
-## 4. Event Sourcing 与 Time Travel
-
-SQLite/WAL Event Store 采用 append-only 事件，并将 `prev_hash` 与当前 payload 计算 SHA-256 hash chain。Checkpoint 保存真实环境 snapshot，包括 RNG state。
-
-它支持：
-
-- WebSocket 断线重连后的事件 catch-up；
-- 每次决策的 evidence trail；
-- 按 seq 回看真实世界状态；
-- failure trajectory regression；
-- Fork / Replay；
-- 验证策略演进没有破坏历史场景。
-
-## 5. Recursive Agent 不是固定多 Agent Workflow
-
-根节点永远是 Coordinator，但子节点由当前状态决定：
-
-- 高不确定性：`MechanicsProbe`
-- 高威胁：`SurvivalAudit`
-- 高战斗压力：`CombatAgent`
-- 经济场景：`EconomyAgent`
-- exploit 测试：`ExploitProbe`
-
-因此每个 tick 的专家拓扑都可以不同。
-
-## 6. 反事实分支
-
-每个候选动作：
+外部或本地推理资源只提供感知、文本理解和推理能力。它们不能直接绕过产品权限、修改 canonical state、跳过验证、消费审批或决定任务是否完成。
 
 ```text
-canonical snapshot
-    ├── branch A / exact future
-    ├── branch A / stochastic future 1
-    ├── branch A / stochastic future 2
-    ├── branch B / exact future
-    └── ...
-```
-
-分支内可继续由 Planner 决策数步，但不会写入真实世界。评分结合：
-
-- cumulative reward
-- 敌方进度
-- 玩家生存率
-- success probability
-- downside utility
-- outcome bonus / terminal failure penalty
-- verifier violations
-
-## 7. QA Adversarial Probe
-
-最优策略往往会主动避开 exploit，但 QA 的目标恰恰是**发现异常机制**。因此 WorldForge 在 exploit 场景中启动隔离的 adversarial probe：主动探索可疑奖励循环并记录复现轨迹。
-
-探针只在 fork 环境运行；主运行的 canonical state 在探针前后进行 hash / state 对照，确保测试行为不会污染真实任务。
-
-## 8. 策略演进
-
-```text
-失败轨迹
-   ↓
-Failure Attribution
-   ↓
-Candidate Skill / Memory Patch
-   ↓
-Sandbox Replay
-   ↓
-Regression Gate
-  ↙          ↘
-Reject      Merge as new version
-```
-
-不允许一次失败直接修改在线策略。每个 patch 都是新版本，且必须通过历史场景回放。
-
-## 9. WorldForge-M1
-
-本项目只启用自研本地模型 `WorldForge-M1`。
-
-输入是结构化游戏状态与 Belief 特征，输出是合法动作空间上的 policy prior。训练标签来自 verified counterfactual trajectories，因此模型学习的是 Harness 已验证过的局部策略偏好，而不是绕开 Harness 直接决定真实执行。
-
-最终动作始终由 Runtime 在模型先验、专家分析、Skill / Memory、反事实试演和 Verifier 共同约束下决定。
-
-## 10. SaaS Control Plane（v2.0）
-
-上面的 WorldForge Runtime 是“分析与验证引擎”；灵境产品层在它之外增加独立的 SaaS 控制面：
-
-```text
-Web Workspace
+Browser Workspace
     ↓
-FastAPI
-    ├── Auth / Principal
-    ├── Workspace Tenant Guard
-    ├── Audit / Request ID / Security Headers
-    ├── PostgreSQL / SQLite product store
-    ├── S3 / Local object storage
-    └── Durable analysis_jobs
-             ↓
-          Worker(s)
-             ↓
-      ProductAnalyzer
-             ↓
-      WorldForge Runtime + Model Gateway
+FastAPI / Auth / Workspace Guard
+    ↓
+Product Store ───── Object Storage
+    ↓                    ↓
+Durable Job Queue ── Asset Materialization
+    ↓
+Worker / ProductAnalyzer
+    ↓
+WorldForge Runtime + Server-side Inference Routing
+    ↓
+Result / Evidence / Deliverables
+    ↓
+Human Feedback / Quality Gate / Product Events
 ```
 
-产品数据与 Runtime 的 append-only world event store 是两个不同边界：
+## 2. 产品控制面
 
-- Product Store：用户、Workspace、对话、消息、素材、任务事件、审计与分析 Job；生产建议 PostgreSQL。
-- Runtime Event Store：环境状态、决策、Verifier、Replay/Fork 等运行时事件；当前本地实现继续服务于场景复核与研究运行时。
+产品持久化状态包括：
 
-跨进程 UI 实时进度以 Product Store 的 `task_events` 为事实源，因此 API 与分析 Worker 可以分离部署，不依赖进程内 `asyncio.Queue`。
+- users
+- workspaces
+- memberships
+- workspace_invites
+- conversations
+- messages
+- assets
+- task_events
+- audit_logs
+- jobs
+- approval_requests
+- result_feedback
+- product_events
+
+`conversations` 同时保存任务负责人、任务状态、置顶和归档信息。
+
+### 工作空间与权限
+
+所有产品资源都在服务端按 workspace membership 校验。前端隐藏按钮不是权限边界。
+
+- Owner / Admin：成员管理、邀请和治理动作；
+- Member：在权限范围内创建和推进任务；
+- Viewer：服务端只读。
+
+会话解析会重新读取当前 membership role，使角色降级或移除能够及时生效，而不是只等待旧 token 过期。
+
+### 任务生命周期
+
+产品任务支持：
+
+- 搜索、重命名、置顶；
+- 归档 / 恢复；
+- 负责人分配与交接；
+- 深链接；
+- 实际停止；
+- 最近一次失败/停止 Job 的安全重试；
+- 持久化永久删除审批；
+- latest-result human quality gate。
+
+任务状态包括 active、review、waiting_approval、blocked、verified、stopped 等语义。
+
+## 3. 确定性 Job 生命周期
+
+### 接收任务
+
+用户提交任务时，以下内容在同一数据库事务中写入：
+
+1. user message；
+2. queued job；
+3. `message.accepted` event。
+
+创建 Job 时会锁定并验证 conversation，同时检查是否已经存在 active Job，避免消息/Job 分裂或重复运行。
+
+### 完成任务
+
+完成时以下内容同事务提交：
+
+1. job → completed；
+2. 最终 assistant message；
+3. `answer.ready` event。
+
+取消或更新的执行状态不会被迟到的旧失败/成功事件覆盖。进度事件带 `job_id`，前端恢复时只绑定当前或最近一次执行。
+
+### 停止与重试
+
+停止是持久化终止状态，不是假 UI。安全重试只允许最近一次失败或停止的执行，并复用原 Job payload、历史任务上下文和素材上下文。
+
+系统不承诺外部推理调用可以在任意 token / 指令点无损恢复，因此没有伪造 pause/resume 语义。
+
+## 4. 多模态任务上下文
+
+上传素材先写对象存储，再登记 Product Store。若数据库登记失败，会清理已经写入的 source / keyframe 对象，减少孤儿对象。
+
+支持：
+
+- image
+- video + adaptive keyframe extraction
+- audio
+- logs / config / structured text
+- generic documents / text
+
+用户消息只记录本轮显式选择的附件，但执行 Job payload 会携带**当前任务全部已有素材上下文 + 本轮显式素材**。因此后续追问即使 `asset_ids=[]`，也不会丢失任务早先的截图、录像、音频、日志或配置。
+
+## 5. 永久删除治理
+
+永久删除不是浏览器 `confirm()`。
+
+1. 用户创建 delete approval request；
+2. conversation 进入 `waiting_approval` 并锁定突变操作；
+3. Owner / Admin approve 或 reject；
+4. reject 恢复 `previous_status`；
+5. approve 后执行对象存储清理；
+6. 对象存储成功后，审批校验 + conversation 数据删除 + `conversation.delete` audit 在一个数据库事务中完成。
+
+如果对象存储删除失败，任务和 approved approval 都保留，可以重试；如果数据库事务失败，approved approval 也不会提前被消费掉。
+
+Local 和 S3-compatible delete 都按幂等语义处理。
+
+## 6. 人工反馈与质量门
+
+`result_feedback` 针对最近一次 assistant 交付保存：
+
+- verdict: correct / partial / incorrect
+- evidence usefulness
+- human verified
+- note
+
+质量门只评估**最新交付**，避免历史错误永久污染后续修正结果：
+
+- 没有交付 → active
+- 交付完成 → review
+- 最新交付存在 incorrect → blocked
+- 最新交付至少一个 `human_verified && correct` 且无 incorrect → verified
+
+该 gate 也会作为后续候选策略演进的输入。人工反馈不会直接修改在线策略。
+
+## 7. 产品指标
+
+`product_events` 用于计算产品级闭环指标，包括：
+
+- task count / active tasks
+- first-task completion rate
+- average time to first result
+- interruption rate
+- failure rate
+- recovery rate
+- continuation rate
+- manual intervention rate
+- evidence open rate
+- result adoption rate
+- human verified feedback rate
+
+指标按 conversation / event set 去重，而不是简单按事件条数相除。
+
+## 8. WorldForge Runtime
+
+WorldForge 将动态游戏环境本身作为执行对象。只有一个 **Canonical World State** 代表真实提交路径；候选未来运行在隔离副本中。
+
+核心组件：
+
+- `AdaptivePlanner`：根据 Goal / Belief / World State / Skill / Memory 形成动态候选空间；
+- bounded specialists：根据状态提供有界偏置，不能直接提交动作；
+- `CounterfactualBrancher`：在多个候选未来中试演动作；
+- `ActionSandbox`：提交前检查动作契约和风险预算；
+- `StateVerifier`：执行后检查状态不变量、灾难性风险和异常奖励循环；
+- Event Store：append-only hash chain、checkpoint、replay、fork；
+- Failure-driven evolution：从失败轨迹生成候选更新，经回归与人工质量门约束后才能进入后续运行。
+
+自主性来自受约束的状态循环，不依赖固定 DAG，也不等同于让推理模型自由提交动作。
+
+## 9. Canonical Future Anchor
+
+随机 rollout 可能在高方差游戏里低估当前真实随机状态对应的风险。每个候选动作至少包含一个与 canonical RNG 对齐的 exact future，再用额外扰动未来估计泛化风险。
+
+因此候选评估同时回答：
+
+- 如果现在真的执行，最接近当前真实状态的后果是什么？
+- 如果随机性变化，这个选择是否仍稳定？
+
+## 10. Event Sourcing 与 Realtime
+
+Runtime Event Store 用于环境状态、决策、Verifier、Replay / Fork 等运行时轨迹；Product Store 的 `task_events` 是客户工作台实时进度的事实源，两者边界不同。
+
+产品 realtime 通过 durable cursor 读取并 fan-out。WebSocket 使用 subscribe-before-replay、event-id deduplication 和 `after_id` 续传，减少重连时的事件丢失和重复。
+
+## 11. 推理资源边界
+
+`worldforge/providers/` 是服务端推理资源适配层。客户工作台不展示供应商或模型选择器。
+
+推理路由可以根据文本、视觉、音频等输入能力选择可用资源，但以下职责始终属于灵境 / WorldForge：
+
+- workspace authorization
+- task lifecycle
+- canonical state
+- planning and execution control
+- sandbox / verifier
+- rollback / replan
+- approvals
+- human quality gate
+- completion semantics
+
+因此更换推理资源不等于更换产品控制面或执行语义。
