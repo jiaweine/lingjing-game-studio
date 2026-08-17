@@ -1,10 +1,16 @@
+<div align="center">
+
 # 灵境
 
-### 游戏研发执行工作台
+### 游戏研发 Agent Runtime · 执行工作台
 
 **把研发目标和素材交给系统，让任务持续执行、复核、留证，并在需要时被人随时接管。**
 
+`CONTROL` · `TRUST` · `LIFECYCLE` · `RECOVERY`
+
 不是给游戏文件加一个聊天框。灵境把一次研发问题变成一条**可执行、可停止、可恢复、可核验、可交接、可治理**的任务轨迹。
+
+</div>
 
 ![灵境游戏研发执行工作台总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png)
 
@@ -110,24 +116,370 @@
 
 ---
 
-## Runtime
+# Agent Method · WorldForge
 
-WorldForge 是灵境的执行内核。外部或本地推理资源可以提供感知、文本理解和推理能力，但不能直接绕过 Runtime 提交动作、修改 canonical state、跳过验证或决定一次任务是否完成。
+WorldForge 是灵境自己的 **stateful Agent Runtime**。它不是“一个模型 + 一串工具调用”，而是把**世界状态、动态专家 Agent、记忆 / Skill、策略先验、反事实试演、独立验证和受约束演化**放进同一条可恢复决策闭环。
+
+> **核心约束：Agent 可以提出偏好、证据与候选动作，但不能绕过 Runtime 直接修改 canonical state。真正的动作提交必须经过 Sandbox 与 Verifier。**
 
 ```mermaid
 flowchart LR
-    A[Goal + Assets] --> B[World State]
-    B --> C[Plan]
-    C --> D[Bounded Rollouts]
-    D --> E[Sandbox Execution]
-    E --> F[Independent Verification]
-    F -->|commit| G[Evidence + Deliverables]
+    A[Goal + Assets] --> B[World State + Belief]
+    B --> C[State-conditioned Agents]
+    C --> D[Score Fusion + Epistemic Control]
+    D --> E[Counterfactual Rollouts]
+    E --> F[Independent Verifier]
+    F -->|commit| G[Canonical Action]
     F -->|rollback / replan| C
-    G --> H[Human Review]
+    G --> H[Memory + Skill + Policy]
+    H --> B
 ```
 
+### 方法总览
+
+| Layer | 方法 | Runtime 中的作用 |
+|---|---|---|
+| **Deliberation** | State-conditioned Specialist Agents | 只在当前状态需要时激活战斗、风险、机制、经济、进度专家 |
+| **Decision** | Score Fusion + Epistemic Disagreement Control | 融合专家投票、Skill、Memory、Policy 与不确定性，决定候选动作顺序 |
+| **Simulation** | Bounded Counterfactual Rollouts | 在克隆环境里并行试演候选未来，不污染 canonical state |
+| **Verification** | Independent State / Risk Verifier | 检查状态不变量、非法动作、灾难性风险与异常奖励循环 |
+| **Learning** | Group-relative Policy Update + Failure-driven Evolution | 只从已验证的候选组与失败归因中更新策略 / Skill，并受 KL、回归与人工门禁约束 |
+
+---
+
+## 01 · Dynamic Specialist Agents
+
+专家不是固定串行流水线。`RecursiveAgentScheduler` 根据当前状态动态决定哪些 Agent 值得被激活：高威胁时加入 Risk Specialist，高不确定状态加入 Mechanics Specialist，经济 / exploit 场景才加入 Economy Specialist。
+
+每个专家只能返回一个**有界动作偏置** $b_j(a)$ 与置信度 $c_j$。Runtime 聚合后再裁剪：
+
+$$
+B_{\mathrm{agent}}(a)
+=
+\operatorname{clip}
+\left(
+\sum_{j \in \mathcal{A}(s)} c_j\,b_j(a),
+-4.5,
+4.5
+\right)
+$$
+
+其中 $\mathcal{A}(s)$ 是状态 $s$ 下真正被调度的专家集合。**专家没有执行权限**，它们只是 planner 的受限输入。
+
+`worldforge/runtime/recursive.py`
+
+---
+
+## 02 · Unified Action Score
+
+对合法动作 $a$，Planner 不只看一个模型分数，而是把固定分析 Agent、动态专家、Skill、历史 Memory、本地 Policy prior 和 epistemic adjustment 合成统一排序：
+
+$$
+S(a)
+=
+\sum_i v_i(a)
++
+B_{\mathrm{skill}}(a)
++
+2.2\tanh\left(\frac{M(s,a)}{10}\right)
++
+1.65\,Z_{\theta}(a\mid s)
++
+B_{\mathrm{agent}}(a)
++
+E(a)
+-
+R_{\mathrm{repeat}}(a)
+$$
+
+其中：
+
+- $v_i(a)$：Combat / Risk / Economy / Progress 分析 Agent 对动作的投票；
+- $B_{\mathrm{skill}}(a)$：Skill Bank 的状态条件偏置；
+- $M(s,a)$：Memory 中同类状态—动作的历史先验；
+- $Z_{\theta}(a\mid s)$：Policy 对合法动作 logits 做标准化后的先验分数；
+- $B_{\mathrm{agent}}(a)$：动态 Specialist Tree 的有界建议；
+- $E(a)$：由不确定性与专家分歧产生的 epistemic adjustment；
+- $R_{\mathrm{repeat}}(a)$：对重复 `farm / scout / defend` 的停滞惩罚。
+
+Policy prior 在合法动作集合上使用：
+
+$$
+Z_{\theta}(a\mid s)
+=
+\frac{z_a-\mu(z_{\mathrm{legal}})}
+{\sigma(z_{\mathrm{legal}})}
+$$
+
+这意味着 Policy 是**决策先验**，不是最终执行者。Runtime 仍然可以因为风险、证据、Memory、Skill 或 Verifier 结果覆盖它。
+
+`worldforge/runtime/planner.py` · `worldforge/runtime/policy.py`
+
+---
+
+## 03 · Epistemic Disagreement Control
+
+WorldForge 把“专家意见分裂”视为一个可计算信号，而不是把多个 Agent 的意见简单平均。
+
+对动作 $a$，先计算专家打分的离散程度，再与当前 belief uncertainty $u$ 相乘：
+
+$$
+T(a)
+=
+\min
+\left(
+4,\;
+\operatorname{Std}(v_1(a),\ldots,v_n(a))
+\right)
+\cdot u
+$$
+
+$T(a)$ 是 epistemic tension。**世界越不确定、专家越分裂，系统越应该先获得信息，而不是做不可逆承诺。**
+
+信息获取动作的奖励：
+
+$$
+E(\mathrm{scout})
+=
+1.15 + 1.35\,T
+$$
+
+高风险承诺动作（如 heavy attack / cast）的摩擦：
+
+$$
+E(\mathrm{commit})
+=
+-T\left(0.28 + 0.42\,\tau\right)
+$$
+
+其中 $\tau$ 是当前 threat。关键机制被观测后，belief uncertainty 从 latent 状态下降，探索奖励也随之降低，系统自然回到执行优先。
+
+`worldforge/runtime/planner.py`
+
+---
+
+## 04 · Counterfactual Rollouts
+
+Planner 排出的动作不会立刻进入真实状态。`CounterfactualBrancher` 会把前几个候选动作放进**克隆环境**，按有限 width / horizon / rollouts 并行试演。
+
+每条 rollout 先由独立 Verifier 形成 branch utility：
+
+$$
+U_k
+=
+r_k
++
+24(1-e_k)
++
+17h_k
++
+0.04g_k
+-
+26\max(0,\tau_k-\rho)
+-
+8|\mathcal{V}_k|
++
+70\mathbf{1}_{\mathrm{victory}}
+-
+90\mathbf{1}_{\mathrm{defeat}}
+$$
+
+其中：
+
+- $r_k$：环境累计 reward；
+- $e_k$：敌方生命比例；
+- $h_k$：玩家生命比例；
+- $g_k$：资源状态中的 gold；
+- $\tau_k$：threat；
+- $\rho$：目标允许的 risk tolerance；
+- $\mathcal{V}_k$：该 rollout 真实出现的 verifier violations。
+
+一个动作最终不是按平均收益单点排序，而是使用**风险调整后的分支分数**：
+
+$$
+Q(a)
+=
+\mathbb{E}[U]
+-
+0.45\,\operatorname{Std}(U)
++
+0.20\,\min(U)
++
+16\,p_{\mathrm{success}}
+$$
+
+因此高均值但极端 downside 很差、方差很大或成功率很低的动作会被主动降权。分支的 `survival`、`success_probability`、`downside_score` 和 violations 同时保留为证据。
+
+`worldforge/runtime/counterfactual.py` · `worldforge/runtime/verifier.py`
+
+---
+
+## 05 · Independent Verification
+
+Verifier 与 Planner 分离。它不负责“想办法”，只负责判断候选状态是否仍然可信、合法、可接受。
+
+运行时风险分数：
+
+$$
+R_{\mathrm{state}}
+=
+\operatorname{clip}
+\left(
+0.65\,\tau + 0.55(1-h),
+0,
+1
+\right)
+$$
+
+其中 $h$ 为玩家生命比例。除此之外，Verifier 还检查：
+
+**negative gold · energy invariant · hp invariant · invalid action · reward-loop anomaly · catastrophic survival risk · terminal failure**
+
+严重违规会触发 `rollback`，高生存风险触发 `replan`；只有被验证的路径才有资格进入 canonical state。
+
+`worldforge/runtime/verifier.py`
+
+---
+
+## 06 · Local Policy Prior
+
+WorldForge Policy 是一个小型本地 MLP 决策先验。输入不是聊天文本，而是规范化后的 World State / Belief / Goal 特征：
+
+$$
+\hat{x}
+=
+\frac{x-\mu}{\sigma}
+$$
+
+$$
+h
+=
+\tanh(\hat{x}W_1+b_1),
+\qquad
+z
+=
+hW_2+b_2
+$$
+
+在合法动作集合 $\mathcal{L}(s)$ 上：
+
+$$
+\pi_{\theta}(a\mid s)
+=
+\frac{\exp(z_a)}
+{\sum_{a' \in \mathcal{L}(s)}\exp(z_{a'})}
+$$
+
+Policy 提供快速经验先验；Sandbox、Verifier、Memory、Skill 与 Agent deliberation 仍然拥有更高层的运行时约束。
+
+`worldforge/runtime/policy.py`
+
+---
+
+## 07 · Group-relative Policy Update
+
+训练时，一个状态的多个可行动作构成同一个 group。它们先经过 Runtime / Verifier 得到 reward，再在**组内**中心化和标准化：
+
+$$
+A_i
+=
+\operatorname{clip}
+\left(
+\frac{r_i-\bar{r}}
+{\sigma_r+\varepsilon},
+-3,
+3
+\right)
+$$
+
+冻结旧策略后计算 probability ratio：
+
+$$
+\rho_i(\theta)
+=
+\frac
+{\pi_{\theta}(a_i\mid s)}
+{\pi_{\theta_{\mathrm{old}}}(a_i\mid s)}
+$$
+
+更新使用 clipped group-relative term；实现中超出 clip 区间的项不继续推动梯度，默认 $\epsilon=0.18$：
+
+$$
+L_{\mathrm{clip}}
+=
+\frac{1}{|G|}
+\sum_i
+\min
+\left(
+\rho_iA_i,\;
+\operatorname{clip}(\rho_i,1-\epsilon,1+\epsilon)A_i
+\right)
+$$
+
+策略更新还必须留在 KL trust region 内：
+
+$$
+D_{\mathrm{KL}}
+\left(
+\pi_{\mathrm{old}}
+\parallel
+\pi_{\theta}
+\right)
+=
+\mathbb{E}_{G}
+\left[
+\sum_a
+\pi_{\mathrm{old}}(a\mid s)
+\log
+\frac{\pi_{\mathrm{old}}(a\mid s)}
+{\pi_{\theta}(a\mid s)}
+\right]
+\le 0.035
+$$
+
+一旦 empirical KL 越界，candidate policy 直接回退到更新前策略。Policy 因此只能**渐进地改变决策先验**，不能一次训练把 Runtime 的行为推离可信区域。
+
+`worldforge/runtime/policy.py`
+
+---
+
+## 08 · Failure-driven Evolution
+
+Skill 演化不是“跑赢一次就升级”。失败先被归因为 execution / survival / economy / progress 信号，再生成候选 patch；候选必须同时经过 regression evaluation 与 Human Feedback Gate。
+
+当前 acceptance gate 可以写成：
+
+$$
+\mathrm{Accept}
+=
+H
+\land
+(J_{\mathrm{candidate}}\ge J_{\mathrm{baseline}}-0.01)
+\land
+(J_{\mathrm{candidate}}\ge J_{\mathrm{baseline}}+0.005)
+$$
+
+其中 $H$ 表示人工允许更新。只有被门禁接受的 patch 才进入 Skill Bank；否则旧 Skill 保持不变。
+
+`worldforge/runtime/evolver.py`
+
+---
+
+## Runtime Invariants
+
+方法层最终受几条不可绕过的 Runtime invariant 约束：
+
+| Invariant | 含义 |
+|---|---|
+| **Canonical state ownership** | 只有 Runtime 可以提交真实状态；反事实分支永远操作 clone |
+| **Bounded specialists** | Specialist 只能返回有界 bias，不能直接执行 |
+| **Independent verification** | Planner / Policy 不能自证成功 |
+| **Rollback before corruption** | 失败分支先回滚或重规划，不覆盖已验证状态 |
+| **Policy is a prior** | Policy 参与排序，但不拥有权限、完成判定或状态写入 |
+| **Human-gated evolution** | 行为更新要过回归、trust region 与人工反馈门禁 |
+
 <details>
-<summary><b>展开工程实现</b></summary>
+<summary><b>工程实现与状态生命周期</b></summary>
 
 <br>
 
@@ -136,18 +488,6 @@ flowchart LR
 `worldforge/runtime/engine.py` 维护可恢复环境状态，而不是只保存对话文本：Goal / Belief / Game State、append-only hash-chained events、Snapshot / Restore / Checkpoint、Replay / Fork、Sandbox 与 rollback / replan。
 
 反事实分支只操作克隆环境；只有经过选择和验证的动作才进入 canonical state。
-
-### Epistemic Disagreement Control
-
-`worldforge/runtime/planner.py` 把内部专家分歧与世界状态不确定性组合成 epistemic tension。状态越不确定、专家意见越分裂，低风险信息获取行为越有价值；关键状态被观测确认后，探索奖励下降，系统回到执行优先。
-
-### Counterfactual + Bounded Specialists
-
-动作提交前并行评估候选未来的 expected utility、downside、survival、success probability 与 verifier violations。状态条件专家只提供有界动作偏置，不能直接执行，也不能绕过 Sandbox / Verifier。
-
-### Verification + Evolution
-
-Verifier 独立检查状态不变量、非法动作、灾难性风险和异常奖励循环。成功与失败轨迹进入 Memory / Skill；候选策略更新受 regression gate、trust-region 约束与 Human Feedback Gate 共同限制。
 
 ### Realtime + Deterministic Job Lifecycle
 
@@ -216,4 +556,8 @@ docs/                     架构、前端、运行与评测说明
 
 ---
 
+<div align="center">
+
 **目标不是让系统更会描述它做了什么，而是让它真的执行、复核、恢复，并留下可以检查、可以交接、可以确认的结果。**
+
+</div>
