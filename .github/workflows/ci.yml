@@ -113,6 +113,7 @@ jobs:
 
           for name in expected:
               rel = f'docs/assets/readme/{name}.png'
+              expected_src = f'./{rel}'
               matches = []
               for attrs in parser.images:
                   src = unquote(str(attrs.get('src') or ''))
@@ -120,9 +121,8 @@ jobs:
                       matches.append(src)
               assert matches, f'GitHub render missing repository image {rel}'
               for src in matches:
+                  assert src == expected_src, f'{name} must stay repository-relative; got {src}'
                   assert not src.startswith('/docs/'), f'{name} still resolves to GitHub site root: {src}'
-                  assert repository in src, f'{name} does not resolve inside {repository}: {src}'
-                  assert '/raw/' in src or 'raw.githubusercontent.com' in src, f'{name} is not a repository raw asset URL: {src}'
                   print(f'rendered-image {name}: {src}')
 
           for name in expected:
