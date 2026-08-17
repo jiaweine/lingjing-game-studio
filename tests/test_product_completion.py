@@ -394,3 +394,126 @@ def test_read_only_member_cannot_be_task_assignee(tmp_path):
             workspace_id=owner["workspace_id"],
             assigned_to=viewer_workspace["user_id"],
         )
+
+
+
+def test_quality_gate_only_uses_latest_result_and_requires_verified_correct(tmp_path):
+    store = ConversationStore(tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False)
+    owner = _store_owner(store)
+    workspace_id, user_id = owner["workspace_id"], owner["user_id"]
+    conversation = store.create_conversation(workspace_id=workspace_id, created_by=user_id)
+
+    old = store.add_message(conversation["id"], "assistant", "旧结果", {}, workspace_id=workspace_id)
+    store.upsert_feedback(workspace_id=workspace_id, user_id=user_id, message_id=old["id"], verdict="incorrect", human_verified=False)
+    assert store.feedback_gate(conversation["id"], workspace_id=workspace_id)["approved"] is False
+
+    latest = store.add_message(conversation["id"], "assistant", "修正结果", {}, workspace_id=workspace_id)
+    store.upsert_feedback(workspace_id=workspace_id, user_id=user_id, message_id=latest["id"], verdict="partial", human_verified=True)
+    partial_gate = store.feedback_gate(conversation["id"], workspace_id=workspace_id)
+    assert partial_gate["message_id"] == latest["id"]
+    assert partial_gate["approved"] is False
+    assert partial_gate["task_status"] == "review"
+
+    store.upsert_feedback(workspace_id=workspace_id, user_id=user_id, message_id=latest["id"], verdict="correct", human_verified=True)
+    gate = store.feedback_gate(conversation["id"], workspace_id=workspace_id)
+    assert gate["approved"] is True
+    assert gate["incorrect"] == 0
+    assert gate["task_status"] == "verified"
+    assert store.get_conversation(conversation["id"], workspace_id=workspace_id)["status"] == "verified"
+
+
+def test_feedback_error_marks_latest_result_for_correction(tmp_path):
+    store = ConversationStore(tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False)
+    owner = _store_owner(store)
+    workspace_id, user_id = owner["workspace_id"], owner["user_id"]
+    conversation = store.create_conversation(workspace_id=workspace_id, created_by=user_id)
+    answer = store.add_message(conversation["id"], "assistant", "结果", {}, workspace_id=workspace_id)
+    store.upsert_feedback(workspace_id=workspace_id, user_id=user_id, message_id=answer["id"], verdict="incorrect", human_verified=False)
+    gate = store.feedback_gate(conversation["id"], workspace_id=workspace_id)
+    assert gate["task_status"] == "blocked"
+    assert store.get_conversation(conversation["id"], workspace_id=workspace_id)["status"] == "blocked"
+
+
+def test_delete_approval_restores_prior_status_and_locks_task(tmp_path):
+    store = ConversationStore(tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False)
+    owner = _store_owner(store)
+    workspace_id, user_id = owner["workspace_id"], owner["user_id"]
+    conversation = store.create_conversation(workspace_id=workspace_id, created_by=user_id)
+    store.update_conversation(conversation["id"], workspace_id=workspace_id, status="verified")
+
+    approval = store.create_approval(workspace_id=workspace_id, conversation_id=conversation["id"], action="conversation.delete", requested_by=user_id)
+    assert approval["payload"]["previous_status"] == "verified"
+    assert store.get_conversation(conversation["id"], workspace_id=workspace_id)["status"] == "waiting_approval"
+    with pytest.raises(ValueError, match="删除确认"):
+        store.update_conversation(conversation["id"], workspace_id=workspace_id, title="不应修改")
+    with pytest.raises(ValueError, match="删除确认"):
+        store.enqueue_job(workspace_id=workspace_id, conversation_id=conversation["id"], payload={"text": "blocked"})
+    with pytest.raises(ValueError, match="删除确认"):
+        store.add_asset(conversation["id"], name="x.log", mime="text/plain", path="x", size=1, meta={}, workspace_id=workspace_id, created_by=user_id)
+
+    rejected = store.resolve_approval(approval["id"], workspace_id=workspace_id, user_id=user_id, approved=False)
+    assert rejected["status"] == "rejected"
+    assert store.get_conversation(conversation["id"], workspace_id=workspace_id)["status"] == "verified"
+
+    second = store.create_approval(workspace_id=workspace_id, conversation_id=conversation["id"], action="conversation.delete", requested_by=user_id)
+    approved = store.resolve_approval(second["id"], workspace_id=workspace_id, user_id=user_id, approved=True)
+    assert approved["status"] == "approved"
+    assert store.get_conversation(conversation["id"], workspace_id=workspace_id)["status"] == "waiting_approval"
+    same = store.create_approval(workspace_id=workspace_id, conversation_id=conversation["id"], action="conversation.delete", requested_by=user_id)
+    assert same["id"] == approved["id"]
+
+
+def test_completed_job_is_review_until_human_verification(tmp_path):
+    store = ConversationStore(tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False)
+    owner = _store_owner(store)
+    workspace_id, user_id = owner["workspace_id"], owner["user_id"]
+    conversation = store.create_conversation(workspace_id=workspace_id, created_by=user_id)
+    job = store.enqueue_job(workspace_id=workspace_id, conversation_id=conversation["id"], payload={"text": "verify"})
+    assert store.claim_job("worker", job_id=job["id"])
+    message = store.complete_job_answer(job["id"], workspace_id=workspace_id, content="结果", payload={})
+    assert message
+    assert store.get_conversation(conversation["id"], workspace_id=workspace_id)["status"] == "review"
+
+
+
+def test_user_turn_is_atomic_and_does_not_leave_orphan_message(tmp_path):
+    store = ConversationStore(tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False)
+    owner = _store_owner(store)
+    workspace_id, user_id = owner["workspace_id"], owner["user_id"]
+    conversation = store.create_conversation(workspace_id=workspace_id, created_by=user_id)
+    message, job = store.create_message_job(
+        workspace_id=workspace_id,
+        conversation_id=conversation["id"],
+        content="检查首帧卡顿",
+        asset_ids=[],
+        job_payload={"text": "检查首帧卡顿", "asset_ids": []},
+        title_if_first="检查首帧卡顿",
+    )
+    assert message["role"] == "user"
+    assert job["status"] == "queued"
+    assert [event["type"] for event in store.list_events(conversation["id"], workspace_id=workspace_id)] == ["message.accepted"]
+    with pytest.raises(ValueError, match="已有执行"):
+        store.create_message_job(
+            workspace_id=workspace_id,
+            conversation_id=conversation["id"],
+            content="重复提交",
+            asset_ids=[],
+            job_payload={"text": "重复提交", "asset_ids": []},
+        )
+    assert [row["content"] for row in store.list_messages(conversation["id"], workspace_id=workspace_id)] == ["检查首帧卡顿"]
+
+
+def test_delete_approval_and_execution_are_mutually_exclusive(tmp_path):
+    store = ConversationStore(tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False)
+    owner = _store_owner(store)
+    workspace_id, user_id = owner["workspace_id"], owner["user_id"]
+    conversation = store.create_conversation(workspace_id=workspace_id, created_by=user_id)
+    job = store.enqueue_job(workspace_id=workspace_id, conversation_id=conversation["id"], payload={"text": "running"})
+    assert job["status"] == "queued"
+    with pytest.raises(ValueError, match="先停止"):
+        store.create_approval(workspace_id=workspace_id, conversation_id=conversation["id"], action="conversation.delete", requested_by=user_id)
+    store.cancel_job(job["id"], workspace_id=workspace_id)
+    approval = store.create_approval(workspace_id=workspace_id, conversation_id=conversation["id"], action="conversation.delete", requested_by=user_id)
+    assert approval["status"] == "pending"
+    with pytest.raises(ValueError, match="删除确认"):
+        store.enqueue_job(workspace_id=workspace_id, conversation_id=conversation["id"], payload={"text": "must not start"})

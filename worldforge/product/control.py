@@ -226,7 +226,7 @@ def build_control_router(
         except KeyError as exc:
             raise HTTPException(404, "任务不存在") from exc
         except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            raise HTTPException(409, str(exc)) from exc
         action = "task.handoff" if "assigned_to" in req.model_fields_set else "conversation.update"
         audit(request, principal, action, "conversation", conversation_id, req.model_dump(exclude_unset=True))
         return row
@@ -259,6 +259,8 @@ def build_control_router(
             row = store.restore_conversation(conversation_id, workspace_id=principal.workspace_id)
         except KeyError as exc:
             raise HTTPException(404, "任务不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         audit(request, principal, "conversation.restore", "conversation", conversation_id)
         store.record_product_event(workspace_id=principal.workspace_id, user_id=principal.user_id, conversation_id=conversation_id, name="task.restore")
         return row

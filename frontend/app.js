@@ -724,6 +724,7 @@ function handleEvent(event) {
 
   if (event.type === "answer.ready") {
     if (state.conversation?.job) state.conversation.job.status = "completed";
+    if (state.conversation) state.conversation.status = "review";
     setBusy(false);
     $("thinkingCard").hidden = true;
     const message = event.payload.message;
@@ -734,10 +735,10 @@ function handleEvent(event) {
     renderDeliverables(result.deliverables || []);
     renderSuggestions(result.suggestions || []);
     loadConversationControl().then(() => { renderFeedbackState(); renderTeamPanel(); });
-    $("taskState").textContent = "验证完成";
+    $("taskState").textContent = "等待人工复核";
     $("taskPercent").textContent = "100%";
     $("taskProgress").style.width = "100%";
-    $("taskStateHint").textContent = "结果已整理，证据与下一步都已保留。";
+    $("taskStateHint").textContent = "系统复核已完成；人工确认正确后才会标记为已验证。";
     document.querySelector(".task-state-card").className = "task-state-card done";
     loadConversations();
     scrollBottom();
@@ -767,6 +768,8 @@ function handleEvent(event) {
 async function uploadFiles(files) {
   if (!files?.length) return;
   if (!state.conversation) await newConversation(state.scene);
+  if (state.conversation?.archived_at) { toast("请先恢复已归档任务，再添加素材"); return; }
+  if (state.conversation?.status === "waiting_approval") { toast("删除确认处理中，不能添加素材"); return; }
   for (const file of files) {
     const form = new FormData();
     form.append("file", file);
@@ -792,6 +795,7 @@ async function sendMessage() {
   if (!content || state.busy) return;
   if (!state.conversation) await newConversation(state.scene);
   if (state.conversation?.archived_at) { toast("请先恢复已归档任务，再继续执行"); return; }
+  if (state.conversation?.status === "waiting_approval") { toast("删除确认处理中，不能继续执行"); return; }
 
   setBusy(true);
   const selectedAssets = state.pending.map(asset => asset.id);
@@ -894,7 +898,7 @@ function scrollBottom(smooth = true) {
 }
 
 function taskStatusLabel(status) {
-  return {active: "进行中", waiting_approval: "等待确认", blocked: "受阻", verified: "已验证", stopped: "已停止"}[status] || "进行中";
+  return {active: "进行中", review: "待复核", waiting_approval: "等待确认", blocked: "需修正", verified: "已验证", stopped: "已停止"}[status] || "进行中";
 }
 
 function canEdit() {
@@ -903,6 +907,10 @@ function canEdit() {
 
 function isManager() {
   return ["owner", "admin"].includes(state.session?.user?.role);
+}
+
+function isOwner() {
+  return state.session?.user?.role === "owner";
 }
 
 async function trackProductEvent(name, conversationId = state.conversation?.id, payload = {}) {
@@ -938,30 +946,40 @@ function renderTaskActions() {
   $("archiveTaskBtn").textContent = state.conversation.archived_at ? "恢复" : "归档";
   $("deleteTaskBtn").hidden = !isManager();
   const archived = Boolean(state.conversation.archived_at);
-  $("messageInput").disabled = archived || !editable;
-  $("messageInput").placeholder = editable ? "描述你要完成的研发任务…" : "只读成员可以查看任务，但不能修改或执行";
-  $("sendBtn").disabled = state.busy || archived || !editable;
-  document.querySelectorAll(".attach-action").forEach(button => { button.disabled = archived || !editable; });
+  const approvalLocked = state.conversation.status === "waiting_approval";
+  $("renameTaskBtn").hidden = !editable || approvalLocked;
+  $("pinTaskBtn").hidden = !editable || approvalLocked;
+  $("archiveTaskBtn").hidden = !editable || approvalLocked;
+  $("deleteTaskBtn").hidden = !isManager() || approvalLocked;
+  $("messageInput").disabled = archived || approvalLocked || !editable;
+  $("messageInput").placeholder = !editable ? "只读成员可以查看任务，但不能修改或执行" : (approvalLocked ? "删除确认处理中，任务已锁定" : "描述你要完成的研发任务…");
+  $("sendBtn").disabled = state.busy || archived || approvalLocked || !editable;
+  document.querySelectorAll(".attach-action").forEach(button => { button.disabled = archived || approvalLocked || !editable; });
 }
 
-function pendingDeleteApproval() {
-  return (state.control?.approvals || []).find(row => row.action === "conversation.delete" && row.status === "pending");
+function deleteApproval() {
+  return (state.control?.approvals || []).find(row => row.action === "conversation.delete" && ["pending", "approved"].includes(row.status));
 }
 
 function renderApproval() {
   const card = $("approvalCard");
   if (!card) return;
-  const approval = pendingDeleteApproval();
+  const approval = deleteApproval();
   card.hidden = !approval;
   if (!approval) return;
-  const controls = isManager() ? `
+  const approved = approval.status === "approved";
+  const controls = isManager() ? (approved ? `
+    <div class="approval-actions">
+      <button class="danger" type="button" data-approval-delete>重试永久删除</button>
+    </div>` : `
     <div class="approval-actions">
       <button type="button" data-approval-reject>取消删除</button>
       <button class="danger" type="button" data-approval-confirm>确认永久删除</button>
-    </div>` : '<small>等待工作空间管理员确认。</small>';
-  card.innerHTML = `<div><span class="eyebrow">需要确认</span><b>永久删除任务和任务素材</b><p>${esc(approval.reason || "此操作不可恢复。")}</p></div>${controls}`;
+    </div>`) : '<small>等待工作空间管理员确认。</small>';
+  card.innerHTML = `<div><span class="eyebrow">${approved ? "删除已确认" : "需要确认"}</span><b>永久删除任务和任务素材</b><p>${esc(approved ? "确认已经持久化；如果上次清理存储失败，可以安全重试。" : (approval.reason || "此操作不可恢复。"))}</p></div>${controls}`;
   card.querySelector("[data-approval-reject]")?.addEventListener("click", () => resolveDeleteApproval(approval, false));
   card.querySelector("[data-approval-confirm]")?.addEventListener("click", () => resolveDeleteApproval(approval, true));
+  card.querySelector("[data-approval-delete]")?.addEventListener("click", () => executeApprovedDelete(approval));
 }
 
 async function requestDeleteTask() {
@@ -979,14 +997,24 @@ async function requestDeleteTask() {
 async function resolveDeleteApproval(approval, approved) {
   try {
     const resolved = await api(`/api/approvals/${approval.id}/resolve`, {method: "POST", body: JSON.stringify({approved})});
+    state.control = state.control || {approvals: []};
+    state.control.approvals = [resolved, ...(state.control.approvals || []).filter(row => row.id !== resolved.id)];
     if (!approved) {
-      await loadConversationControl();
-      state.conversation.status = "active";
+      state.conversation.status = resolved.payload?.previous_status || "active";
       renderConversation();
+      await loadConversations();
       toast("已取消删除");
       return;
     }
-    await api(`/api/conversations/${state.conversation.id}?approval_id=${encodeURIComponent(resolved.id)}`, {method: "DELETE"});
+    state.conversation.status = "waiting_approval";
+    renderConversation();
+    await executeApprovedDelete(resolved);
+  } catch (error) { toast(error.message); }
+}
+
+async function executeApprovedDelete(approval) {
+  try {
+    await api(`/api/conversations/${state.conversation.id}?approval_id=${encodeURIComponent(approval.id)}`, {method: "DELETE"});
     state.ws?.close();
     state.conversation = null;
     state.messages = [];
@@ -994,7 +1022,13 @@ async function resolveDeleteApproval(approval, approved) {
     state.control = null;
     toast("任务及其素材已永久删除");
     await bootWorkspace();
-  } catch (error) { toast(error.message); }
+  } catch (error) {
+    state.control = state.control || {approvals: []};
+    state.control.approvals = [approval, ...(state.control.approvals || []).filter(row => row.id !== approval.id)];
+    if (state.conversation) state.conversation.status = "waiting_approval";
+    renderConversation();
+    toast(error.message);
+  }
 }
 
 async function retryCurrentTask() {
@@ -1060,8 +1094,12 @@ async function saveFeedback(messageId, patch) {
     });
     state.feedback[messageId] = row;
     state.gate = await api(`/api/quality-gate?conversation_id=${encodeURIComponent(state.conversation.id)}`);
+    if (state.gate?.message_id === messageId && state.conversation.status !== "waiting_approval") {
+      state.conversation.status = state.gate.task_status || "review";
+    }
     renderFeedbackState();
     renderTeamPanel();
+    await loadConversations();
     toast(Boolean(row.human_verified) ? "已标记人工验证" : "结果反馈已记录");
   } catch (error) { toast(error.message); }
 }
@@ -1147,12 +1185,14 @@ async function loadTeamPanel() {
 function renderTeamPanel() {
   const assignee = $("assigneeSelect");
   if (!assignee) return;
-  assignee.innerHTML = '<option value="">未指定</option>' + state.members.map(member => `<option value="${esc(member.id)}">${esc(member.name || member.email)}</option>`).join("");
+  assignee.innerHTML = '<option value="">未指定</option>' + state.members.filter(member => member.role !== "viewer").map(member => `<option value="${esc(member.id)}">${esc(member.name || member.email)}</option>`).join("");
   assignee.value = state.conversation?.assigned_to || "";
-  assignee.disabled = !state.conversation || !canEdit();
+  assignee.disabled = !state.conversation || !canEdit() || state.conversation.status === "waiting_approval";
 
   $("memberList").innerHTML = state.members.length ? state.members.map(member => {
-    const controls = isManager() ? `<select data-member-role="${esc(member.id)}"><option value="owner">所有者</option><option value="admin">管理员</option><option value="member">成员</option><option value="viewer">只读</option></select><button type="button" data-remove-member="${esc(member.id)}">移除</button>` : `<em>${esc(member.role)}</em>`;
+    const canManageTarget = isManager() && (isOwner() || member.role !== "owner");
+    const roleOptions = `${isOwner() ? '<option value="owner">所有者</option>' : ''}<option value="admin">管理员</option><option value="member">成员</option><option value="viewer">只读</option>`;
+    const controls = canManageTarget ? `<select data-member-role="${esc(member.id)}">${roleOptions}</select>${member.id === state.session?.user?.id ? "" : `<button type="button" data-remove-member="${esc(member.id)}">移除</button>`}` : `<em>${member.role === "owner" ? "所有者" : esc(member.role)}</em>`;
     return `<div class="member-row"><span class="member-avatar">${esc((member.name || member.email || "成").slice(0, 1).toUpperCase())}</span><div><b>${esc(member.name || member.email)}</b><small>${esc(member.email)}</small></div><div class="member-controls">${controls}</div></div>`;
   }).join("") : '<div class="empty-side">还没有团队成员。</div>';
   $("memberList").querySelectorAll("[data-member-role]").forEach(select => {

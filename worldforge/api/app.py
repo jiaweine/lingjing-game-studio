@@ -525,11 +525,15 @@ async def asset_upload(
 ):
     if conversation_id:
         try:
-            product_store.get_conversation(
+            conversation = product_store.get_conversation(
                 conversation_id, workspace_id=principal.workspace_id
             )
         except KeyError:
             raise HTTPException(404, "任务不存在")
+        if conversation.get("archived_at") is not None:
+            raise HTTPException(409, "已归档任务需要先恢复，才能添加素材")
+        if conversation["status"] == "waiting_approval":
+            raise HTTPException(409, "删除确认处理中，不能添加素材")
 
     filename = _safe_filename(file.filename)
     declared_mime = (file.content_type or "").strip().lower()
@@ -589,17 +593,27 @@ async def asset_upload(
         if frame_keys:
             meta["keyframes"] = frame_keys
 
-    row = product_store.add_asset(
-        conversation_id,
-        name=filename,
-        mime=mime,
-        path=object_key,
-        size=size,
-        meta=meta,
-        workspace_id=principal.workspace_id,
-        created_by=principal.user_id,
-        storage_backend=storage.name,
-    )
+    try:
+        row = product_store.add_asset(
+            conversation_id,
+            name=filename,
+            mime=mime,
+            path=object_key,
+            size=size,
+            meta=meta,
+            workspace_id=principal.workspace_id,
+            created_by=principal.user_id,
+            storage_backend=storage.name,
+        )
+    except Exception as exc:
+        for key in [object_key, *frame_keys]:
+            try:
+                storage.delete(key)
+            except Exception:
+                logger.exception("failed to clean rejected asset upload", extra={"object_key": key})
+        if isinstance(exc, ValueError):
+            raise HTTPException(409, str(exc)) from exc
+        raise
     product_store.add_audit(
         request_id=request.state.request_id,
         action="asset.upload",
@@ -803,67 +817,47 @@ async def conversation_message(
     principal: Principal = Depends(require_editor),
 ):
     try:
-        conversation = product_store.get_conversation(
-            conversation_id, workspace_id=principal.workspace_id
-        )
+        conversation = product_store.get_conversation(conversation_id, workspace_id=principal.workspace_id)
     except KeyError:
         raise HTTPException(404, "任务不存在")
     if conversation.get("archived_at") is not None:
         raise HTTPException(409, "已归档任务需要先恢复，才能继续执行")
-    latest = product_store.latest_job(conversation_id, workspace_id=principal.workspace_id)
-    if latest and latest["status"] in {"queued", "running"}:
-        raise HTTPException(409, "当前任务已有执行正在进行")
+    if conversation["status"] == "waiting_approval":
+        raise HTTPException(409, "删除确认处理中，不能继续执行")
 
-    history = product_store.list_messages(
-        conversation_id, workspace_id=principal.workspace_id
-    )
-    assets = product_store.list_assets(
-        conversation_id, workspace_id=principal.workspace_id
-    )
+    history = product_store.list_messages(conversation_id, workspace_id=principal.workspace_id)
+    assets = product_store.list_assets(conversation_id, workspace_id=principal.workspace_id)
     asset_by_id = {asset["id"]: asset for asset in assets}
+    selected_assets = []
     for asset_id in req.asset_ids:
-        if asset_id in asset_by_id:
-            continue
-        try:
-            asset = product_store.get_asset(
-                asset_id, workspace_id=principal.workspace_id
-            )
-            assets.append(asset)
-            asset_by_id[asset_id] = asset
-        except KeyError:
-            continue
+        asset = asset_by_id.get(asset_id)
+        if asset is None:
+            try:
+                asset = product_store.get_asset(asset_id, workspace_id=principal.workspace_id)
+            except KeyError:
+                continue
+        selected_assets.append(asset)
 
-    user_message = product_store.add_message(
-        conversation_id,
-        "user",
-        req.content,
-        {"asset_ids": req.asset_ids},
-        workspace_id=principal.workspace_id,
-    )
-    if not history:
-        product_store.touch(
-            conversation_id,
-            title=req.content.strip().replace("\n", " ")[:36] or "新的研发任务",
-            workspace_id=principal.workspace_id,
-        )
-
-    await _product_emit(
-        conversation_id,
-        principal.workspace_id,
-        "message.accepted",
-        {"message_id": user_message["id"], "asset_count": len(assets)},
-    )
     job_payload = {
         "text": req.content,
         "provider": req.provider,
         "history": history,
-        "asset_ids": [asset["id"] for asset in assets],
+        "asset_ids": [asset["id"] for asset in selected_assets],
     }
-    job = product_store.enqueue_job(
-        workspace_id=principal.workspace_id,
-        conversation_id=conversation_id,
-        payload=job_payload,
-    )
+    try:
+        user_message, job = product_store.create_message_job(
+            workspace_id=principal.workspace_id,
+            conversation_id=conversation_id,
+            content=req.content,
+            asset_ids=[asset["id"] for asset in selected_assets],
+            job_payload=job_payload,
+            title_if_first=req.content if not history else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
     product_store.add_audit(
         request_id=request.state.request_id,
         action="message.create",
@@ -871,22 +865,13 @@ async def conversation_message(
         user_id=principal.user_id,
         resource_type="conversation",
         resource_id=conversation_id,
-        payload={"job_id": job["id"], "asset_count": len(assets)},
+        payload={"job_id": job["id"], "asset_count": len(selected_assets)},
     )
 
     if settings.queue_mode == "external":
-        return {
-            "status": "queued",
-            "message": user_message,
-            "job_id": job["id"],
-        }
-
+        return {"status": "queued", "message": user_message, "job_id": job["id"]}
     await _schedule_product_job(job, background_tasks, principal)
-    return {
-        "status": "accepted",
-        "message": user_message,
-        "job_id": job["id"],
-    }
+    return {"status": "accepted", "message": user_message, "job_id": job["id"]}
 
 
 @app.get("/api/jobs/{job_id}")

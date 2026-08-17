@@ -451,7 +451,9 @@ class ConversationStore:
                 raise KeyError(conversation_id)
 
     def update_conversation(self, conversation_id: str, *, workspace_id: str, title: str | None = None, assigned_to: str | None | object = ..., pinned: bool | None = None, status: str | None = None) -> dict[str, Any]:
-        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        conversation = self.get_conversation(conversation_id, workspace_id=workspace_id)
+        if conversation["status"] == "waiting_approval" and status is None:
+            raise ValueError("删除确认处理中，不能修改任务")
         values: dict[str, Any] = {"updated_at": time.time()}
         if title is not None:
             values["title"] = title.strip()[:240] or "未命名任务"
@@ -464,7 +466,7 @@ class ConversationStore:
         if pinned is not None:
             values["pinned"] = 1 if pinned else 0
         if status is not None:
-            if status not in {"active", "waiting_approval", "blocked", "verified"}:
+            if status not in {"active", "review", "waiting_approval", "blocked", "verified", "stopped"}:
                 raise ValueError("任务状态无效")
             values["status"] = status
         with self.engine.begin() as connection:
@@ -472,7 +474,9 @@ class ConversationStore:
         return self.get_conversation(conversation_id, workspace_id=workspace_id)
 
     def archive_conversation(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any]:
-        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        conversation = self.get_conversation(conversation_id, workspace_id=workspace_id)
+        if conversation["status"] == "waiting_approval":
+            raise ValueError("删除确认处理中，不能归档任务")
         latest = self.latest_job(conversation_id, workspace_id=workspace_id)
         if latest and latest["status"] in {"queued", "running"}:
             raise ValueError("执行中的任务需要先停止，才能归档")
@@ -482,7 +486,9 @@ class ConversationStore:
         return self.get_conversation(conversation_id, workspace_id=workspace_id)
 
     def restore_conversation(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any]:
-        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        conversation = self.get_conversation(conversation_id, workspace_id=workspace_id)
+        if conversation["status"] == "waiting_approval":
+            raise ValueError("删除确认处理中，不能恢复任务")
         with self.engine.begin() as connection:
             connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(archived_at=None, updated_at=time.time()))
         return self.get_conversation(conversation_id, workspace_id=workspace_id)
@@ -495,6 +501,91 @@ class ConversationStore:
             connection.execute(insert(self.messages).values(id=message_id, conversation_id=conversation_id, role=role, content=content, payload=json.dumps(payload, ensure_ascii=False), created_at=now))
             connection.execute(update(self.conversations).where(self.conversations.c.id == conversation_id).values(updated_at=now))
         return {"id": message_id, "conversation_id": conversation_id, "role": role, "content": content, "payload": payload, "created_at": now}
+
+    def create_message_job(
+        self,
+        *,
+        workspace_id: str,
+        conversation_id: str,
+        content: str,
+        asset_ids: list[str],
+        job_payload: dict[str, Any],
+        title_if_first: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        now, message_id, job_id = time.time(), _id("msg"), _id("job")
+        message_payload = {"asset_ids": list(asset_ids)}
+        with self.engine.begin() as connection:
+            row = connection.execute(
+                select(self.conversations)
+                .where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id))
+                .with_for_update()
+            ).first()
+            if not row:
+                raise KeyError(conversation_id)
+            conversation = self._dict(row)
+            if conversation.get("archived_at") is not None:
+                raise ValueError("已归档任务需要先恢复，才能继续执行")
+            if conversation["status"] == "waiting_approval":
+                raise ValueError("删除确认处理中，不能继续执行")
+            active = connection.execute(
+                select(self.jobs.c.id).where(
+                    and_(
+                        self.jobs.c.workspace_id == workspace_id,
+                        self.jobs.c.conversation_id == conversation_id,
+                        self.jobs.c.status.in_(("queued", "running")),
+                    )
+                ).limit(1)
+            ).first()
+            if active:
+                raise ValueError("当前任务已有执行正在进行")
+            message = {
+                "id": message_id,
+                "conversation_id": conversation_id,
+                "role": "user",
+                "content": content,
+                "payload": message_payload,
+                "created_at": now,
+            }
+            connection.execute(
+                insert(self.messages).values(
+                    id=message_id,
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=content,
+                    payload=json.dumps(message_payload, ensure_ascii=False),
+                    created_at=now,
+                )
+            )
+            connection.execute(
+                insert(self.jobs).values(
+                    id=job_id,
+                    workspace_id=workspace_id,
+                    conversation_id=conversation_id,
+                    status="queued",
+                    payload=json.dumps(job_payload, ensure_ascii=False),
+                    attempts=0,
+                    created_at=now,
+                    available_at=now,
+                )
+            )
+            values: dict[str, Any] = {"status": "active", "updated_at": now}
+            if title_if_first:
+                values["title"] = title_if_first.strip().replace("\n", " ")[:36] or "新的研发任务"
+            connection.execute(
+                update(self.conversations)
+                .where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id))
+                .values(**values)
+            )
+            connection.execute(
+                insert(self.task_events).values(
+                    workspace_id=workspace_id,
+                    conversation_id=conversation_id,
+                    type="message.accepted",
+                    payload=json.dumps({"message_id": message_id, "asset_count": len(asset_ids)}, ensure_ascii=False),
+                    created_at=now,
+                )
+            )
+        return message, self.get_job(job_id, workspace_id=workspace_id)
 
     def get_message(self, message_id: str, *, workspace_id: str) -> dict[str, Any]:
         statement = select(self.messages).select_from(self.messages.join(self.conversations, self.messages.c.conversation_id == self.conversations.c.id)).where(and_(self.messages.c.id == message_id, self.conversations.c.workspace_id == workspace_id))
@@ -511,13 +602,24 @@ class ConversationStore:
         return [self._json_row(row) for row in rows]
 
     def add_asset(self, conversation_id: str | None, *, name: str, mime: str, path: str, size: int, meta: dict[str, Any], workspace_id: str = DEMO_WORKSPACE_ID, created_by: str = DEMO_USER_ID, storage_backend: str = "local") -> dict[str, Any]:
-        if conversation_id:
-            self.get_conversation(conversation_id, workspace_id=workspace_id)
         asset_id, now = _id("asset"), time.time()
         with self.engine.begin() as connection:
+            if conversation_id:
+                row = connection.execute(
+                    select(self.conversations)
+                    .where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id))
+                    .with_for_update()
+                ).first()
+                if not row:
+                    raise KeyError(conversation_id)
+                conversation = self._dict(row)
+                if conversation.get("archived_at") is not None:
+                    raise ValueError("已归档任务需要先恢复，才能添加素材")
+                if conversation["status"] == "waiting_approval":
+                    raise ValueError("删除确认处理中，不能添加素材")
             connection.execute(insert(self.assets).values(id=asset_id, workspace_id=workspace_id, created_by=created_by, conversation_id=conversation_id, name=name, mime=mime, path=path, storage_backend=storage_backend, size=size, meta=json.dumps(meta, ensure_ascii=False), created_at=now))
             if conversation_id:
-                connection.execute(update(self.conversations).where(self.conversations.c.id == conversation_id).values(updated_at=now))
+                connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(updated_at=now))
         return self.get_asset(asset_id, workspace_id=workspace_id)
 
     def get_asset(self, asset_id: str, *, workspace_id: str = DEMO_WORKSPACE_ID) -> dict[str, Any]:
@@ -557,16 +659,33 @@ class ConversationStore:
         return [self._json_row(row) for row in rows]
 
     def enqueue_job(self, *, workspace_id: str, conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        conversation = self.get_conversation(conversation_id, workspace_id=workspace_id)
-        if conversation.get("archived_at") is not None:
-            raise ValueError("已归档任务需要先恢复，才能继续执行")
-        latest = self.latest_job(conversation_id, workspace_id=workspace_id)
-        if latest and latest["status"] in {"queued", "running"}:
-            raise ValueError("当前任务已有执行正在进行")
         job_id, now = _id("job"), time.time()
         with self.engine.begin() as connection:
+            row = connection.execute(
+                select(self.conversations)
+                .where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id))
+                .with_for_update()
+            ).first()
+            if not row:
+                raise KeyError(conversation_id)
+            conversation = self._dict(row)
+            if conversation.get("archived_at") is not None:
+                raise ValueError("已归档任务需要先恢复，才能继续执行")
+            if conversation["status"] == "waiting_approval":
+                raise ValueError("删除确认处理中，不能继续执行")
+            active = connection.execute(
+                select(self.jobs.c.id).where(
+                    and_(
+                        self.jobs.c.workspace_id == workspace_id,
+                        self.jobs.c.conversation_id == conversation_id,
+                        self.jobs.c.status.in_(("queued", "running")),
+                    )
+                ).limit(1)
+            ).first()
+            if active:
+                raise ValueError("当前任务已有执行正在进行")
             connection.execute(insert(self.jobs).values(id=job_id, workspace_id=workspace_id, conversation_id=conversation_id, status="queued", payload=json.dumps(payload, ensure_ascii=False), attempts=0, created_at=now, available_at=now))
-            connection.execute(update(self.conversations).where(self.conversations.c.id == conversation_id).values(status="active", updated_at=now))
+            connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(status="active", updated_at=now))
         return self.get_job(job_id, workspace_id=workspace_id)
 
     def get_job(self, job_id: str, *, workspace_id: str) -> dict[str, Any]:
@@ -628,7 +747,7 @@ class ConversationStore:
                 return None
             message = {"id": message_id, "conversation_id": conversation_id, "role": "assistant", "content": content, "payload": payload, "created_at": now}
             connection.execute(insert(self.messages).values(id=message_id, conversation_id=conversation_id, role="assistant", content=content, payload=json.dumps(payload, ensure_ascii=False), created_at=now))
-            connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(status="verified", updated_at=now))
+            connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(status="review", updated_at=now))
             event_payload = {"job_id": job_id, "message": message, "result": payload}
             connection.execute(insert(self.task_events).values(workspace_id=workspace_id, conversation_id=conversation_id, type="answer.ready", payload=json.dumps(event_payload, ensure_ascii=False), created_at=now))
         return message
@@ -651,15 +770,44 @@ class ConversationStore:
         return self.get_job(job_id, workspace_id=job["workspace_id"])
 
     def create_approval(self, *, workspace_id: str, conversation_id: str, action: str, requested_by: str, reason: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        self.get_conversation(conversation_id, workspace_id=workspace_id)
-        with self.engine.connect() as connection:
-            existing = connection.execute(select(self.approval_requests).where(and_(self.approval_requests.c.workspace_id == workspace_id, self.approval_requests.c.conversation_id == conversation_id, self.approval_requests.c.action == action, self.approval_requests.c.status == "pending")).order_by(self.approval_requests.c.created_at.desc()).limit(1)).first()
-        if existing:
-            return self._json_row(existing)
         approval_id, now = _id("approval"), time.time()
         with self.engine.begin() as connection:
-            connection.execute(insert(self.approval_requests).values(id=approval_id, workspace_id=workspace_id, conversation_id=conversation_id, action=action, status="pending", reason=reason, payload=json.dumps(payload or {}, ensure_ascii=False), requested_by=requested_by, created_at=now))
-            connection.execute(update(self.conversations).where(self.conversations.c.id == conversation_id).values(status="waiting_approval", updated_at=now))
+            row = connection.execute(
+                select(self.conversations)
+                .where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id))
+                .with_for_update()
+            ).first()
+            if not row:
+                raise KeyError(conversation_id)
+            conversation = self._dict(row)
+            existing = connection.execute(
+                select(self.approval_requests).where(
+                    and_(
+                        self.approval_requests.c.workspace_id == workspace_id,
+                        self.approval_requests.c.conversation_id == conversation_id,
+                        self.approval_requests.c.action == action,
+                        self.approval_requests.c.status.in_(("pending", "approved")),
+                    )
+                ).order_by(self.approval_requests.c.created_at.desc()).limit(1)
+            ).first()
+            if existing:
+                return self._json_row(existing)
+            if action == "conversation.delete":
+                active = connection.execute(
+                    select(self.jobs.c.id).where(
+                        and_(
+                            self.jobs.c.workspace_id == workspace_id,
+                            self.jobs.c.conversation_id == conversation_id,
+                            self.jobs.c.status.in_(("queued", "running")),
+                        )
+                    ).limit(1)
+                ).first()
+                if active:
+                    raise ValueError("执行中的任务需要先停止，才能请求永久删除")
+            approval_payload = dict(payload or {})
+            approval_payload.setdefault("previous_status", conversation["status"])
+            connection.execute(insert(self.approval_requests).values(id=approval_id, workspace_id=workspace_id, conversation_id=conversation_id, action=action, status="pending", reason=reason, payload=json.dumps(approval_payload, ensure_ascii=False), requested_by=requested_by, created_at=now))
+            connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(status="waiting_approval", updated_at=now))
         return self.get_approval(approval_id, workspace_id=workspace_id)
 
     def get_approval(self, approval_id: str, *, workspace_id: str) -> dict[str, Any]:
@@ -686,7 +834,8 @@ class ConversationStore:
                 return approval
             status = "approved" if approved else "rejected"
             connection.execute(update(self.approval_requests).where(and_(self.approval_requests.c.id == approval_id, self.approval_requests.c.status == "pending")).values(status=status, resolved_by=user_id, resolved_at=now))
-            connection.execute(update(self.conversations).where(self.conversations.c.id == approval["conversation_id"]).values(status="active", updated_at=now))
+            next_status = "waiting_approval" if approved else str((approval.get("payload") or {}).get("previous_status") or "active")
+            connection.execute(update(self.conversations).where(self.conversations.c.id == approval["conversation_id"]).values(status=next_status, updated_at=now))
         return self.get_approval(approval_id, workspace_id=workspace_id)
 
     def consume_approval(self, approval_id: str, *, workspace_id: str, conversation_id: str, action: str) -> bool:
@@ -726,7 +875,14 @@ class ConversationStore:
                 connection.execute(update(self.result_feedback).where(and_(self.result_feedback.c.message_id == message_id, self.result_feedback.c.user_id == user_id)).values(**values))
             else:
                 connection.execute(insert(self.result_feedback).values(message_id=message_id, user_id=user_id, workspace_id=workspace_id, conversation_id=message["conversation_id"], created_at=now, **values))
-        return self.get_feedback(message_id, user_id=user_id, workspace_id=workspace_id) or {}
+        feedback = self.get_feedback(message_id, user_id=user_id, workspace_id=workspace_id) or {}
+        gate = self.feedback_gate(message["conversation_id"], workspace_id=workspace_id)
+        if gate.get("message_id") == message_id:
+            conversation = self.get_conversation(message["conversation_id"], workspace_id=workspace_id)
+            if conversation["status"] != "waiting_approval":
+                with self.engine.begin() as connection:
+                    connection.execute(update(self.conversations).where(and_(self.conversations.c.id == message["conversation_id"], self.conversations.c.workspace_id == workspace_id)).values(status=gate["task_status"], updated_at=time.time()))
+        return feedback
 
     def get_feedback(self, message_id: str, *, user_id: str, workspace_id: str) -> dict[str, Any] | None:
         with self.engine.connect() as connection:
@@ -740,12 +896,25 @@ class ConversationStore:
         return [self._dict(row) for row in rows]
 
     def feedback_gate(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any]:
-        rows = self.list_feedback(conversation_id, workspace_id=workspace_id)
-        verified = [row for row in rows if row.get("human_verified")]
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.connect() as connection:
+            latest = connection.execute(select(self.messages.c.id).where(and_(self.messages.c.conversation_id == conversation_id, self.messages.c.role == "assistant")).order_by(self.messages.c.created_at.desc(), self.messages.c.id.desc()).limit(1)).first()
+            if not latest:
+                return {"approved": False, "message_id": None, "task_status": "active", "human_verified": 0, "correct": 0, "incorrect": 0, "feedback_count": 0, "reason": "尚无可人工复核的交付结果"}
+            message_id = latest[0]
+            rows = [self._dict(row) for row in connection.execute(select(self.result_feedback).where(and_(self.result_feedback.c.workspace_id == workspace_id, self.result_feedback.c.conversation_id == conversation_id, self.result_feedback.c.message_id == message_id)).order_by(self.result_feedback.c.updated_at.desc())).fetchall()]
+        verified_correct = [row for row in rows if row.get("human_verified") and row.get("verdict") == "correct"]
         incorrect = [row for row in rows if row.get("verdict") == "incorrect"]
         correct = [row for row in rows if row.get("verdict") == "correct"]
-        approved = bool(verified) and not incorrect
-        return {"approved": approved, "human_verified": len(verified), "correct": len(correct), "incorrect": len(incorrect), "feedback_count": len(rows), "reason": "已有人类验证且无错误反馈" if approved else "需要人工验证，且不能存在错误反馈"}
+        approved = bool(verified_correct) and not incorrect
+        task_status = "verified" if approved else ("blocked" if incorrect else "review")
+        if approved:
+            reason = "最新交付已人工确认正确，且无错误反馈"
+        elif incorrect:
+            reason = "最新交付存在错误反馈，需要修正后重新验证"
+        else:
+            reason = "最新交付需要人工确认正确后才能通过质量门"
+        return {"approved": approved, "message_id": message_id, "task_status": task_status, "human_verified": len(verified_correct), "correct": len(correct), "incorrect": len(incorrect), "feedback_count": len(rows), "reason": reason}
 
     def record_product_event(self, *, workspace_id: str, user_id: str, name: str, conversation_id: str | None = None, payload: dict[str, Any] | None = None) -> None:
         if conversation_id:

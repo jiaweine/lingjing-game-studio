@@ -37,8 +37,8 @@ const member=()=>({id:'user-e2e',email:'qa@studio.com',name:'QA Lead',status:'ac
 const metrics=()=>({task_count:1,active_tasks:1,first_task_completion_rate:1,avg_time_to_verified_seconds:4.2,interruption_rate:.5,failure_rate:0,recovery_rate:1,continuation_rate:0,manual_intervention_rate:1,evidence_open_rate:1,result_adoption_rate:1,human_verified_feedback_rate:Object.values(window.__E2E.feedback).some(x=>x.human_verified)?1:0});
 const gate=()=>{
   const rows=Object.values(window.__E2E.feedback),verified=rows.filter(x=>x.human_verified),incorrect=rows.filter(x=>x.verdict==='incorrect');
-  const approved=verified.length>0&&incorrect.length===0;
-  return {approved,human_verified:verified.length,correct:rows.filter(x=>x.verdict==='correct').length,incorrect:incorrect.length,feedback_count:rows.length,reason:approved?'已有人类验证且无错误反馈':'需要人工验证，且不能存在错误反馈'};
+  const verifiedCorrect=rows.filter(x=>x.human_verified&&x.verdict==='correct'),approved=verifiedCorrect.length>0&&incorrect.length===0;
+  return {approved,message_id:'msg-answer',task_status:approved?'verified':(incorrect.length?'blocked':'review'),human_verified:verifiedCorrect.length,correct:rows.filter(x=>x.verdict==='correct').length,incorrect:incorrect.length,feedback_count:rows.length,reason:approved?'最新交付已人工确认正确，且无错误反馈':(incorrect.length?'最新交付存在错误反馈，需要修正后重新验证':'最新交付需要人工确认正确后才能通过质量门')};
 };
 const answer=()=>{
   const S=window.__E2E,log=S.assets.find(a=>a.meta?.kind==='text');
@@ -64,7 +64,7 @@ const emitRun=(jobId,startId=1)=>{
     {id:startId+5,type:'answer.ready',payload:{job_id:jobId,message:a,result:a.payload}}
   ];
   events.forEach((ev,i)=>S.timers.push(setTimeout(()=>{
-    if(ev.type==='answer.ready'){c.messages=[...(c.messages||[]).filter(m=>m.role!=='assistant'),a];c.status='verified';c.job={id:jobId,status:'completed'};}
+    if(ev.type==='answer.ready'){c.messages=[...(c.messages||[]).filter(m=>m.role!=='assistant'),a];c.status='review';c.job={id:jobId,status:'completed'};}
     S.sockets.forEach(ws=>ws.onmessage&&ws.onmessage({data:JSON.stringify(ev)}));
   },120+i*250)));
 };
@@ -224,6 +224,7 @@ with sync_playwright() as playwright:
     shot("workspace.png")
     shot("cover.png")
     report["checks"]["realtime_result"] = True
+    report["checks"]["awaiting_human_review"] = page.locator("#taskState").inner_text() == "等待人工复核"
     report["checks"]["evidence_panel"] = page.locator("#evidenceList .evidence-card").count() == 2
     report["checks"]["suggestions"] = page.locator("#suggestionList button").count() == 3
 
@@ -247,6 +248,7 @@ with sync_playwright() as playwright:
     page.wait_for_function("document.querySelector('#qualityGate').textContent.includes('人工质量门已通过')")
     report["checks"]["team_collaboration"] = page.locator("#assigneeSelect").count() == 1 and page.locator("#inviteForm").is_visible()
     report["checks"]["quality_gate"] = "人工质量门已通过" in page.locator("#qualityGate").inner_text()
+    report["checks"]["human_verified_task_status"] = page.locator("#conversationList").inner_text().find("已验证") >= 0
     report["checks"]["product_metrics"] = page.locator("#metricGrid > div").count() == 8
 
     page.fill("#inviteEmail", "designer@studio.com")
@@ -278,6 +280,7 @@ with sync_playwright() as playwright:
     page.click("#deleteTaskBtn")
     page.wait_for_function("document.querySelector('#approvalCard').hidden===false")
     report["checks"]["dangerous_action_approval"] = "永久删除" in page.locator("#approvalCard").inner_text()
+    report["checks"]["approval_locks_task"] = page.locator("#messageInput").is_disabled() and page.locator("#archiveTaskBtn").is_hidden()
     page.click("[data-approval-reject]")
     page.wait_for_function("document.querySelector('#approvalCard').hidden===true")
 
