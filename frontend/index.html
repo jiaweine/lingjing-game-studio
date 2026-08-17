@@ -3,22 +3,382 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="theme-color" content="#f1f2f4" />
-  <title>灵境游戏工作台</title>
+  <meta name="theme-color" content="#090b10" />
+  <meta name="color-scheme" content="dark" />
+  <title>灵境 · 游戏研发执行工作台</title>
   <link rel="stylesheet" href="/assets/app.css" />
 </head>
 <body>
+<div class="ambient ambient-a"></div>
+<div class="ambient ambient-b"></div>
+
 <div class="app-shell">
   <header class="topbar">
-    <div class="brand"><div class="brand-mark"><i></i><i></i><i></i></div><div><b>灵境</b><span>游戏工作台</span></div></div>
-    <div class="project-switch" id="workspaceSwitch"><span class="project-dot"></span><div><small>当前 Workspace</small><b id="workspaceName">本地演示空间</b></div><button>⌄</button></div>
-    <div class="top-spacer"></div><button class="top-link" id="assetLibraryBtn">素材库</button><button class="top-link" id="providerBtn">模型服务</button><button class="team-avatar" id="userAvatar" title="账户">游</button>
+    <div class="brand" aria-label="灵境">
+      <div class="brand-mark" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="brand-copy">
+        <b>灵境</b>
+        <span>Game R&D Workspace</span>
+      </div>
+    </div>
+
+    <button class="workspace-switch" id="workspaceSwitch" type="button">
+      <span class="workspace-beacon"></span>
+      <span class="workspace-copy">
+        <small>Workspace</small>
+        <b id="workspaceName">本地演示空间</b>
+      </span>
+      <span class="chevron">⌄</span>
+    </button>
+
+    <div class="top-spacer"></div>
+    <div class="service-pill" id="serviceStatus">
+      <i></i><span>正在连接</span>
+    </div>
+    <button class="top-action" id="assetLibraryBtn" type="button">素材</button>
+    <button class="top-action" id="providerBtn" type="button">推理服务</button>
+    <button class="team-avatar" id="userAvatar" type="button" title="账户">游</button>
   </header>
-  <aside class="leftbar"><button class="new-task" id="newTaskBtn"><span>＋</span>新建任务</button><div class="side-section"><div class="side-title"><span>常用任务</span></div><button class="scene-item active" data-scene="battle_review"><i>▶</i><div><b>战斗录像复盘</b><small>录像 · 截图 · 战斗日志</small></div></button><button class="scene-item" data-scene="balance"><i>≋</i><div><b>数值平衡诊断</b><small>配置 · 胜率 · 难度曲线</small></div></button><button class="scene-item" data-scene="regression"><i>↻</i><div><b>版本回归验证</b><small>复现 · 对比 · 检查清单</small></div></button><button class="scene-item" data-scene="npc"><i>◇</i><div><b>角色与 NPC 分析</b><small>行为 · 对话 · 上下文</small></div></button><button class="scene-item" data-scene="content_compare"><i>▦</i><div><b>多素材对比</b><small>图片 · 视频 · 音频 · 文档</small></div></button></div><div class="side-section recent-section"><div class="side-title"><span>最近任务</span><button id="refreshConvBtn">↻</button></div><div id="conversationList" class="conversation-list"></div></div><div class="left-footer"><div class="status-line" id="serviceStatus"><i></i><span>服务正常</span></div><button id="settingsBtn">设置</button></div></aside>
-  <main class="chat-area"><div class="chat-head"><div class="chat-title"><h1 id="conversationTitle">战斗录像复盘</h1><span id="conversationMeta">把素材放进来，直接问</span></div><div class="head-actions"><label class="provider-select"><span>使用</span><select id="providerSelect"><option value="auto">自动选择</option></select></label><button class="round-btn" id="shareBtn" title="复制任务链接">分享</button><button class="round-btn" id="moreBtn" title="更多操作">更多</button></div></div><div class="chat-scroll" id="chatScroll"><section class="welcome" id="welcomePanel"><div class="welcome-mark"><span></span><span></span><span></span></div><h2>今天想看什么问题？</h2><p>可以同时放入录像、截图、战斗日志、配置文件和音频。背景只说一次，后面直接追问。</p><div class="quick-grid"><button class="quick-card" data-prompt="帮我复盘这场 Boss 战，重点看 1 分钟之后为什么会突然掉血。"><span class="quick-icon">▶</span><div><b>复盘一场战斗</b><small>定位异常时间段与关键事件</small></div></button><button class="quick-card" data-prompt="帮我检查这组数值有没有明显的高风险组合，给出可执行的调参建议。"><span class="quick-icon">≋</span><div><b>检查数值平衡</b><small>找极端组合、资源陷阱和波动</small></div></button><button class="quick-card" data-prompt="对比这两个版本的表现，帮我整理可以稳定复现的问题和发布前检查项。"><span class="quick-icon">↻</span><div><b>做一次版本回归</b><small>复现异常并生成检查清单</small></div></button><button class="quick-card" data-prompt="结合截图和对话记录，看看这个 NPC 的行为有没有不一致或突然跳变。"><span class="quick-icon">◇</span><div><b>检查角色行为</b><small>看目标切换、连续对话和角色一致性</small></div></button></div></section><div id="messageList" class="message-list"></div><div id="thinkingCard" class="thinking-card" hidden><div class="thinking-head"><span class="spark"><i></i><i></i><i></i></span><b>正在处理</b><small id="thinkingPercent">0%</small></div><div class="thinking-bar"><i id="thinkingBar"></i></div><div class="thinking-step" id="thinkingStep">准备素材</div><div class="thinking-detail" id="thinkingDetail">正在建立分析上下文</div></div></div><div class="composer-wrap"><div id="pendingAssets" class="pending-assets" hidden></div><div class="composer" id="composer"><textarea id="messageInput" rows="1" placeholder="问一下这场战斗为什么会在第二阶段崩掉…"></textarea><div class="composer-bottom"><div class="attach-actions"><button class="attach-btn" data-accept="image/*" title="上传图片"><span>▧</span>图片</button><button class="attach-btn" data-accept="video/*" title="上传视频"><span>▶</span>视频</button><button class="attach-btn" data-accept="audio/*" title="上传音频"><span>♫</span>音频</button><button class="attach-btn" data-accept=".log,.txt,.json,.csv,.yaml,.yml,.xml" title="上传日志或配置"><span>⌘</span>日志/配置</button><button class="attach-btn" data-accept="*/*" title="上传其他文件"><span>＋</span></button></div><div class="send-side"><span id="inputHint">Enter 发送 · Shift+Enter 换行</span><button id="sendBtn" class="send-btn">↑</button></div></div><input id="fileInput" type="file" multiple hidden /></div><div class="privacy-note">素材仅用于当前任务处理；接入第三方模型时，以所选服务的企业数据策略为准。</div></div></main>
-  <aside class="rightbar"><div class="right-tabs"><button class="right-tab active" data-panel="progress">任务进展</button><button class="right-tab" data-panel="evidence">关键发现</button><button class="right-tab" data-panel="assets">本次素材</button></div><div class="right-scroll"><section class="right-panel active" id="panel-progress"><div class="task-state-card"><div class="task-state-top"><span class="state-dot"></span><div><small>当前状态</small><b id="taskState">等待任务</b></div><em id="taskPercent">0%</em></div><div class="mini-progress"><i id="taskProgress"></i></div></div><div class="progress-list" id="progressList"><div class="progress-empty"><span>✓</span><b>准备好了</b><p>发一句问题，或者先上传素材。</p></div></div><div class="sub-card"><div class="sub-head"><b>你可以这样继续</b></div><div id="suggestionList" class="suggestion-list"><button>把异常时间段单独展开</button><button>生成一个回归测试清单</button><button>把结论整理成研发群可发的版本</button></div></div></section><section class="right-panel" id="panel-evidence"><div class="panel-intro"><b>关键发现</b><p>结论对应的录像片段、截图、日志和复核结果都会集中在这里。</p></div><div id="evidenceList" class="evidence-list"><div class="empty-side">完成一次分析后显示。</div></div></section><section class="right-panel" id="panel-assets"><div class="panel-intro"><b>本次素材</b><p>同一个任务里可以持续追加，不需要重新描述背景。</p></div><div id="assetList" class="asset-list"><div class="empty-side">还没有上传素材。</div></div></section></div></aside>
+
+  <aside class="leftbar">
+    <button class="new-task" id="newTaskBtn" type="button">
+      <span class="new-task-icon">＋</span>
+      <span>新建研发任务</span>
+      <kbd>N</kbd>
+    </button>
+
+    <div class="side-section">
+      <div class="side-title">任务模板</div>
+      <button class="scene-item active" data-scene="battle_review" type="button">
+        <span class="scene-glyph"><i></i></span>
+        <span class="scene-copy">
+          <b>战斗问题复现</b>
+          <small>定位触发条件与异常窗口</small>
+        </span>
+      </button>
+      <button class="scene-item" data-scene="balance" type="button">
+        <span class="scene-glyph bars"><i></i></span>
+        <span class="scene-copy">
+          <b>数值风险检查</b>
+          <small>极端组合与资源曲线</small>
+        </span>
+      </button>
+      <button class="scene-item" data-scene="regression" type="button">
+        <span class="scene-glyph loop"><i></i></span>
+        <span class="scene-copy">
+          <b>版本回归验证</b>
+          <small>复现、修复、再次核验</small>
+        </span>
+      </button>
+      <button class="scene-item" data-scene="npc" type="button">
+        <span class="scene-glyph diamond"><i></i></span>
+        <span class="scene-copy">
+          <b>角色行为检查</b>
+          <small>目标切换与连续交互</small>
+        </span>
+      </button>
+      <button class="scene-item" data-scene="content_compare" type="button">
+        <span class="scene-glyph grid"><i></i></span>
+        <span class="scene-copy">
+          <b>多素材交叉核对</b>
+          <small>录像、日志、配置一起看</small>
+        </span>
+      </button>
+    </div>
+
+    <div class="side-section recent-section">
+      <div class="side-title row">
+        <span>最近任务</span>
+        <button class="icon-button" id="refreshConvBtn" type="button" title="刷新">↻</button>
+      </div>
+      <div id="conversationList" class="conversation-list"></div>
+    </div>
+
+    <div class="left-footer">
+      <button id="settingsBtn" class="quiet-button" type="button">
+        <span>设置</span><span>⌘ ,</span>
+      </button>
+    </div>
+  </aside>
+
+  <main class="work-area">
+    <div class="mission-head">
+      <div>
+        <span class="eyebrow">CURRENT MISSION</span>
+        <h1 id="conversationTitle">战斗问题复现</h1>
+        <p id="conversationMeta">把目标说清楚，系统会持续执行到得到可核验结果。</p>
+      </div>
+      <div class="head-actions">
+        <label class="provider-select">
+          <span>推理</span>
+          <select id="providerSelect" aria-label="推理服务">
+            <option value="auto">自动选择</option>
+          </select>
+        </label>
+        <button class="ghost-button" id="shareBtn" type="button">分享</button>
+        <button class="ghost-button square" id="moreBtn" type="button" title="更多">···</button>
+      </div>
+    </div>
+
+    <div class="work-scroll" id="chatScroll">
+      <section class="welcome" id="welcomePanel">
+        <div class="welcome-kicker">
+          <span class="pulse-dot"></span>
+          <span>可直接交付研发目标</span>
+        </div>
+        <h2>说目标，不用写流程。</h2>
+        <p class="welcome-lead">
+          灵境会读取当前素材、尝试复现、检查不同路径、遇到风险自动恢复，
+          最后把结果、证据与下一步留在同一个任务里。
+        </p>
+
+        <div class="quick-grid">
+          <button class="quick-card" data-prompt="帮我复现这个 Boss 第二阶段偶发秒杀问题，找出稳定触发条件，验证修复后再给我回归清单。" type="button">
+            <span class="quick-index">01</span>
+            <div>
+              <b>复现偶发问题</b>
+              <small>找稳定触发条件，再验证修复</small>
+            </div>
+            <span class="quick-arrow">↗</span>
+          </button>
+          <button class="quick-card" data-prompt="帮我检查这组数值里最危险的组合，验证不同玩家打法下会不会失衡，并给出优先调整顺序。" type="button">
+            <span class="quick-index">02</span>
+            <div>
+              <b>检查数值风险</b>
+              <small>覆盖极端打法与资源边界</small>
+            </div>
+            <span class="quick-arrow">↗</span>
+          </button>
+          <button class="quick-card" data-prompt="对比当前版本和上一版，复现已有问题，确认修复是否有效，并生成发布前回归清单。" type="button">
+            <span class="quick-index">03</span>
+            <div>
+              <b>验证版本修复</b>
+              <small>复现、对比、核验、留证</small>
+            </div>
+            <span class="quick-arrow">↗</span>
+          </button>
+          <button class="quick-card" data-prompt="结合截图、日志和连续对话，检查这个 NPC 的行为是否一致，找出突然跳变的条件。" type="button">
+            <span class="quick-index">04</span>
+            <div>
+              <b>检查角色行为</b>
+              <small>定位不一致与异常切换</small>
+            </div>
+            <span class="quick-arrow">↗</span>
+          </button>
+        </div>
+
+        <div class="welcome-proof">
+          <div><b>持续执行</b><span>不是一次回答</span></div>
+          <div><b>失败恢复</b><span>问题路径不会拖垮任务</span></div>
+          <div><b>结果留证</b><span>每个结论都有上下文</span></div>
+        </div>
+      </section>
+
+      <section id="missionStream" class="mission-stream" aria-live="polite">
+        <div id="messageList" class="message-list"></div>
+
+        <div id="thinkingCard" class="thinking-card" hidden>
+          <div class="thinking-rail"><i id="thinkingBar"></i></div>
+          <div class="thinking-main">
+            <span class="thinking-orbit"><i></i></span>
+            <div>
+              <small>正在执行</small>
+              <b id="thinkingStep">准备任务</b>
+              <p id="thinkingDetail">正在建立任务上下文</p>
+            </div>
+            <strong id="thinkingPercent">0%</strong>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="composer-wrap">
+      <div id="pendingAssets" class="pending-assets" hidden></div>
+      <div class="composer" id="composer">
+        <div class="composer-label">
+          <span>任务指令</span>
+          <small>描述你要完成的研发目标，后续可以继续追加要求。</small>
+        </div>
+        <textarea id="messageInput" rows="1" placeholder="例如：复现第二阶段偶发秒杀，找出稳定触发条件，修复后再做回归验证…"></textarea>
+        <div class="composer-bottom">
+          <div class="attach-actions">
+            <button class="attach-btn" data-accept="image/*" type="button">图片</button>
+            <button class="attach-btn" data-accept="video/*" type="button">视频</button>
+            <button class="attach-btn" data-accept="audio/*" type="button">音频</button>
+            <button class="attach-btn" data-accept=".log,.txt,.json,.csv,.yaml,.yml,.xml" type="button">日志 / 配置</button>
+            <button class="attach-btn compact" data-accept="*/*" type="button">＋</button>
+          </div>
+          <div class="send-side">
+            <span id="inputHint">Enter 执行 · Shift+Enter 换行</span>
+            <button id="sendBtn" class="send-btn" type="button">
+              <span>开始执行</span><i>↗</i>
+            </button>
+          </div>
+        </div>
+        <input id="fileInput" type="file" multiple hidden />
+      </div>
+      <div class="privacy-note">任务素材按 Workspace 隔离；选择第三方推理服务时遵循对应企业数据策略。</div>
+    </div>
+  </main>
+
+  <aside class="rightbar">
+    <div class="right-tabs">
+      <button class="right-tab active" data-panel="progress" type="button">执行</button>
+      <button class="right-tab" data-panel="evidence" type="button">证据</button>
+      <button class="right-tab" data-panel="assets" type="button">素材</button>
+    </div>
+
+    <div class="right-scroll">
+      <section class="right-panel active" id="panel-progress">
+        <div class="task-state-card">
+          <div class="task-state-top">
+            <div class="state-orb"><i></i></div>
+            <div>
+              <small>任务状态</small>
+              <b id="taskState">等待目标</b>
+            </div>
+            <em id="taskPercent">0%</em>
+          </div>
+          <div class="mini-progress"><i id="taskProgress"></i></div>
+          <p id="taskStateHint">提交目标后，这里会显示正在做什么。</p>
+        </div>
+
+        <div class="panel-label">执行记录</div>
+        <div class="progress-list" id="progressList">
+          <div class="progress-empty">
+            <span class="empty-mark">↗</span>
+            <b>准备好了</b>
+            <p>提交一个目标，或者先上传素材。</p>
+          </div>
+        </div>
+
+        <div class="sub-card">
+          <div class="sub-head">
+            <div>
+              <small>NEXT ACTION</small>
+              <b>可以继续要求</b>
+            </div>
+          </div>
+          <div id="suggestionList" class="suggestion-list">
+            <button type="button">把异常时间段单独展开</button>
+            <button type="button">生成回归测试清单</button>
+            <button type="button">整理成团队可直接执行的结论</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="right-panel" id="panel-evidence">
+        <div class="panel-intro">
+          <span class="eyebrow">RESULT PROOF</span>
+          <b>关键证据</b>
+          <p>录像片段、截图、日志和复核结果都会和结论对应起来。</p>
+        </div>
+        <div id="evidenceList" class="evidence-list">
+          <div class="empty-side">完成一次任务后显示。</div>
+        </div>
+      </section>
+
+      <section class="right-panel" id="panel-assets">
+        <div class="panel-intro">
+          <span class="eyebrow">MISSION CONTEXT</span>
+          <b>本次素材</b>
+          <p>同一个任务里可以持续追加，不需要重新解释背景。</p>
+        </div>
+        <div id="assetList" class="asset-list">
+          <div class="empty-side">还没有上传素材。</div>
+        </div>
+      </section>
+    </div>
+  </aside>
 </div>
-<div class="drop-mask" id="dropMask" hidden><div><span>＋</span><b>松开即可添加到当前任务</b><small>支持图片、视频、音频、日志、配置与文档</small></div></div>
-<div class="modal-backdrop" id="providerModal" hidden><div class="modal provider-modal"><div class="modal-head"><div><h3>模型服务</h3><p>按任务自动选择，也可以固定使用某一家。密钥只从服务端环境变量读取。</p></div><button class="modal-close">×</button></div><div id="providerGrid" class="provider-grid"></div><div class="modal-foot"><span>建议：多模态任务优先选择支持图片/视频的服务；仅文本推理可按成本与时延选择。</span></div></div></div>
-<div class="modal-backdrop auth-backdrop" id="authModal" hidden><div class="modal auth-modal"><div class="auth-brand"><div class="brand-mark"><i></i><i></i><i></i></div><div><b>灵境</b><span>Game Studio Cloud</span></div></div><div class="auth-copy"><span class="eyebrow">TEAM WORKSPACE</span><h2>把测试证据、分析结论和团队上下文留在同一个工作空间。</h2><p>登录后，任务、素材、消息与审计记录都会按 Workspace 隔离。</p></div><div class="auth-tabs"><button class="active" data-auth-tab="login">登录</button><button data-auth-tab="register">创建 Workspace</button></div><form id="loginForm" class="auth-form"><label><span>工作邮箱</span><input id="loginEmail" type="email" autocomplete="email" placeholder="you@studio.com" required></label><label><span>密码</span><input id="loginPassword" type="password" autocomplete="current-password" placeholder="至少 10 个字符" required></label><button class="auth-submit" type="submit">进入工作台</button></form><form id="registerForm" class="auth-form" hidden><div class="auth-form-grid"><label><span>你的名字</span><input id="registerName" autocomplete="name" placeholder="例如：林澈"></label><label><span>Workspace</span><input id="registerWorkspace" placeholder="例如：星火工作室" required></label></div><label><span>工作邮箱</span><input id="registerEmail" type="email" autocomplete="email" placeholder="you@studio.com" required></label><label><span>密码</span><input id="registerPassword" type="password" autocomplete="new-password" placeholder="至少 10 个字符" minlength="10" required></label><button class="auth-submit" type="submit">创建并进入</button></form><div class="auth-security"><span>●</span> HttpOnly Session · Workspace Isolation · Audit Trail</div></div></div>
-<div class="toast" id="toast"></div><script type="module" src="/assets/app.js"></script></body></html>
+
+<div class="drop-mask" id="dropMask" hidden>
+  <div class="drop-card">
+    <span>＋</span>
+    <b>松开即可加入当前任务</b>
+    <small>支持图片、视频、音频、日志、配置与文档</small>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="providerModal" hidden>
+  <div class="modal provider-modal">
+    <div class="modal-head">
+      <div>
+        <span class="eyebrow">INFERENCE SERVICES</span>
+        <h3>推理服务</h3>
+        <p>系统负责执行策略与结果验证；这里的服务只提供可替换的推理能力。</p>
+      </div>
+      <button class="modal-close" type="button">×</button>
+    </div>
+    <div id="providerGrid" class="provider-grid"></div>
+    <div class="modal-foot">
+      <span>优先按输入类型、可用性与成本自动选择，也可以手动固定。</span>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop auth-backdrop" id="authModal" hidden>
+  <div class="modal auth-modal">
+    <div class="auth-brand">
+      <div class="brand-mark"><span></span><span></span><span></span></div>
+      <div><b>灵境</b><span>Game R&D Workspace</span></div>
+    </div>
+
+    <div class="auth-copy">
+      <span class="eyebrow">YOUR EXECUTION SPACE</span>
+      <h2>把问题、执行过程和验证证据留在一个工作空间。</h2>
+      <p>团队任务、素材、结果与审计记录按 Workspace 隔离。</p>
+    </div>
+
+    <div class="auth-tabs">
+      <button class="active" data-auth-tab="login" type="button">登录</button>
+      <button data-auth-tab="register" type="button">创建 Workspace</button>
+    </div>
+
+    <form id="loginForm" class="auth-form">
+      <label>
+        <span>工作邮箱</span>
+        <input id="loginEmail" type="email" autocomplete="email" placeholder="you@studio.com" required />
+      </label>
+      <label>
+        <span>密码</span>
+        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="至少 10 个字符" required />
+      </label>
+      <button class="auth-submit" type="submit">进入工作台</button>
+    </form>
+
+    <form id="registerForm" class="auth-form" hidden>
+      <div class="auth-form-grid">
+        <label>
+          <span>你的名字</span>
+          <input id="registerName" autocomplete="name" placeholder="例如：林澈" />
+        </label>
+        <label>
+          <span>Workspace</span>
+          <input id="registerWorkspace" placeholder="例如：星火工作室" required />
+        </label>
+      </div>
+      <label>
+        <span>工作邮箱</span>
+        <input id="registerEmail" type="email" autocomplete="email" placeholder="you@studio.com" required />
+      </label>
+      <label>
+        <span>密码</span>
+        <input id="registerPassword" type="password" autocomplete="new-password" placeholder="至少 10 个字符" minlength="10" required />
+      </label>
+      <button class="auth-submit" type="submit">创建并进入</button>
+    </form>
+
+    <div class="auth-security">
+      <span></span>
+      <p>安全会话 · Workspace 隔离 · 审计记录</p>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>

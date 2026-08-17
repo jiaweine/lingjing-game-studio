@@ -1,7 +1,7 @@
 [project]
 name = "lingjing-game-studio"
-version = "2.0.0"
-description = "Production-oriented multi-tenant conversational game analysis workspace."
+version = "1.0.0"
+description = "Autonomous game R&D execution workspace powered by the in-house WorldForge runtime."
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "playwright>=1.45"]
 
 [project.scripts]
 worldforge = "worldforge.cli:main"

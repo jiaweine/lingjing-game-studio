@@ -1,5 +1,5 @@
 from .event_store import EventStore
-from .plugin import PluginRegistry,PluginDescriptor
+from .plugin import PluginRegistry, PluginDescriptor
 from .memory import EpisodicMemory
 from .skill_bank import SkillBank
 from .planner import AdaptivePlanner
@@ -10,3 +10,4 @@ from .engine import WorldForgeEngine
 from .sandbox import ActionSandbox
 from .selfplay import PopulationSelfPlay
 from .recursive import RecursiveAgentScheduler
+from .policy import WorldForgePolicy, GroupRelativePolicyOptimizer, PolicyGroup
