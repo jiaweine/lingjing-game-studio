@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import random
+import statistics
 import uuid
 
 from worldforge.envs import list_scenarios
 
+from .game_harness_evaluator import GameHarnessEvaluator
 from .harness_evolution import (
     EvolutionCandidate,
     EvolutionConfig,
@@ -22,28 +24,43 @@ from .harness_genome import HarnessGenome, HarnessGenomeStore
 
 @dataclass
 class GameEvolutionConfig(EvolutionConfig):
-    """Search schedule and frozen promotion protocol for the game-R&D harness.
+    """Frozen search/admission protocol for the game-R&D harness.
 
-    These values govern *how* candidates are searched and admitted; they are not task-policy
-    constants. The executable task policy itself lives in HarnessGenome and remains evolvable.
+    These values govern how candidate programs are searched and judged. They are deliberately
+    outside HarnessGenome: the harness may evolve its executable behavior, but it cannot edit
+    its own evaluator, confidence protocol, safety floor, or resource ceiling.
     """
 
     refinement_rounds: int = 2
     elite_fraction: float = 0.5
     refinements_per_elite: int = 1
+    stability_penalty: float = 0.30
+    plateau_rounds: int = 2
+    plateau_sigma_growth: float = 1.8
+    max_sigma: float = 0.85
     min_heldout_gain: float = 0.0
     min_lower_bound: float = 0.0
     quality_tolerance: float = 0.0
     efficiency_tolerance: float = 0.02
 
+    # Frozen game-R&D evaluation protocol. Findings are useful evidence; unsafe execution is not.
+    quality_success_weight: float = 0.50
+    quality_progress_weight: float = 0.18
+    quality_health_weight: float = 0.10
+    quality_score_weight: float = 0.07
+    quality_diagnostic_weight: float = 0.15
+    operation_normalizer: float = 8.0
+    objective_quality_weight: float = 0.60
+    objective_safety_weight: float = 0.25
+    objective_efficiency_weight: float = 0.15
+
 
 class GameHarnessMutator(HarnessMutator):
-    """Vertical adaptation of the generic program-search mutator.
+    """Vertical program mutator for game-R&D harnesses.
 
-    In addition to topology/gate/recombination/meta mutation, game R&D harnesses evolve:
-    representation scales, continual-memory retrieval, and reusable skill behavior.
-    No action-specific failure rule is encoded in the mutation operator; evidence features
-    determine which part of the genome receives edit pressure.
+    The searchable surface includes representation, memory, skills, specialist topology,
+    gates, planner/search/utility parameters and the mutation policy itself. Mutation never
+    edits the frozen verifier, canonical-state owner, evaluator, or promotion gate.
     """
 
     def propose(
@@ -85,8 +102,31 @@ class GameHarnessMutator(HarnessMutator):
             child.origin = operator
         return child, operator
 
+    def propose_pair(
+        self,
+        parent: HarnessGenome,
+        evidence: EvolutionEvidence,
+        *,
+        peers: list[HarnessGenome] | None = None,
+        sigma_scale: float = 1.0,
+    ) -> tuple[tuple[HarnessGenome, str], tuple[HarnessGenome, str]]:
+        """True antithetic pair: same sampled edit plan, opposite numerical direction."""
+        scaled = parent.model_copy(deep=True)
+        scaled.mutation_policy.sigma = min(
+            0.95,
+            max(0.01, scaled.mutation_policy.sigma * sigma_scale),
+        )
+        state = self.rng.getstate()
+        plus = self.propose(scaled, evidence, peers=peers, direction=1.0)
+        end_state = self.rng.getstate()
+        self.rng.setstate(state)
+        minus = self.propose(scaled, evidence, peers=peers, direction=-1.0)
+        # Advance only once so the next pair samples a new edit plan rather than the mirror path.
+        self.rng.setstate(end_state)
+        return plus, minus
+
     def _sample_operator(self, genome: HarnessGenome, *, allow_recombine: bool) -> str:
-        """Temperature-softmax exploitation with an independent exploration mixture."""
+        """Learned softmax exploitation with an independent uniform exploration mixture."""
         items = [
             (name, value)
             for name, value in genome.mutation_policy.operator_logits.items()
@@ -111,17 +151,17 @@ class GameHarnessMutator(HarnessMutator):
             genome.utility,
         ]
         group = self.rng.choice(groups)
-        fields = []
-        for name in type(group).model_fields:
-            value = getattr(group, name)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                fields.append(name)
+        fields = [
+            name
+            for name in type(group).model_fields
+            if isinstance(getattr(group, name), (int, float))
+            and not isinstance(getattr(group, name), bool)
+        ]
         if not fields:
             if group is genome.features and genome.features.scales:
                 name = self.rng.choice(list(genome.features.scales))
-                value = genome.features.scales[name]
                 genome.features.scales[name] = self._positive_jitter(
-                    value, genome.mutation_policy.sigma, sign
+                    genome.features.scales[name], genome.mutation_policy.sigma, sign
                 )
             elif group is genome.memory and genome.memory.feature_weights:
                 name = self.rng.choice(list(genome.memory.feature_weights))
@@ -150,14 +190,9 @@ class GameHarnessMutator(HarnessMutator):
         sign: float,
     ) -> None:
         sigma = genome.mutation_policy.sigma
-        active_skills = [
-            (skill_id, gene)
-            for skill_id, gene in genome.skills.items()
-            if gene.enabled
-        ]
+        active_skills = [gene for gene in genome.skills.values() if gene.enabled]
         if active_skills and self.rng.random() < .35:
-            _, skill = self.rng.choice(active_skills)
-            gate = skill.gate
+            gate = self.rng.choice(active_skills).gate
         else:
             gene = self._choose_gene(genome, evidence)
             if gene is None:
@@ -165,7 +200,7 @@ class GameHarnessMutator(HarnessMutator):
             gate = gene.gate
         feature = self._sample_evidence_feature(evidence)
         gate.weights[feature] = gate.weights.get(feature, 0.0) + sign * sigma
-        gate.threshold += self.rng.uniform(-sigma, sigma) * .5
+        gate.threshold += sign * self.rng.uniform(.25, .75) * sigma
         gate.temperature = max(.02, gate.temperature * (1.0 + sign * sigma * .2))
 
     def _skill_mutation(
@@ -185,9 +220,7 @@ class GameHarnessMutator(HarnessMutator):
             skill.action_bias[action] = value + sign * max(.1, abs(value)) * sigma
         else:
             feature = self._sample_evidence_feature(evidence)
-            skill.gate.weights[feature] = (
-                skill.gate.weights.get(feature, 0.0) + sign * sigma
-            )
+            skill.gate.weights[feature] = skill.gate.weights.get(feature, 0.0) + sign * sigma
         skill.reliability = max(
             .05,
             min(2.0, skill.reliability * (1.0 + sign * sigma * .25)),
@@ -231,43 +264,78 @@ class GameHarnessMutator(HarnessMutator):
         weights = [max(.01, evidence.feature_priorities[name]) for name in names]
         return self.rng.choices(names, weights=weights, k=1)[0]
 
-    def _positive_jitter(self, value: float, sigma: float, sign: float) -> float:
-        return max(
-            .001,
-            value + sign * max(.05, abs(value)) * sigma * self.rng.uniform(.5, 1.5),
-        )
+    @staticmethod
+    def _positive_jitter(value: float, sigma: float, sign: float) -> float:
+        return max(.001, value + sign * max(.05, abs(value)) * sigma)
 
 
 class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
-    """Game-R&D optimized self-evolving search with independent positive-gain promotion.
+    """Behavior-sensitive self-evolving search for game R&D.
 
-    Search is deliberately staged. A broad antithetic population first explores around the
-    active genome. Train-set elites then become parents for local refinement. Held-out cases
-    are never used to generate candidates; they are evaluated only after search is complete.
-    Promotion requires positive held-out evidence, not merely tolerance of a regression.
+    1. Generate true antithetic edit pairs around the active genome.
+    2. Detect train-behavior plateaus and expand mutation scale instead of wasting samples.
+    3. Rank train elites by mean performance *and* cross-case stability.
+    4. Refine elites using train cases only.
+    5. Freeze the search path, then run the independent held-out judge exactly once per candidate.
+    6. Promote only candidates with positive paired held-out evidence and no safety/quality loss.
     """
 
     def __init__(self, *args, **kwargs) -> None:
-        if kwargs.get("config") is None:
+        raw = kwargs.get("config")
+        if raw is None:
             kwargs["config"] = GameEvolutionConfig()
+        elif not isinstance(raw, GameEvolutionConfig):
+            kwargs["config"] = GameEvolutionConfig(**raw.__dict__)
         super().__init__(*args, **kwargs)
         self.mutator = GameHarnessMutator(random.Random(self.config.seed))
-
-    def _schedule(self) -> GameEvolutionConfig:
-        if isinstance(self.config, GameEvolutionConfig):
-            return self.config
-        payload = self.config.__dict__.copy()
-        return GameEvolutionConfig(**payload)
+        self.evaluator = GameHarnessEvaluator(self.config)
 
     @staticmethod
-    def _train_rank(candidate: EvolutionCandidate) -> tuple[float, float, float, float]:
+    def _evaluation_signature(evaluation) -> tuple:
+        return tuple(
+            (
+                episode.scenario_id,
+                episode.seed,
+                round(episode.objective, 9),
+                round(episode.quality, 9),
+                round(episode.safety, 9),
+                round(episode.efficiency, 9),
+                episode.success,
+                round(episode.final_score, 6),
+                round(episode.operations, 3),
+            )
+            for episode in evaluation.episodes
+        )
+
+    def _train_rank(self, candidate: EvolutionCandidate) -> tuple[float, float, float, float, float]:
         assert candidate.train is not None
+        values = [episode.objective for episode in candidate.train.episodes]
+        spread = statistics.pstdev(values) if len(values) > 1 else 0.0
+        stable_objective = candidate.train.objective - self.config.stability_penalty * spread
         return (
-            candidate.train.objective,
+            stable_objective,
+            min(values) if values else candidate.train.objective,
             candidate.train.safety,
             candidate.train.efficiency,
             candidate.novelty,
         )
+
+    def _candidate(
+        self,
+        genome: HarnessGenome,
+        operator: str,
+        evidence: EvolutionEvidence,
+        baseline: HarnessGenome,
+        train_cases,
+    ) -> EvolutionCandidate:
+        candidate = EvolutionCandidate(
+            genome=genome,
+            operator=operator,
+            evidence=evidence,
+            novelty=genome_distance(baseline, genome),
+        )
+        candidate.train = self.evaluator.evaluate(genome, train_cases)
+        return candidate
 
     def evolve(
         self,
@@ -276,7 +344,6 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         baseline: HarnessGenome | None = None,
     ) -> EvolutionResult:
         baseline = (baseline or HarnessGenomeStore.current()).model_copy(deep=True)
-        schedule = self._schedule()
         scenarios = [scenario.scenario_id for scenario in list_scenarios()]
         train_cases = [
             (scenario_id, seed)
@@ -290,68 +357,81 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         ]
         baseline_train = self.evaluator.evaluate(baseline, train_cases)
         baseline_heldout = self.evaluator.evaluate(baseline, heldout_cases)
+        baseline_signature = self._evaluation_signature(baseline_train)
         archive_peers = self.archive.peer_genomes(evidence.cell)
 
         candidates: list[EvolutionCandidate] = []
         population = max(2, self.config.population)
-        for index in range(population):
-            direction = 1.0 if index % 2 == 0 else -1.0
-            genome, operator = self.mutator.propose(
-                baseline,
-                evidence,
-                peers=archive_peers,
-                direction=direction,
-            )
-            candidate = EvolutionCandidate(
-                genome=genome,
-                operator=operator,
-                evidence=evidence,
-                novelty=genome_distance(baseline, genome),
-            )
-            candidate.train = self.evaluator.evaluate(genome, train_cases)
-            candidates.append(candidate)
+        pair_count = int(math.ceil(population / 2))
 
-        # Small unit-test/search budgets intentionally skip refinement. Production-sized
-        # populations use successive train-only refinement, so held-out data stays a judge.
+        sigma_scale = 1.0
+        for plateau_round in range(max(1, self.config.plateau_rounds + 1)):
+            round_candidates: list[EvolutionCandidate] = []
+            for pair_index in range(pair_count):
+                plus, minus = self.mutator.propose_pair(
+                    baseline,
+                    evidence,
+                    peers=archive_peers,
+                    sigma_scale=sigma_scale,
+                )
+                for genome, operator in (plus, minus):
+                    candidate = self._candidate(
+                        genome,
+                        f"es{plateau_round}:{operator}",
+                        evidence,
+                        baseline,
+                        train_cases,
+                    )
+                    round_candidates.append(candidate)
+            candidates.extend(round_candidates[:population])
+            informative = sum(
+                self._evaluation_signature(candidate.train) != baseline_signature
+                for candidate in round_candidates
+                if candidate.train is not None
+            )
+            if informative >= max(2, len(round_candidates) // 3):
+                break
+            sigma_scale = min(
+                self.config.max_sigma / max(.01, baseline.mutation_policy.sigma),
+                sigma_scale * self.config.plateau_sigma_growth,
+            )
+
+        # Successive train-only refinement. No held-out result can influence this trajectory.
         if population >= 4:
-            for round_index in range(max(0, schedule.refinement_rounds)):
+            for round_index in range(max(0, self.config.refinement_rounds)):
                 ranked = sorted(candidates, key=self._train_rank, reverse=True)
                 elite_count = max(
                     1,
                     min(
                         len(ranked),
-                        int(math.ceil(population * max(.05, min(1.0, schedule.elite_fraction)))),
+                        int(math.ceil(population * max(.05, min(1.0, self.config.elite_fraction)))),
                     ),
                 )
                 elites = ranked[:elite_count]
                 refined: list[EvolutionCandidate] = []
-                for elite_index, elite in enumerate(elites):
-                    peers = archive_peers + [
-                        item.genome for item in elites if item is not elite
-                    ]
-                    for refinement_index in range(max(1, schedule.refinements_per_elite)):
-                        direction = (
-                            1.0
-                            if (round_index + elite_index + refinement_index) % 2 == 0
-                            else -1.0
-                        )
-                        genome, operator = self.mutator.propose(
+                for elite in elites:
+                    peers = archive_peers + [item.genome for item in elites if item is not elite]
+                    for _ in range(max(1, self.config.refinements_per_elite)):
+                        plus, minus = self.mutator.propose_pair(
                             elite.genome,
                             evidence,
                             peers=peers,
-                            direction=direction,
                         )
-                        candidate = EvolutionCandidate(
-                            genome=genome,
-                            operator=f"refine:{operator}",
-                            evidence=evidence,
-                            novelty=genome_distance(baseline, genome),
-                        )
-                        candidate.train = self.evaluator.evaluate(genome, train_cases)
-                        refined.append(candidate)
+                        pair = [
+                            self._candidate(
+                                genome,
+                                f"refine{round_index}:{operator}",
+                                evidence,
+                                baseline,
+                                train_cases,
+                            )
+                            for genome, operator in (plus, minus)
+                        ]
+                        refined.append(max(pair, key=self._train_rank))
                 candidates.extend(refined)
 
-        # Held-out evaluation happens only after the search trajectory is frozen.
+        # Search is now frozen. Held-out cases are used only for credit/promotion.
+        operation_limit = baseline_heldout.operations * self.config.max_operation_ratio
         for index, candidate in enumerate(candidates):
             candidate.heldout = self.evaluator.evaluate(candidate.genome, heldout_cases)
             candidate.paired_gain, candidate.lower_bound = _paired_bootstrap_lower_bound(
@@ -361,47 +441,50 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                 quantile=self.config.confidence_quantile,
                 seed=self.config.seed + index + candidate.genome.generation,
             )
-            assert candidate.train is not None
-            base_operator = candidate.operator.removeprefix("refine:")
+            assert candidate.train is not None and candidate.heldout is not None
+            train_gain = candidate.train.objective - baseline_train.objective
+            heldout_gain = candidate.heldout.objective - baseline_heldout.objective
+            candidate.accepted = (
+                train_gain >= self.config.min_train_gain
+                and heldout_gain >= self.config.min_heldout_gain
+                and candidate.lower_bound >= self.config.min_lower_bound
+                and candidate.heldout.safety
+                >= baseline_heldout.safety - self.config.safety_tolerance
+                and candidate.heldout.quality
+                >= baseline_heldout.quality - self.config.quality_tolerance
+                and candidate.heldout.efficiency
+                >= baseline_heldout.efficiency - self.config.efficiency_tolerance
+                and candidate.heldout.operations
+                <= max(operation_limit, baseline_heldout.operations + 1.0)
+            )
+            base_operator = candidate.operator.split(":", 1)[-1]
             self.mutator.reinforce_operator(
                 candidate.genome,
                 base_operator,
-                candidate.train.objective - baseline_train.objective,
+                train_gain,
             )
 
-        frontier = self._pareto_frontier(candidates)
-        champion = max(
-            frontier,
+        eligible = [candidate for candidate in candidates if candidate.accepted]
+        pool = self._pareto_frontier(eligible or candidates)
+        diagnostic = max(
+            pool,
             key=lambda candidate: (
                 candidate.lower_bound,
                 candidate.heldout.objective if candidate.heldout else -1.0,
-                candidate.train.objective if candidate.train else -1.0,
-                candidate.novelty,
+                self._train_rank(candidate),
             ),
         )
+        promoted = bool(eligible)
+        champion = diagnostic if promoted else diagnostic
+        selected = champion.genome if promoted else baseline
+
         assert champion.train is not None and champion.heldout is not None
         train_gain = champion.train.objective - baseline_train.objective
         heldout_gain = champion.heldout.objective - baseline_heldout.objective
-        operation_limit = baseline_heldout.operations * self.config.max_operation_ratio
-        champion.accepted = (
-            train_gain >= self.config.min_train_gain
-            and heldout_gain >= schedule.min_heldout_gain
-            and champion.lower_bound >= schedule.min_lower_bound
-            and champion.heldout.safety
-            >= baseline_heldout.safety - self.config.safety_tolerance
-            and champion.heldout.quality
-            >= baseline_heldout.quality - schedule.quality_tolerance
-            and champion.heldout.efficiency
-            >= baseline_heldout.efficiency - schedule.efficiency_tolerance
-            and champion.heldout.operations
-            <= max(operation_limit, baseline_heldout.operations + 1.0)
-        )
 
-        for candidate in frontier:
+        for candidate in self._pareto_frontier(candidates):
             self.archive.add(evidence.cell, candidate)
 
-        promoted = champion.accepted
-        selected = champion.genome if promoted else baseline
         if promoted:
             HarnessGenomeStore.promote(selected)
 
