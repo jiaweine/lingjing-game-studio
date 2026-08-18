@@ -38,6 +38,8 @@ class GameEvolutionConfig(EvolutionConfig):
     plateau_rounds: int = 2
     plateau_sigma_growth: float = 1.8
     max_sigma: float = 0.85
+    trust_region_elites: int = 4
+    trust_region_alphas: tuple[float, ...] = (0.25, 0.50, 0.75)
     min_heldout_gain: float = 0.0
     min_lower_bound: float = 0.0
     quality_tolerance: float = 0.0
@@ -121,7 +123,6 @@ class GameHarnessMutator(HarnessMutator):
         end_state = self.rng.getstate()
         self.rng.setstate(state)
         minus = self.propose(scaled, evidence, peers=peers, direction=-1.0)
-        # Advance only once so the next pair samples a new edit plan rather than the mirror path.
         self.rng.setstate(end_state)
         return plus, minus
 
@@ -272,12 +273,10 @@ class GameHarnessMutator(HarnessMutator):
 class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
     """Behavior-sensitive self-evolving search for game R&D.
 
-    1. Generate true antithetic edit pairs around the active genome.
-    2. Detect train-behavior plateaus and expand mutation scale instead of wasting samples.
-    3. Rank train elites by mean performance *and* cross-case stability.
-    4. Refine elites using train cases only.
-    5. Freeze the search path, then run the independent held-out judge exactly once per candidate.
-    6. Promote only candidates with positive paired held-out evidence and no safety/quality loss.
+    Broad antithetic exploration is followed by train-only stable-elite refinement and a
+    trust-region line search. Held-out cases remain sealed until the complete search trajectory
+    has been frozen. Promotion requires positive paired held-out evidence and no quality/safety
+    regression.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -337,6 +336,52 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         candidate.train = self.evaluator.evaluate(genome, train_cases)
         return candidate
 
+    @staticmethod
+    def _blend_value(left, right, alpha: float):
+        if isinstance(left, bool) or isinstance(right, bool):
+            return right
+        if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+            return float(left) + (float(right) - float(left)) * alpha
+        if isinstance(left, dict) and isinstance(right, dict):
+            keys = set(left) | set(right)
+            return {
+                key: HarnessEvolutionEngine._blend_value(
+                    left.get(key, right.get(key)), right.get(key, left.get(key)), alpha
+                )
+                for key in keys
+            }
+        if isinstance(left, list) and isinstance(right, list) and len(left) == len(right):
+            return [
+                HarnessEvolutionEngine._blend_value(a, b, alpha)
+                for a, b in zip(left, right)
+            ]
+        return right
+
+    def _blend_genomes(
+        self,
+        baseline: HarnessGenome,
+        candidate: HarnessGenome,
+        alpha: float,
+    ) -> HarnessGenome | None:
+        # Structural edits are not interpolated. Trust-region scaling applies to same-topology
+        # programs where a smaller numerical step has a well-defined meaning.
+        if len(baseline.specialists) != len(candidate.specialists):
+            return None
+        if [gene.gene_id for gene in baseline.specialists] != [
+            gene.gene_id for gene in candidate.specialists
+        ]:
+            return None
+        if set(baseline.skills) != set(candidate.skills):
+            return None
+        payload = self._blend_value(
+            baseline.model_dump(), candidate.model_dump(), alpha
+        )
+        payload["genome_id"] = f"hg-{uuid.uuid4().hex[:10]}"
+        payload["generation"] = candidate.generation
+        payload["parent_ids"] = [baseline.genome_id, candidate.genome_id]
+        payload["origin"] = f"trust-region:{candidate.origin}:{alpha:.2f}"
+        return HarnessGenome.model_validate(payload)
+
     def evolve(
         self,
         evidence: EvolutionEvidence,
@@ -363,11 +408,12 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         candidates: list[EvolutionCandidate] = []
         population = max(2, self.config.population)
         pair_count = int(math.ceil(population / 2))
+        search_rounds = 1 if population < 4 else max(1, self.config.plateau_rounds + 1)
 
         sigma_scale = 1.0
-        for plateau_round in range(max(1, self.config.plateau_rounds + 1)):
+        for plateau_round in range(search_rounds):
             round_candidates: list[EvolutionCandidate] = []
-            for pair_index in range(pair_count):
+            for _ in range(pair_count):
                 plus, minus = self.mutator.propose_pair(
                     baseline,
                     evidence,
@@ -375,14 +421,15 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                     sigma_scale=sigma_scale,
                 )
                 for genome, operator in (plus, minus):
-                    candidate = self._candidate(
-                        genome,
-                        f"es{plateau_round}:{operator}",
-                        evidence,
-                        baseline,
-                        train_cases,
+                    round_candidates.append(
+                        self._candidate(
+                            genome,
+                            f"es{plateau_round}:{operator}",
+                            evidence,
+                            baseline,
+                            train_cases,
+                        )
                     )
-                    round_candidates.append(candidate)
             candidates.extend(round_candidates[:population])
             informative = sum(
                 self._evaluation_signature(candidate.train) != baseline_signature
@@ -396,7 +443,6 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                 sigma_scale * self.config.plateau_sigma_growth,
             )
 
-        # Successive train-only refinement. No held-out result can influence this trajectory.
         if population >= 4:
             for round_index in range(max(0, self.config.refinement_rounds)):
                 ranked = sorted(candidates, key=self._train_rank, reverse=True)
@@ -430,6 +476,26 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                         refined.append(max(pair, key=self._train_rank))
                 candidates.extend(refined)
 
+            # Train-only trust region: shrink promising numerical edits before sealed judging.
+            ranked = sorted(candidates, key=self._train_rank, reverse=True)
+            for elite in ranked[: max(1, self.config.trust_region_elites)]:
+                assert elite.train is not None
+                if elite.train.objective <= baseline_train.objective:
+                    continue
+                for alpha in self.config.trust_region_alphas:
+                    blended = self._blend_genomes(baseline, elite.genome, alpha)
+                    if blended is None:
+                        continue
+                    candidates.append(
+                        self._candidate(
+                            blended,
+                            f"trust:{alpha:.2f}:{elite.operator}",
+                            evidence,
+                            baseline,
+                            train_cases,
+                        )
+                    )
+
         # Search is now frozen. Held-out cases are used only for credit/promotion.
         operation_limit = baseline_heldout.operations * self.config.max_operation_ratio
         for index, candidate in enumerate(candidates):
@@ -457,16 +523,12 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                 and candidate.heldout.operations
                 <= max(operation_limit, baseline_heldout.operations + 1.0)
             )
-            base_operator = candidate.operator.split(":", 1)[-1]
-            self.mutator.reinforce_operator(
-                candidate.genome,
-                base_operator,
-                train_gain,
-            )
+            base_operator = candidate.operator.split(":")[-1]
+            self.mutator.reinforce_operator(candidate.genome, base_operator, train_gain)
 
         eligible = [candidate for candidate in candidates if candidate.accepted]
         pool = self._pareto_frontier(eligible or candidates)
-        diagnostic = max(
+        champion_eval = max(
             pool,
             key=lambda candidate: (
                 candidate.lower_bound,
@@ -475,12 +537,11 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
             ),
         )
         promoted = bool(eligible)
-        champion = diagnostic if promoted else diagnostic
-        selected = champion.genome if promoted else baseline
+        selected = champion_eval.genome if promoted else baseline
 
-        assert champion.train is not None and champion.heldout is not None
-        train_gain = champion.train.objective - baseline_train.objective
-        heldout_gain = champion.heldout.objective - baseline_heldout.objective
+        assert champion_eval.train is not None and champion_eval.heldout is not None
+        train_gain = champion_eval.train.objective - baseline_train.objective
+        heldout_gain = champion_eval.heldout.objective - baseline_heldout.objective
 
         for candidate in self._pareto_frontier(candidates):
             self.archive.add(evidence.cell, candidate)
@@ -497,5 +558,5 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
             archive_cell=evidence.cell,
             train_gain=train_gain,
             heldout_gain=heldout_gain,
-            lower_bound=champion.lower_bound,
+            lower_bound=champion_eval.lower_bound,
         )
