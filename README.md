@@ -2,13 +2,13 @@
 
 # 灵境
 
-### 游戏研发 Agent Runtime · 执行工作台
+### Self-Evolving Game R&D Agent Harness Runtime
 
-**把研发目标和素材交给系统，让任务持续执行、试演、复核、留证，并在需要时被人随时接管。**
+**不是把模型接进一个聊天框，而是把游戏研发任务交给一个会执行、会验证、会恢复，也会改进自己工作方式的 Harness。**
 
-`STATEFUL` · `MULTI-AGENT` · `COUNTERFACTUAL` · `VERIFIED` · `RECOVERABLE`
+`STATEFUL` · `SELF-EVOLVING HARNESS` · `COUNTERFACTUAL` · `SEALED EVAL` · `RECOVERABLE`
 
-灵境不是“给游戏文件加一个聊天框”。它把一次研发问题变成一条**可执行、可停止、可恢复、可核验、可交接、可治理**的任务轨迹。
+目标、素材、世界状态、Agent 拓扑、Skill、Memory、反事实预算与恢复路径进入同一条可审计任务轨迹；安全内核保持冻结，Harness 行为在独立评估门禁下持续进化。
 
 </div>
 
@@ -16,171 +16,157 @@
 
 ---
 
-## Product Thesis · 从“问一句”变成“把任务交出去”
+## Product Thesis · 从“调用 Agent”变成“拥有一个可进化的研发执行系统”
 
-> **目标 → 素材 → 状态 → Agent 决策 → 试演 → 执行 → 验证 → 证据 → 交付 → 人工确认**
+> **目标 → 素材 → 状态 → Harness phenotype → Agent 决策 → clone 试演 → canonical 执行 → Verifier → 证据 → 交付 → Harness evolution**
 
-| CONTROL | TRUST | LIFECYCLE | RECOVERY |
+| CONTROL | TRUST | LIFECYCLE | EVOLUTION |
 |---|---|---|---|
-| **执行可控**：长任务可停止，失败或停止后可安全重试 | **结论可核验**：证据与最终判断一一对应 | **任务可治理**：搜索、归档、交接、审批删除、质量确认持久化 | **失败可恢复**：checkpoint、rollback、replan 是 Runtime 能力 |
+| **执行可控**：任务可停止、重试、回滚，canonical state 只有 Runtime 能推进 | **结论可核验**：执行、发现、证据、Verifier 与结果保持同一事件链 | **任务可治理**：身份、协作、搜索、归档、审批删除、反馈门禁持久化 | **Harness 可进化**：调度、专家结构、Skill、Memory、搜索与融合策略都进入 Genome，并由 sealed held-out gate 决定是否晋升 |
+
+灵境把“模型能力”与“Agent Harness 能力”分开：模型可以替换；**任务状态所有权、工具循环、上下文、恢复、验证、Harness 进化与代际谱系**属于 Runtime。
 
 ---
 
-# Agent Architecture · WorldForge
+# Agent Architecture · Frozen Kernel × Evolvable Harness
 
-WorldForge 是灵境自己的 **stateful Agent Runtime**。它不是单个模型外面套一层工具，而是把**世界状态、并行分析 Agent、动态 Specialist、Skill / Memory、策略先验、反事实试演、Sandbox、独立 Verifier 与受门禁学习**放在一个可恢复闭环里。
+WorldForge 现在不是“固定 Planner + 若干手写 Specialist”。产品入口是 `SelfEvolvingWorldForgeEngine`：外层 Harness 可以进化自己的可执行程序面，内层 Frozen Kernel 负责不可被候选篡改的状态、安全、验证和晋升协议。
 
-> **最重要的权限边界：Agent 负责建议与评估；Runtime 负责状态所有权、执行、恢复与完成判定。任何 Specialist、Policy、Planner 都不能直接写入 canonical state。**
+> **核心边界：Harness 可以改变“怎么工作”，但不能改变“谁拥有真实状态、什么算安全、谁给候选打分、什么条件允许上线”。**
 
 ### 01 · Architecture at a glance
 
 ```mermaid
 flowchart TB
-    subgraph INPUT["01 · INPUT & WORLD STATE"]
-        GOAL["Goal + Assets"]
-        STATE["World State + Belief"]
-        GOAL --> STATE
+    INPUT["Goal + Assets + Runtime Evidence"] --> STATE["Canonical World State + Belief"]
+
+    subgraph GENOME["EVOLVABLE HARNESS GENOME"]
+        FEAT["Representation / Features"]
+        MEM["Memory Retrieval"]
+        SKILL["Skills + Activation Gates"]
+        TOPO["Specialist Topology + Gates"]
+        FUSION["Planner Fusion + Epistemic Control"]
+        SEARCH["Counterfactual Budget + Risk Utility"]
+        MUT["Mutation Policy"]
     end
 
-    subgraph DELIB["02 · DELIBERATION PLANE"]
-        COORD["Runtime Coordinator"]
-        COUNCIL["Analyst Council<br/>Combat · Risk · Economy · Progress"]
-        SCHED["State-conditioned Specialist Scheduler"]
-        SPEC["Dynamic Specialists<br/>Combat · Risk · Mechanics · Economy · Progress"]
-        SKILL["Skill Bank"]
-        MEMORY["Episodic Memory"]
-        POLICY["Local Policy Prior"]
-        FUSION["Score Fusion<br/>+ Epistemic Control"]
-
-        STATE --> COORD
-        COORD --> COUNCIL
-        COORD --> SCHED
-        SCHED --> SPEC
-        COUNCIL --> FUSION
-        SPEC --> FUSION
-        SKILL --> FUSION
-        MEMORY --> FUSION
-        POLICY --> FUSION
+    subgraph EXEC["RUNTIME PHENOTYPE"]
+        SPEC["Genome-instantiated Specialists"]
+        PLAN["Genome-interpreting Planner"]
+        BRANCH["Clone-world Counterfactual Search"]
+        CHOOSE["Candidate Selection"]
     end
 
-    subgraph EXEC["03 · SIMULATION & EXECUTION PLANE"]
-        BRANCH["Counterfactual Brancher"]
-        CLONE["Clone-world Rollouts"]
-        BVERIFY["Branch Verifier"]
-        SELECT["Selected Candidate"]
-        SANDBOX["Sandbox Pre-check"]
+    subgraph KERNEL["FROZEN KERNEL"]
+        CHECK["Checkpoint / State Ownership"]
+        SANDBOX["Sandbox"]
         CANON["Canonical Environment"]
-        PVERIFY["Post-state Verifier"]
-
-        FUSION --> BRANCH
-        BRANCH --> CLONE
-        CLONE --> BVERIFY
-        BVERIFY --> SELECT
-        SELECT --> SANDBOX
-        SANDBOX --> CANON
-        CANON --> PVERIFY
+        VERIFY["Independent Verifier"]
+        EVENTS["Audit / Event Chain"]
+        PROMOTE["Sealed Evaluation + Atomic Promotion"]
     end
 
-    subgraph LEARN["04 · RECOVERY & LEARNING PLANE"]
-        KEEP["Keep State + Evidence"]
-        CHECKPOINT["Restore Checkpoint"]
-        GROUPS["Verified Action Groups"]
-        OPT["Group-relative Policy Optimizer"]
-        EVOLVE["Failure Attribution + Skill Evolver"]
-        GATE["Regression + KL + Human Gate"]
+    STATE --> FEAT
+    FEAT --> SPEC
+    MEM --> PLAN
+    SKILL --> PLAN
+    TOPO --> SPEC
+    SPEC --> PLAN
+    FUSION --> PLAN
+    PLAN --> BRANCH
+    SEARCH --> BRANCH
+    BRANCH --> CHOOSE
+    CHECK --> CHOOSE
+    CHOOSE --> SANDBOX --> CANON --> VERIFY
+    VERIFY --> EVENTS
+    VERIFY -->|continue / rollback / replan| STATE
 
-        PVERIFY -->|valid| KEEP
-        PVERIFY -->|rollback| CHECKPOINT
-        PVERIFY -->|replan| COORD
-        CHECKPOINT --> COORD
-        KEEP --> MEMORY
-        KEEP --> GROUPS
-        KEEP --> EVOLVE
-        GROUPS --> OPT
-        OPT --> GATE
-        EVOLVE --> GATE
-        GATE --> SKILL
-        GATE --> POLICY
-    end
+    EVENTS --> REFLECT["Policy-agnostic Trace Reflector"]
+    REFLECT --> QD["WHERE × WHY Semantic Archive"]
+    QD --> EVOLVE["Antithetic ES + Stable-Elite Refinement + Minimum Effective Edit"]
+    MUT --> EVOLVE
+    EVOLVE --> SHADOW["Train-only Shadow Arena"]
+    SHADOW --> FREEZE["Freeze Search Trajectory"]
+    FREEZE --> PROMOTE
+    PROMOTE -->|accepted| GENOME
+    PROMOTE -->|rejected| QD
 ```
 
-### 02 · 四个层次，各自只做一件事
+### 02 · 哪些可以进化，哪些永远不能由进化器修改
 
-| Plane | 组件 | 核心职责 | 能直接写 canonical state？ |
-|---|---|---|---|
-| **World State** | Runtime / State Store | 保存 Goal、Belief、Game State、checkpoint 与事件链 | **只有 Runtime 拥有状态写权限** |
-| **Deliberation** | Council / Specialists / Skill / Memory / Policy | 给动作提供评分、先验、经验与风险意见 | 否 |
-| **Simulation & Execution** | Counterfactual / Sandbox / Environment / Verifier | 在 clone 中试演；执行前检查；真实执行后再验证 | 仅 Runtime 驱动的 canonical environment |
-| **Recovery & Learning** | Rollback / Replan / Optimizer / Evolver | 恢复失败路径，并在门禁下更新 Skill / Policy | 不直接写世界状态 |
+| Surface | 状态 | 说明 |
+|---|---|---|
+| Feature representation / normalization | **Evolvable** | 决定 Harness 如何表示连续世界状态与动态 `tag:*` 特征 |
+| Belief / uncertainty parameters | **Evolvable** | 决定隐藏机制下的 belief 形状 |
+| Memory kernel / feature weights / recency | **Evolvable** | 决定经验如何被检索并回流当前决策 |
+| Skill gate / bias / reliability | **Evolvable** | Skill 不再由 Python `if hp < ...` 触发 |
+| Specialist topology / activation / action features | **Evolvable** | 可以 split、prune、重组；Python 不认识“什么时候必须生成某专家” |
+| Planner fusion / epistemic action coefficients | **Evolvable** | 不再把 `1.65`、`2.2`、`scout +1.15` 写进 Runtime 逻辑 |
+| Counterfactual width / horizon / rollouts / risk utility | **Evolvable** | 调用方只给资源上限，Genome 决定实际预算 |
+| Mutation operator policy | **Evolvable** | 连“用哪种变异更有效”也能随代际改变 |
+| Canonical state ownership | **Frozen** | 候选 Harness 永远不能直接写真实世界状态 |
+| Sandbox / invariant verification / rollback | **Frozen** | 不能通过“把安全规则改松”获得高分 |
+| Train / held-out split 与 credit protocol | **Frozen** | held-out 不参与候选生成与 refinement |
+| Atomic promotion / lineage | **Frozen** | 只有被独立评估的同一 Genome 对象才能晋升 |
 
-### 03 · Agent 角色不是“多人聊天”
-
-| Agent / Module | 什么时候出现 | 输出 | 权限边界 |
-|---|---|---|---|
-| **Runtime Coordinator** | 每个 decision step | 调度、checkpoint、状态推进与恢复 | 决策闭环唯一协调者 |
-| **Analyst Council** | 每个合法动作 | Combat / Risk / Economy / Progress 评分 | 只能投票 |
-| **Combat Specialist** | 默认参与 | 终结窗口、能量与压制建议 | 只能返回 bounded bias |
-| **Risk Specialist** | 高 threat / 低 HP | 生存边界、heal / defend / retreat 偏置 | 不能直接阻止或执行动作 |
-| **Mechanics Specialist** | 高 uncertainty 且关键机制未观测 | scout / 信息获取偏置 | 不能修改 belief，只能提供建议 |
-| **Economy Specialist** | economy / exploit 场景 | 资源轨迹与异常循环建议 | 不能直接购买、farm 或写状态 |
-| **Progress Specialist** | 默认参与 | 剩余 horizon 与推进压力 | 只能给 progress bias |
-| **Planner** | Specialist / Skill / Memory / Policy 汇合后 | 合法动作排序 | 不能执行 |
-| **Counterfactual Brancher** | 有多个候选时 | clone-world 风险调整分支分数 | 只操作 clone |
-| **Sandbox** | canonical 执行前 | allow / block / alternative | 只做 pre-execution guard |
-| **Verifier** | rollout 与真实动作后 | violations、risk、rollback / replan 建议 | 不自我规划，不自证成功 |
-
-### 04 · 单次决策真实时序
+### 03 · 单次执行：Genome 决定工作方式，Kernel 决定执行权限
 
 ```mermaid
 sequenceDiagram
-    participant R as Runtime
-    participant S as World State
-    participant A as Specialist Agents
+    participant K as Frozen Kernel
+    participant G as Harness Genome
+    participant A as Specialists / Skills / Memory
     participant P as Planner
     participant C as Counterfactual
-    participant X as Clone World
-    participant B as Sandbox
+    participant X as Clone Worlds
+    participant S as Sandbox
     participant E as Canonical Env
     participant V as Verifier
-    participant M as Memory / Learning
 
-    R->>S: snapshot + belief
-    R->>A: state-conditioned deliberation
-    A-->>R: bounded action biases
-    R->>P: votes + skill + memory + policy + specialist bias
-    P-->>R: ranked legal actions
-
-    R->>C: candidate actions
+    K->>K: checkpoint canonical state
+    K->>G: read active generation
+    G->>A: instantiate gates / topology / memory policy
+    A-->>P: bounded scores + priors
+    G->>P: fusion / epistemic coefficients
+    P-->>K: ranked legal actions
+    G->>C: adaptive search budget + utility
     C->>X: parallel bounded rollouts
-    X->>V: verify each simulated transition
-    V-->>C: utility + violations
-    C-->>R: risk-adjusted branch ranking
-
-    R->>B: validate selected action
-    B-->>R: allowed / alternative
-    R->>E: execute selected action
-    E-->>R: new state + reward + info
-    R->>V: post-state verification
-
-    alt valid
-        V-->>R: continue
-        R->>M: outcome record + verified group
-    else rollback
-        V-->>R: restore checkpoint
-        R->>S: rollback
-    else replan
-        V-->>R: replan
-        R->>A: new deliberation
-    end
+    X->>V: verify simulated transitions
+    V-->>C: utility + findings + unsafe violations
+    C-->>K: branch ranking
+    K->>S: pre-execution check
+    S-->>K: allow / alternative
+    K->>E: execute one canonical action
+    E-->>K: state + reward + evidence
+    K->>V: post-state verification
+    V-->>K: continue / rollback / replan / finding
 ```
 
-这张图按当前 `worldforge/runtime/engine.py` 的真实调用顺序表达：**先 checkpoint；counterfactual 在 clone 环境中预评估；Sandbox 做 canonical 执行前检查；动作进入真实环境后由 Verifier 做 post-state 验证；失败再 rollback / replan。**
+### 04 · 自进化：搜索者不能给自己发毕业证
+
+```mermaid
+flowchart LR
+    TRACE["Verified Traces"] --> REF["Policy-agnostic Reflection"]
+    REF --> CELL["WHERE × WHY"]
+    CELL --> PAIR["Antithetic Candidate Pairs"]
+    PAIR --> PLATEAU["Behavior Plateau Detection"]
+    PLATEAU --> ELITE["Stable Train Elites"]
+    ELITE --> REFINE["Topology / Gate / Skill / Memory / Parameter Refinement"]
+    REFINE --> MEE["Minimum Effective Edit"]
+    MEE --> LOCK["Freeze Search"]
+    LOCK --> HELD["Sealed Held-out Judge"]
+    HELD --> PARETO["Pareto + Semantic QD Archive"]
+    PARETO -->|pass| NEXT["Atomic Generation Promotion"]
+    PARETO -->|reject| KEEP["Keep Current Generation"]
+```
+
+这条链的关键不是“会改配置”，而是 **proposal 与 credit 分离**：搜索阶段只看 train；搜索轨迹冻结以后才打开 held-out；候选不能修改 Verifier、评估器或 promotion gate。
 
 ---
 
-## 工作台 · Product Surface
+## 工作台 · Real Product Surface
 
-下面的截图来自真实浏览器产品状态。README Gallery 会在界面或截图脚本变化后重新采集，并在发布图片后再次打开 GitHub 仓库首页验证实际可见性。
+下面 8 张图全部来自**真实浏览器产品状态**，不是生成图。README Gallery 会从运行中的产品重新采集 PNG，发布到稳定 Release 资产，然后再次用 Chromium 打开 GitHub 仓库页验证像素实际加载。
 
 | **01 · 身份入口** | **02 · 新任务** |
 |---|---|
@@ -200,478 +186,446 @@ sequenceDiagram
 
 ---
 
-# Agent Method · Core Equations
+# Method · Game Harness Evolution
 
-下面的公式不是概念化包装，而是对应当前实现中的实际评分、试演、验证与更新规则。块公式使用 GitHub 原生 `math` fenced block；正文中的变量与符号使用 inline math。公式展示以 GitHub 实际 MathML 渲染结果为准。
+这里的公式对应当前实现的**符号化机制**，不再把 bootstrap prior 的具体数字冒充算法本身。初始数值只存在 `default_harness_genome.json`，之后可以由 Harness Evolution 改变；Python Runtime 负责解释 Genome。
 
-### 01 · Dynamic Specialist Aggregation
+### 01 · Evolvable representation
 
-每个动态 Specialist 返回动作偏置 $b_j(a)$ 与置信度 $c_j$。Runtime 只接受有界建议：
+世界状态首先由当前 Genome $G$ 的表示参数映射成特征：
 
 ```math
-B_{\mathrm{agent}}(a)
+\phi_G(s)_k
 =
 \mathrm{clip}
 \left(
-\sum_{j \in \mathcal{A}(s)} c_j\,b_j(a),
--4.5,
-4.5
+\frac{x_k(s)}{d_{G,k}},
+-c_{G,k},
+c_{G,k}
 \right)
 ```
 
-$\mathcal{A}(s)$ 是当前状态真正激活的 Specialist 集合。专家意见可以累积，但最终会被裁剪，不能无限放大。
+动态场景标签不需要 Python 认识具体名字，统一进入 `tag:<name>` 特征空间。
 
-`worldforge/runtime/recursive.py`
-
----
-
-### 02 · Unified Action Score
-
-Planner 对每个合法动作 $a$ 融合固定 Analyst、Skill、Memory、Policy、动态 Specialist 与 epistemic adjustment：
+### 02 · Smooth activation gate
 
 ```math
-S(a)
+g_j(s;G)
 =
-\sum_i v_i(a)
-+
-B_{\mathrm{skill}}(a)
-+
-2.2\tanh\left(\frac{M(s,a)}{10}\right)
-+
-1.65\,Z_{\theta}(a\mid s)
-+
-B_{\mathrm{agent}}(a)
-+
-E(a)
--
-R_{\mathrm{repeat}}(a)
+\sigma
+\left(
+\frac{w_j^\top\phi_G(s)-\tau_j}{T_j}
+\right)
 ```
 
-其中：
+门控阈值、温度和特征权重都属于 Genome；因此 Specialist / Skill 的“什么时候出现”不是手写 `if`。
 
-- $v_i(a)$：Combat / Risk / Economy / Progress Analyst 的投票；
-- $B_{\mathrm{skill}}(a)$：Skill Bank 的状态条件偏置；
-- $M(s,a)$：Memory 中相似状态—动作历史先验；
-- $Z_{\theta}(a\mid s)$：Policy 对合法动作 logit 的标准化先验；
-- $B_{\mathrm{agent}}(a)$：动态 Specialist Tree 的有界建议；
-- $E(a)$：不确定性 × 专家分歧产生的 epistemic adjustment；
-- $R_{\mathrm{repeat}}(a)$：重复 `farm / scout / defend` 的停滞摩擦。
-
-Policy prior 本身先标准化：
+### 03 · Specialist phenotype
 
 ```math
-Z_{\theta}(a\mid s)
+b_j(a\mid s,G)
 =
-\frac
-{z_a-\mu(z_{\mathrm{legal}})}
-{\sigma(z_{\mathrm{legal}})}
+g_j(s;G)c_j
+\left(
+\beta_{j,a}+u_{j,a}^\top\phi_G(s)
+\right)
 ```
 
-`worldforge/runtime/planner.py` · `worldforge/runtime/policy.py`
+一个 Specialist 的角色名只是可审计元数据；真正行为由 gate、confidence、action bias 和 action-feature weights 共同决定。
 
----
-
-### 03 · Epistemic Disagreement Control
-
-WorldForge 不把多 Agent 分歧简单平均，而是把分歧作为“是否应该先获取信息”的信号。
+### 04 · Bounded specialist aggregation
 
 ```math
-T(a)
+B_{\mathrm{spec},G}(a)
+=
+\mathrm{clip}
+\left(
+\sum_{j\in\mathcal A_G(s)}b_j(a\mid s,G),
+-C_G,
+C_G
+\right)
+```
+
+### 05 · Unified planner
+
+```math
+S_G(a\mid s)
+=
+V_G(a\mid s)
++\lambda_{\mathrm{skill},G}B_{\mathrm{skill},G}(a\mid s)
++\lambda_{\mathrm{mem},G}M_G(s,a)
++\lambda_{\mathrm{policy},G}Z_\theta(a\mid s)
++\lambda_{\mathrm{spec},G}B_{\mathrm{spec},G}(a\mid s)
++E_G(a,s)-R_G(a,s)
+```
+
+这里所有 Harness 融合系数都从当前 Genome 读取；`Policy` 只是 Harness 内一个 prior，而不是 Harness 本身。
+
+### 06 · Epistemic tension
+
+```math
+T_G(a,s)
 =
 \min
 \left(
-4,\;
+C_G^{\mathrm{dis}},
 \mathrm{Std}(v_1(a),\ldots,v_n(a))
 \right)
-\cdot u
+u(s)
 ```
 
-$u$ 是 belief uncertainty，$T(a)$ 是 epistemic tension。
-
-对信息获取动作：
+### 07 · Generic epistemic control
 
 ```math
-E(\mathrm{scout})
+E_G(a,s)
 =
-1.15 + 1.35\,T
+\beta^E_{G,a}
++T_G(a,s)\kappa_{G,a}
++T_G(a,s)\,\rho(s)\,\xi_{G,a}
 ```
 
-对高风险承诺动作：
+Python 不再写 `if action == scout`。每个动作的 base / tension / threat-tension 系数都属于 Genome，可被同一演化机制修改。
+
+### 08 · Continual memory kernel
 
 ```math
-E(\mathrm{commit})
+M_G(s,a)
 =
--T\left(0.28 + 0.42\,\tau\right)
+\frac{
+\sum_{i:a_i=a}
+\left(r_i+\zeta_G y_i\right)
+\exp\left(-d_G(s,s_i)/T_G^M\right)
+\exp\left(-\lambda_G^M\Delta t_i\right)
+}{
+\sum_{i:a_i=a}
+\exp\left(-d_G(s,s_i)/T_G^M\right)
+\exp\left(-\lambda_G^M\Delta t_i\right)
+}
 ```
 
-$\tau$ 是 threat。世界越不确定、专家越分裂，系统越倾向先获得证据；关键机制被观测后，uncertainty 下降，探索奖励自然衰减。
+$d_G$ 使用 Genome 定义的 feature weights；因此“记什么、哪些状态算相似、多久衰减”都在 Harness surface 内。
 
-`worldforge/runtime/planner.py`
-
----
-
-### 04 · Counterfactual Rollout Utility
-
-候选动作先在 clone world 中并行试演。每条 rollout 的 verifier utility：
+### 09 · Adaptive counterfactual budget
 
 ```math
-U_k
+\begin{aligned}
+W_G(s)&=\mathrm{clip}(b_W+u\,k_W+\rho\,r_W,1,W_{\max})\\
+H_G(s)&=\mathrm{clip}(b_H+u\,k_H,1,H_{\max})\\
+N_G(s)&=\mathrm{clip}(b_N+u\,k_N,1,N_{\max})
+\end{aligned}
+```
+
+调用方只提供硬资源上限 $W_{\max},H_{\max},N_{\max}$；实际搜索预算由 Genome 按当前 uncertainty / threat 分配。
+
+### 10 · Risk-adjusted branch utility
+
+```math
+Q_G(a)
 =
-r_k
+w_{\mu,G}\mathbb E[U]
+-w_{\sigma,G}\mathrm{Std}(U)
++w_{d,G}\min(U)
++w_{p,G}p_{\mathrm{success}}
+```
+
+### 11 · Self-referential mutation policy
+
+```math
+p_G(o)
+=
+(1-\epsilon_G)
+\frac{\exp(\ell_{G,o}/T_G^o)}
+{\sum_{o'}\exp(\ell_{G,o'}/T_G^o)}
 +
-24(1-e_k)
-+
-17h_k
-+
-0.04g_k
--
-26\max(0,\tau_k-\rho)
--
-8|\mathcal{V}_k|
-+
-70\mathbf{1}_{\mathrm{victory}}
--
-90\mathbf{1}_{\mathrm{defeat}}
+\frac{\epsilon_G}{|\mathcal O|}
 ```
 
-- $r_k$：累计 reward；
-- $e_k$：敌方生命比例；
-- $h_k$：玩家生命比例；
-- $g_k$：gold；
-- $\tau_k$：threat；
-- $\rho$：目标 risk tolerance；
-- $\mathcal{V}_k$：该 rollout 实际出现的 verifier violations。
+变异算子集合当前覆盖 parameter / gate / Skill / Memory / topology split-prune / recombination / meta-mutation；operator logits 自身也属于 Genome。
 
-一个动作最终按风险调整后的分支分数排序：
+### 12 · True antithetic edit pair
 
 ```math
-Q(a)
+G^{+},G^{-}
 =
-\mathbb{E}[U]
--
-0.45\,\mathrm{Std}(U)
-+
-0.20\,\min(U)
-+
-16\,p_{\mathrm{success}}
+\mathrm{Mutate}(G,o,\pm\sigma_G;\,\omega)
 ```
 
-所以“平均收益高但 downside 极差”的动作会被主动降权。
+$\omega$ 是同一个采样 edit plan。正负候选共享编辑位置，只反转数值方向，减少随机搜索噪声。
 
-`worldforge/runtime/counterfactual.py` · `worldforge/runtime/verifier.py`
-
----
-
-### 05 · Independent Verification
-
-真实动作执行后，Verifier 独立计算状态风险：
+### 13 · Behavior-plateau adaptation
 
 ```math
-R_{\mathrm{state}}
+\sigma_{t+1}
 =
-\mathrm{clip}
-\left(
-0.65\,\tau + 0.55(1-h),
-0,
-1
-\right)
-```
-
-Verifier 同时检查：
-
-**negative gold · energy invariant · hp invariant · invalid action · reward-loop anomaly · catastrophic survival risk · terminal failure**
-
-严重路径会产生 rollback / replan 建议。Planner 和 Policy 都不能自己宣布“成功”。
-
-`worldforge/runtime/verifier.py`
-
----
-
-### 06 · Local Policy Prior
-
-Policy 是小型本地 MLP，只负责提供决策先验。
-
-```math
-\hat{x}
-=
-\frac{x-\mu}{\sigma}
-```
-
-```math
-h
-=
-\tanh(\hat{x}W_1+b_1),
-\qquad
-z
-=
-hW_2+b_2
-```
-
-合法动作集合 $\mathcal{L}(s)$ 上：
-
-```math
-\pi_{\theta}(a\mid s)
-=
-\frac{\exp(z_a)}
-{\sum_{a' \in \mathcal{L}(s)}\exp(z_{a'})}
-```
-
-它不拥有工具权限、状态写入、rollback、verification 或任务完成判定。
-
-`worldforge/runtime/policy.py`
-
----
-
-### 07 · Group-relative Policy Update
-
-同一状态下多个候选动作组成一个 verified group。优势先在组内中心化、标准化并裁剪：
-
-```math
-A_i
-=
-\mathrm{clip}
-\left(
-\frac{r_i-\bar{r}}
-{\sigma_r+\varepsilon},
--3,
-3
-\right)
-```
-
-旧策略冻结后计算 probability ratio：
-
-```math
-\rho_i(\theta)
-=
-\frac
-{\pi_{\theta}(a_i\mid s)}
-{\pi_{\theta_{\mathrm{old}}}(a_i\mid s)}
-```
-
-更新目标：
-
-```math
-L_{\mathrm{clip}}
-=
-\frac{1}{|G|}
-\sum_i
 \min
 \left(
-\rho_iA_i,\;
-\mathrm{clip}(\rho_i,1-\epsilon,1+\epsilon)A_i
+\sigma_{\max},
+\gamma\sigma_t
 \right)
+\quad
+\text{if}\quad
+\frac{|\{G':\Pi(G')\ne\Pi(G)\}|}{|\mathcal P_t|}<\eta
 ```
 
-默认 $\epsilon=0.18$，并要求 empirical KL 留在 trust region：
+如果很多 Genome 数值变了但最终行为 phenotype $\Pi(G)$ 完全没变，搜索会主动扩大步长跨过离散 argmax 平台，而不是继续浪费候选。
+
+### 14 · Stable train selection
 
 ```math
-D_{\mathrm{KL}}
+J_{\mathrm{stable}}(G)
+=
+\bar J_{\mathrm{train}}(G)
+-\lambda_{\mathrm{stab}}
+\mathrm{Std}
 \left(
-\pi_{\mathrm{old}}
-\parallel
-\pi_{\theta}
+J_{\mathrm{train}}^{(1)}(G),\ldots,J_{\mathrm{train}}^{(K)}(G)
 \right)
+```
+
+不是只追平均分；跨场景 / seed 不稳定的候选会降低 elite 排名。
+
+### 15 · Minimum Effective Edit
+
+```math
+\alpha^\star
 =
-\mathbb{E}_{G}
+\inf
+\left\{
+\alpha\in(0,1]:
+J_{\mathrm{train}}(G_\alpha)
+\ge
+J_{\mathrm{train}}(G)+\delta
+\;\land\;
+\Pi(G_\alpha)\ne\Pi(G)
+\right\}
+```
+
+其中 $G_\alpha$ 是 baseline 与候选之间的 trust-region 插值。二分搜索只使用 train，目的是找到**刚好改变行为且有效的最小 Harness 编辑**，降低跨 seed 过冲。
+
+### 16 · Semantic QD + Pareto preservation
+
+```math
+\begin{aligned}
+c(G)&=(\mathrm{WHERE},\mathrm{WHY})\\
+G_1\succ G_2
+&\iff
+m_k(G_1)\ge m_k(G_2)\;\forall k
+\;\land\;
+\exists k:m_k(G_1)>m_k(G_2)
+\end{aligned}
+```
+
+Archive 不只保存一个全局 champion，而是按病理类型保留互补 elite；quality / safety / efficiency / novelty 共同参与选择。
+
+### 17 · Paired-bootstrap held-out credit
+
+```math
+\mathrm{LCB}_q(G')
+=
+Q_q
+\left(
+\frac{1}{N}
+\sum_i
 \left[
-\sum_a
-\pi_{\mathrm{old}}(a\mid s)
-\log
-\frac{\pi_{\mathrm{old}}(a\mid s)}
-{\pi_{\theta}(a\mid s)}
+J_i^{(b)}(G')-J_i^{(b)}(G)
 \right]
-\le 0.035
+\right)
 ```
 
-KL 越界时 candidate policy 回退到旧策略。
+候选生成、elite selection、refinement、trust-region 和 boundary search 完成后，搜索轨迹先冻结，再第一次打开 held-out。
 
-`worldforge/runtime/policy.py`
-
----
-
-### 08 · Failure-driven Evolution Gate
-
-Skill patch 不是“跑赢一次就升级”。失败先归因，再过 regression 与 Human Feedback Gate：
+### 18 · Atomic promotion gate
 
 ```math
-\mathrm{Accept}_{\mathrm{skill}}
+\mathrm{Promote}(G')
 =
-H
+\mathbb 1
+\left[
+\Delta_{\mathrm{train}}\ge\delta
 \land
-(J_{\mathrm{candidate}}\ge J_{\mathrm{baseline}}-0.01)
+\Delta_{\mathrm{heldout}}\ge0
 \land
-(J_{\mathrm{candidate}}\ge J_{\mathrm{baseline}}+0.005)
+\mathrm{LCB}_q\ge0
+\land
+\Delta_{\mathrm{safety}}\ge-\eta_s
+\land
+\Delta_{\mathrm{quality}}\ge0
+\land
+\mathrm{cost}(G')\le\kappa\,\mathrm{cost}(G)
+\right]
 ```
 
-Policy candidate 还必须满足真实引擎里的独立接受条件：
+被晋升的对象就是被 held-out 评估过的同一个 Genome；评估以后不再偷偷改 mutation policy 或任何参数。
 
-```math
-\mathrm{Accept}_{\mathrm{policy}}
-=
-H
-\land
-(\mathrm{updates}>0)
-\land
-(J_{\mathrm{candidate}}\ge J_{\mathrm{baseline}}+0.001)
-\land
-(D_{\mathrm{KL}}\le 0.035)
+---
+
+# Evidence · Harness 真的进化过，而不是“代码里有 evolve()”
+
+CI 中有独立命令：
+
+```bash
+python scripts/harness_evolution_benchmark.py
 ```
 
-只有通过门禁的 Skill / Policy 才会写回共享学习状态。
+它从干净进程、bootstrap Genome 开始，对 4 个 BalanceLab 研发场景使用独立 train / held-out seeds。held-out **不参与候选生成**；只有最后 promotion credit 才能看到。
 
-`worldforge/runtime/evolver.py` · `worldforge/runtime/engine.py`
+当前 `sealed-heldout-game-harness-2026-08` 的可复现实验结果：
 
----
+| Metric | Result |
+|---|---:|
+| Candidate genomes | **36** |
+| Passed promotion gate | **4** |
+| Baseline generation | **1** |
+| Promoted generation | **3** |
+| Train objective gain | **+0.004712** |
+| Sealed held-out objective gain | **+0.000559** |
+| Paired-bootstrap lower bound | **0.000000** |
+| Promoted held-out quality | **0.612886** |
+| Promoted held-out safety | **0.966518** |
+| Promoted held-out efficiency | **0.730917** |
+| Promoted held-out operations | **23.25** |
+| Winning lineage | **Memory mutation → elite refinement → trust-region minimum edit** |
 
-## Runtime Invariants
+这组数据的意义是**机制证明，不是通用 SOTA 宣称**。held-out 增益很小，因此 README 不把它包装成“大幅性能提升”；真正重要的是：候选在看不到 held-out 的情况下改变 Harness，随后仍能通过独立 quality / safety / efficiency / bootstrap credit，并产生新的持久化 generation。
 
-| Invariant | 含义 |
-|---|---|
-| **Canonical state ownership** | 只有 Runtime 能推进真实状态；反事实分支永远操作 clone |
-| **Bounded specialists** | Specialist 只能返回 bounded bias，不能执行 |
-| **Planner ≠ executor** | 排序、建议与执行权限严格分离 |
-| **Independent verification** | Planner / Policy 不能自证成功 |
-| **Checkpoint before risk** | 每个 decision step 先保存 checkpoint，再进入候选试演与真实执行 |
-| **Rollback before corruption** | 失败路径恢复旧状态或重规划，不把错误状态当完成结果 |
-| **Policy is a prior** | Policy 影响排序，但不拥有权限、状态写入或完成判定 |
-| **Human-gated learning** | Skill / Policy 更新必须经过 regression、KL / trust-region 与人工门禁 |
-
----
-
-## 产品层：Control · Trust · Lifecycle · Recovery
-
-### Control — 人始终拥有控制权
-
-进行中的任务可以真实停止；最近一次停止或失败的执行可以安全重试。停止先发生时，系统不会再补写迟到的成功结果。
-
-任务支持**搜索、重命名、置顶、归档 / 恢复、负责人交接、深链接和受审批保护的永久删除**。
-
-### Trust — 结论必须能被检查
-
-交付不是只有一段回答。不同研发场景会沉淀为**复现卡、回归清单、风险清单、调参与验证方案、证据包**等结构化结果，并通过证据 ID 与来源关联。
-
-完成交付后先进入“待复核”。只有最新交付被人工确认正确且不存在错误反馈，任务才进入“已验证”。
-
-### Lifecycle — 任务跨时间、跨成员继续存在
-
-用户、工作空间、任务、素材、运行记录和审计边界由服务端校验。工作空间支持邀请、角色、负责人和交接；viewer 是真正的服务端只读角色。
-
-任务接收和任务完成采用确定性状态提交：用户输入、排队 Job 与 `message.accepted` 同事务落库；Job 完成、assistant 交付与 `answer.ready` 同事务提交。
-
-### Recovery — 失败是 Runtime 的正常路径
-
-风险路径不会直接覆盖有效状态。系统保留停止、重试、checkpoint、rollback 与 replan，不用一句“已完成”掩盖执行中断。
+场景覆盖 Boss 爆发窗口、经济陷阱、玻璃大炮极端 Build、奖励循环漏洞回归。`tests/test_harness_promotion.py` 还会在 pytest 内再跑一条 promotion regression，独立 benchmark 则防止测试进程全局状态造成假绿。
 
 ---
 
-## 多模态不是附件栏
+# 为什么这不是“把常数搬进 JSON”
 
-一个任务可以持续追加：
+如果只是把 `0.45` 从 Python 移到配置文件，仍然不是 Harness Evolution。当前实现额外具备：
 
-**图片 · 视频 · 音频 · 日志 · JSON / CSV · 配置文件 · 文本 / 文档**
+- **结构搜索**：Specialist 可以 split / prune / recombine，不只调权重；
+- **Skill / Memory evolution**：可改变 action bias、gate、reliability、相似度特征、温度与衰减；
+- **Meta-mutation**：mutation operator 的选择策略本身会获得 credit；
+- **Behavior-aware search**：发现参数变了但动作轨迹没变时自动跨越行为平台；
+- **Minimum Effective Edit**：不是“越大越好”，而是寻找刚刚足以改变 phenotype 的最小有效更新；
+- **Semantic Quality-Diversity**：不同 WHERE × WHY 病理保留不同 elite；
+- **Sealed credit**：搜索者不能用 held-out 指导自己，再宣布自己成功；
+- **Frozen judge**：Verifier、canonical ownership、evaluation、promotion 不能进入 Genome。
 
-素材会真正进入判断链路：
-
-- **图片**进入视觉证据；
-- **视频**按时长自适应抽取关键帧，关键帧参与判断并成为可回溯证据；
-- **音频**保留声学输入，由系统按能力自动路由推理资源；
-- **日志 / 配置**把实际内容摘录写入任务上下文；
-- **素材校验**同时检查声明类型和真实内容；
-- **任务继承**让后续追问保留当前任务已有多模态素材；
-- **证据索引**让最终结论能够指回来源。
-
----
-
-## 适合交给灵境的工作
-
-| 研发目标 | 交付结果 |
-|---|---|
-| **战斗问题复现** | 对齐录像、日志和状态变化，寻找稳定触发条件并重复核验 |
-| **数值风险检查** | 探索极端 Build、资源曲线与高波动组合，给出优先调整项 |
-| **版本回归验证** | 复现历史异常、核验修复结果并沉淀发布前检查项 |
-| **角色行为检查** | 检查连续交互、目标切换与上下文不一致 |
-| **多素材交叉核对** | 在同一任务里联合视觉、声音、日志、配置与历史任务上下文 |
+这也是灵境和普通“Prompt 自优化”“训练一个 policy”“失败后 bias +0.5”的根本区别。
 
 ---
 
 <details>
-<summary><b>Engineering Notes · 状态、Realtime 与持久化</b></summary>
+<summary><strong>Research provenance · 2026 最新研究、顶会底座与工程基线</strong></summary>
 
-<br>
+我们没有逐仓库复制代码，而是把公开方法中适合游戏研发 Harness 的机制复现、组合并重新约束。研究来源和实际实现边界如下。
 
-### World State
+| Source | Status | 我们吸收的机制 | 灵境的垂直改造 |
+|---|---|---|---|
+| [Adaptive Auto-Harness](https://arxiv.org/abs/2606.01770) · [code](https://github.com/A-EVO-Lab/AdaptiveHarness) | **2026 public research + open source** | 把 prompt / tool / skill / memory / orchestration / infrastructure 视为 harness surface；stateful evolution + archive | Genome 覆盖 representation / memory / skill / topology / planner / search / mutation；Frozen Kernel 独立 |
+| [Self-Evolving Agent Harnesses via GSME](https://arxiv.org/abs/2607.13683) | **2026 public research** | proposal-credit separation、WHERE×WHY semantic QD、sealed test | 变成游戏研发病理 archive + deterministic shadow arena + sealed held-out promotion |
+| [SHAPER](https://arxiv.org/abs/2608.06755) | **2026-08 public research** | Skill 与 context-code harness 联合进化 | 当前实现与其方向一致，但**不宣称复现 SHAPER**；我们自己的 Skill/Memory/Topology Genome 路径独立实现 |
+| [ADAS / Automated Design of Agentic Systems](https://openreview.net/forum?id=VbI7wVEy0r) · [code](https://github.com/ShengranHu/ADAS) | **ICLR 2025** | Agent architecture / code-level search | Specialist topology、gate、recombination进入可搜索程序面 |
+| [Promptbreeder](https://proceedings.mlr.press/v235/fernando24a.html) | **ICML 2024** | self-referential mutation | mutation operator logits / sigma / temperature / exploration 自身进入 Genome |
+| [Pi](https://github.com/badlogic/pi-mono) | **open-source engineering baseline** | 小核心、session/tool loop、extensions/skills | 对标 Harness 工程纪律；灵境进一步加入 world-state / verifier / self-evolution |
+| [DeerFlow](https://github.com/bytedance/deer-flow) | **ByteDance open-source engineering baseline** | subagents、memory、sandbox、skills、long-horizon harness | 对标长任务工程能力；灵境重点放在可验证游戏研发状态和 Harness generation |
+| [DeepSeek Agent ecosystem](https://github.com/deepseek-ai/awesome-deepseek-agent) | **DeepSeek official integration curation** | DeepSeek 模型进入多种 Agent / coding harness 的生态方式 | 作为模型生态兼容性参考；**不把第三方 `deepseek-harness` 冒充 DeepSeek 官方统一 Runtime** |
 
-`worldforge/runtime/engine.py` 维护可恢复环境状态：Goal / Belief / Game State、append-only hash-chained events、Snapshot / Restore / Checkpoint、Replay / Fork、Sandbox 与 rollback / replan。
+当前算法组合可以概括为：
 
-反事实分支只操作 clone；共享 Policy、Skill、Memory 在单次 run 内隔离，run 完成后才在短 critical section 中合并学习状态。
+> **Evidence-linked Genome Search + Antithetic Adaptive ES + Behavior Plateau Escalation + Stable-Elite Refinement + Minimum Effective Edit + Semantic Pareto-QD + Sealed Held-out Promotion**
 
-### Realtime + Deterministic Job Lifecycle
-
-产品事件通过 durable cursor 读取并 fan-out；WebSocket 使用 subscribe-before-replay、event-id deduplication 与 `after_id` 断点续传。
-
-任务接收、完成、取消、重试和永久删除审批都以持久化状态为事实源。每轮 progress 带自己的 `job_id`，刷新页面时只恢复当前 / 最近一次执行。
-
-更多工程细节见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+其中后四项的组合与游戏 QA evaluator / finding-safety separation 是灵境为了垂直场景新增的实现设计。
 
 </details>
 
 ---
 
-## Quick start
+<details>
+<summary><strong>Engineering map · 代码对应关系</strong></summary>
+
+| Capability | Implementation |
+|---|---|
+| Frozen canonical execution kernel | `worldforge/runtime/engine.py` |
+| Product self-evolving wrapper | `worldforge/runtime/self_evolving_engine.py` |
+| Harness schema / persistent generation | `worldforge/runtime/harness_genome.py` |
+| Bootstrap prior only | `worldforge/runtime/default_harness_genome.json` |
+| Policy-agnostic trace reflection | `worldforge/runtime/harness_reflection.py` |
+| Generic evolution primitives / QD archive / bootstrap credit | `worldforge/runtime/harness_evolution.py` |
+| Game-adapted search / antithetic ES / plateau / trust region | `worldforge/runtime/harness_search.py` |
+| Frozen game R&D shadow evaluator | `worldforge/runtime/game_harness_evaluator.py` |
+| Genome-interpreting Planner | `worldforge/runtime/planner.py` |
+| Genome-derived dynamic specialists | `worldforge/runtime/recursive.py` |
+| Genome-controlled Skills | `worldforge/runtime/skill_bank.py` |
+| Continuous evolvable Memory kernel | `worldforge/runtime/memory.py` |
+| Genome-budgeted counterfactual search | `worldforge/runtime/counterfactual.py` |
+| Frozen invariant / finding verifier | `worldforge/runtime/verifier.py` |
+| Promotion regression | `tests/test_harness_promotion.py` |
+| Standalone sealed benchmark | `scripts/harness_evolution_benchmark.py` |
+
+</details>
+
+---
+
+## Multimodal R&D Context
+
+任务可以持续携带图片、视频、音频、日志、配置与文档。素材不是一次性附件：资产、证据、消息、任务事件和反馈都进入 workspace 生命周期，后续追问继续继承同一个研发上下文。
+
+## 适合的工作
+
+- 战斗与 Boss 机制复现、极端 Build 风险检查；
+- 经济、成长、掉落与奖励循环异常分析；
+- 截图 / 视频 / 日志 / 配置的跨模态证据汇总；
+- 长任务执行、停止、重试、rollback / replan；
+- 结构化复现卡、风险清单、回归清单和 evidence pack；
+- 让 Harness 从真实失败轨迹中搜索更合适的调度、Skill、Memory 与反事实策略。
+
+## Product Boundary
+
+灵境不会把“Agent 自主”理解成无限权限。删除工作空间、真实状态推进、关键副作用、Harness promotion 都有明确控制边界；候选 Genome 永远只能在隔离评估环境中证明自己，不能通过修改 Verifier 或 held-out protocol 获得晋升。
+
+---
+
+## Quick Start
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+git clone https://github.com/jiaweine/lingjing-game-studio.git
+cd lingjing-game-studio
 pip install -r requirements.txt
 uvicorn worldforge.api.app:app --reload
 ```
 
-浏览器打开本地服务即可进入工作台。开发模式默认使用 SQLite、Local Object Storage、Dev Identity 和进程内 Worker。
+打开 `http://127.0.0.1:8000`。
 
-独立 Worker：
-
-```bash
-WORLDFORGE_QUEUE_MODE=external python -m worldforge.worker
-```
-
-生产部署、数据库迁移、对象存储和运行保障见 [`docs/RUNBOOK.md`](docs/RUNBOOK.md)。
-
----
-
-## Verification
+验证完整产品与 Harness：
 
 ```bash
-python -m compileall -q worldforge migrations scripts tests
 pytest -q
-node --check frontend/app.js
+python scripts/harness_evolution_benchmark.py
 python scripts/product_backend_e2e.py
-python scripts/product_ui_e2e.py
 ```
 
-正式门禁覆盖 Python 回归与编译、前端 JavaScript 语法、后端产品 E2E、真实浏览器产品 E2E、README GitHub 渲染、Release 图片完整性，以及发布图片后重新打开公开 GitHub 仓库首页验证截图真实可见。
+浏览器 E2E 与真实 README 图片加载由 GitHub Actions 运行。
 
----
+## Runtime API
+
+- `POST /runs`：启动 WorldForge 任务；
+- `GET /runs/{id}`：查询状态；
+- `GET /runs/{id}/events`：读取持久事件链；
+- `GET /runs/{id}/stream`：SSE 订阅实时事件；
+- `POST /runs/{id}/cancel`：停止真实运行任务。
 
 ## Repository
 
 ```text
-frontend/                 客户工作台
-worldforge/
-  api/                    API / Auth / Realtime
-  product/                任务、素材、证据、治理与持久化
-  runtime/                Agent Runtime / 执行 / 验证 / 学习
-  providers/              服务端可替换推理资源
-  storage/                本地 / 对象存储
-migrations/               产品数据迁移
-scripts/                  产品 E2E 与策略训练入口
-tests/                    Runtime / API / 产品 / 多模态 / Realtime 回归测试
-docs/                     架构、前端、运行与评测说明
+frontend/                       产品工作台
+worldforge/api/                 Runtime / Product API
+worldforge/product/             工作空间、协作、任务与证据生命周期
+worldforge/runtime/             Frozen Kernel + Self-Evolving Harness
+worldforge/envs/                可验证游戏环境 / BalanceLab
+scripts/                        E2E 与独立 Harness benchmark
+tests/                          Runtime / Product / Promotion 回归
+docs/                           架构、运行与研究说明
 ```
 
 ---
 
 <div align="center">
 
-**目标不是让系统更会描述它做了什么，而是让它真的执行、试演、复核、恢复，并留下可以检查、可以交接、可以确认的结果。**
+**CONTROL THE EXECUTION · VERIFY THE RESULT · EVOLVE THE HARNESS**
 
 </div>
