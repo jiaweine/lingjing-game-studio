@@ -14,8 +14,8 @@
       "combo": 5.0,
       "stage": 3.0
     },
-    "gold_cap": 2.0,
-    "score_clip": 2.5
+    "value_caps": {"gold": 2.0},
+    "value_clips": {"score_gap": 2.5}
   },
   "belief": {
     "observed_uncertainty": 0.12,
@@ -52,15 +52,22 @@
     "specialist_cap": 4.5,
     "repeat_penalties": {"farm": 4.8, "scout": 4.8, "defend": 4.8},
     "disagreement_cap": 4.0,
-    "scout_base": 1.15,
-    "scout_gain": 1.35,
-    "defend_gain": 0.22,
-    "commit_base": 0.28,
-    "commit_threat_gain": 0.42,
-    "retreat_low_gain": -0.12,
-    "retreat_high_gain": 0.08,
-    "retreat_threat_boundary": 0.7,
-    "default_risk_friction": 0.08
+    "epistemic_base": {
+      "scout": 1.15
+    },
+    "epistemic_tension": {
+      "scout": 1.35,
+      "heavy_attack": -0.28,
+      "cast": -0.28,
+      "retreat": -0.12
+    },
+    "epistemic_threat_tension": {
+      "*": -0.08,
+      "defend": 0.22,
+      "heavy_attack": -0.42,
+      "cast": -0.42,
+      "retreat": 0.2857142857
+    }
   },
   "search": {
     "mean_weight": 1.0,
@@ -104,7 +111,7 @@
       "enabled": true
     },
     "economy_guard": {
-      "gate": {"weights": {"economy": 1.4, "exploit": 2.0}, "threshold": 0.75, "temperature": 0.25},
+      "gate": {"weights": {"tag:economy": 1.4, "tag:exploit-test": 2.0}, "threshold": 0.75, "temperature": 0.25},
       "action_bias": {"farm": 0.4, "buy_armor": 1.7, "buy_blade": 1.0, "attack": 0.7},
       "reliability": 1.0,
       "enabled": true
@@ -162,11 +169,11 @@
       "gene_id": "core-economy",
       "role": "EconomyAnalyst",
       "mode": "core",
-      "gate": {"weights": {"economy": 1.4, "exploit": 1.8, "gold": 0.25}, "threshold": 0.55, "temperature": 0.35},
+      "gate": {"weights": {"tag:economy": 1.4, "tag:exploit-test": 1.8, "gold": 0.25}, "threshold": 0.55, "temperature": 0.35},
       "confidence": 0.72,
       "action_bias": {"farm": 0.4, "buy_armor": 0.6, "buy_blade": 0.5},
       "action_feature_weights": {
-        "farm": {"gold": -0.8, "exploit": -3.0, "remaining": 0.7},
+        "farm": {"gold": -0.8, "tag:exploit-test": -3.0, "remaining": 0.7},
         "buy_armor": {"gold": 0.7, "threat": 1.1},
         "buy_blade": {"gold": 0.65, "finish_window": 0.6}
       },
@@ -220,11 +227,11 @@
       "gene_id": "dynamic-economy",
       "role": "EconomyAuditor",
       "mode": "dynamic",
-      "gate": {"weights": {"economy": 1.7, "exploit": 2.0}, "threshold": 0.8, "temperature": 0.25},
+      "gate": {"weights": {"tag:economy": 1.7, "tag:exploit-test": 2.0}, "threshold": 0.8, "temperature": 0.25},
       "confidence": 0.76,
       "action_bias": {"farm": 0.25, "buy_armor": 0.5, "buy_blade": 0.35},
       "action_feature_weights": {
-        "farm": {"exploit": -3.2, "remaining": 0.7},
+        "farm": {"tag:exploit-test": -3.2, "remaining": 0.7},
         "buy_armor": {"threat": 1.0, "gold": 0.6},
         "buy_blade": {"finish_window": 0.8, "gold": 0.55}
       },
