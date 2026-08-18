@@ -20,7 +20,7 @@ class StateVerifier:
     """Frozen-kernel invariant verifier.
 
     Harness evolution may change branch utility but cannot remove execution invariants,
-    violation detection, rollback semantics or the authority of this verifier.
+    anomaly reporting, rollback semantics or the authority of this verifier.
     """
 
     def verify(
@@ -42,12 +42,11 @@ class StateVerifier:
             violations.append("hp_invariant")
         if info.get("invalid"):
             violations.append("invalid_action")
-        if "reward_loop" in anomalies:
-            violations.append("reward_loop_anomaly")
+        findings = [f"finding:{name}" for name in sorted(set(anomalies))]
+        violations.extend(findings)
 
         hp_ratio = after.player_hp / max(1, after.player_max_hp)
-        # This score belongs to the frozen safety contract rather than the evolvable
-        # decision surface; the harness cannot make unsafe states look safe by mutation.
+        # Frozen safety contract: the harness cannot mutate the judge to make unsafe states safe.
         risk = min(
             1.0,
             max(0.0, after.threat * .65 + (1.0 - hp_ratio) * .55),
@@ -61,30 +60,24 @@ class StateVerifier:
         if after.terminal and after.outcome == "defeat":
             violations.append("terminal_failure")
 
+        unsafe = [item for item in violations if not item.startswith("finding:")]
         if any(
-            violation in violations
+            violation in unsafe
             for violation in ["negative_gold", "energy_invariant", "hp_invariant"]
         ):
             severity = "critical"
-        elif any(
-            violation in violations
-            for violation in [
-                "catastrophic_survival_risk",
-                "terminal_failure",
-                "reward_loop_anomaly",
-            ]
-        ):
+        elif unsafe or findings:
             severity = "warning"
 
         recommendation = "continue"
-        if "terminal_failure" in violations:
+        if "terminal_failure" in unsafe:
             recommendation = "rollback"
-        elif "catastrophic_survival_risk" in violations:
+        elif "catastrophic_survival_risk" in unsafe:
             recommendation = "replan"
-        elif "reward_loop_anomaly" in violations:
+        elif findings:
             recommendation = "flag_and_continue"
         return Verification(
-            ok=not violations,
+            ok=not unsafe,
             severity=severity,
             violations=violations,
             risk_score=round(risk, 4),
@@ -111,7 +104,10 @@ class StateVerifier:
             max(0.0, state.threat - goal.risk_tolerance)
             * gene.threat_penalty
         )
-        utility -= len(violations) * gene.violation_penalty
+        unsafe_count = sum(
+            not violation.startswith("finding:") for violation in violations
+        )
+        utility -= unsafe_count * gene.violation_penalty
         if state.outcome == "victory":
             utility += gene.victory_bonus
         if state.outcome == "defeat":
