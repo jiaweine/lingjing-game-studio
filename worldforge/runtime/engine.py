@@ -4,7 +4,6 @@ import asyncio
 import copy
 import time
 import uuid
-from collections import Counter
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -13,7 +12,6 @@ from worldforge.models import ActionKind, DecisionFrame, GameAction, RunConfig, 
 
 from .counterfactual import CounterfactualBrancher
 from .event_store import EventStore
-from .evolver import FailureDrivenEvolver
 from .memory import EpisodicMemory, OutcomeRecord
 from .planner import AdaptivePlanner
 from .plugin import PluginDescriptor, PluginRegistry
@@ -28,11 +26,12 @@ EventSink = Callable[[RuntimeEvent], Awaitable[None]]
 
 
 class WorldForgeEngine:
-    """World-state-native autonomous game runtime.
+    """Frozen world-state execution kernel.
 
-    The canonical world is never mutated by speculative branches. Decisions combine the local
-    policy, state-conditioned specialists, skill priors and memory, then pass through
-    counterfactual evaluation, sandbox checks and verification before being committed.
+    The canonical world is never mutated by speculative branches. The kernel owns state,
+    sandboxing, verification, checkpoint/rollback, event integrity and bounded policy learning.
+    Game-specific planning behavior is interpreted from the active HarnessGenome by the
+    planner, specialists, skills, memory and counterfactual modules rather than encoded here.
     """
 
     def __init__(
@@ -52,7 +51,6 @@ class WorldForgeEngine:
         self.policy_optimizer = GroupRelativePolicyOptimizer()
         self.planner = AdaptivePlanner(self.skills, self.memory, self.policy_model)
         self.brancher = CounterfactualBrancher(self.planner, self.verifier)
-        self.evolver = FailureDrivenEvolver(self.skills)
         self.sandbox = ActionSandbox()
         self.selfplay = PopulationSelfPlay(self.skills)
         self.recursive = RecursiveAgentScheduler()
@@ -106,7 +104,7 @@ class WorldForgeEngine:
         self.plugins.mount(
             PluginDescriptor(
                 "skill-bank", "skills",
-                metadata={"evolutionary": True},
+                metadata={"genome_controlled": True},
             ),
             self.skills,
         )
@@ -122,7 +120,7 @@ class WorldForgeEngine:
             PluginDescriptor(
                 "recursive-scheduler", "subagents",
                 dependencies=("adaptive-planner",),
-                metadata={"state_conditioned": True, "advice_is_bounded": True},
+                metadata={"genome_controlled": True, "advice_is_bounded": True},
             ),
             self.recursive,
         )
@@ -130,17 +128,9 @@ class WorldForgeEngine:
             PluginDescriptor(
                 "population-selfplay", "curriculum",
                 dependencies=("skill-bank",),
-                metadata={"profiles": 4},
+                metadata={"genome_derived": True},
             ),
             self.selfplay,
-        )
-        self.plugins.mount(
-            PluginDescriptor(
-                "failure-evolver", "evolution",
-                dependencies=("skill-bank", "state-verifier"),
-                metadata={"regression_gate": True},
-            ),
-            self.evolver,
         )
 
     async def _emit(
@@ -205,7 +195,7 @@ class WorldForgeEngine:
             "scenario": scenario.model_dump(),
             "config": config.model_dump(),
             "plugins": self.plugins.describe(),
-            "architecture": "world-state-native",
+            "architecture": "frozen-kernel+self-evolving-harness",
             "policy": run_policy.card_dict(),
             "product_mode": "game-autonomous-testing",
         }, sink)
@@ -214,10 +204,7 @@ class WorldForgeEngine:
             "belief": planner.make_belief(state).model_dump(),
         }, sink)
 
-        action_counter: Counter[str] = Counter()
-        min_hp = state.player_hp
         rollback_used_at: set[int] = set()
-        qa_probe_done = False
         policy_groups: list[PolicyGroup] = []
 
         for _ in range(goal.max_steps):
@@ -234,47 +221,12 @@ class WorldForgeEngine:
                 "state": state.model_dump(),
             }, sink)
 
-            if not qa_probe_done and "exploit-test" in state.tags:
-                qa_probe_done = True
-                probe = env.clone(seed_offset=991)
-                probe_steps = []
-                for probe_index in range(5):
-                    legal_probe = probe.legal_actions(probe.state)
-                    if ActionKind.FARM.value not in legal_probe or probe.state.terminal:
-                        break
-                    before_gold = probe.state.gold
-                    probe_state, probe_reward, probe_done, probe_info = probe.step(
-                        GameAction(
-                            kind=ActionKind.FARM,
-                            rationale="adversarial exploit probe",
-                            source="runtime-probe",
-                        )
-                    )
-                    probe_steps.append({
-                        "step": probe_index + 1,
-                        "reward": round(probe_reward, 4),
-                        "gold_delta": probe_state.gold - before_gold,
-                        "hp": probe_state.player_hp,
-                        "events": probe_info.get("events", []),
-                    })
-                    if probe.anomalies or probe_done:
-                        break
-                if probe.anomalies:
-                    await self._emit(session_id, "qa.finding", {
-                        "tick": state.tick,
-                        "source": "adversarial-probe",
-                        "severity": "high",
-                        "events": ["isolated_reward_loop_probe"],
-                        "anomalies": probe.anomalies,
-                        "canonical_untouched": env.state.model_dump() == state.model_dump(),
-                        "evidence": {
-                            "probe_steps": probe_steps,
-                            "final_probe_state": probe.state.model_dump(),
-                        },
-                    }, sink)
-
             belief = planner.make_belief(state)
-            active_skills = run_skills.active_for(state, belief.uncertainty)
+            active_skills = run_skills.active_for(
+                state,
+                belief.uncertainty,
+                goal=goal,
+            )
             summary.skills_used += len(active_skills)
 
             specialist_bias: dict[str, float] = {}
@@ -317,7 +269,7 @@ class WorldForgeEngine:
                 "active_skills": [skill.model_dump() for skill in active_skills],
                 "council": [vote.model_dump() for vote in ranked.votes],
                 "specialist_bias": specialist_bias,
-                "planner_mode": "state-conditioned",
+                "planner_mode": "harness-genome",
             }, sink)
 
             branches = []
@@ -337,9 +289,11 @@ class WorldForgeEngine:
                     "tick": state.tick,
                     "branches": [branch.model_dump() for branch in branches],
                     "canonical_untouched": env.state.model_dump() == state.model_dump(),
-                    "branch_width": config.branch_width,
-                    "rollout_horizon": config.rollout_horizon,
-                    "rollouts_per_branch": config.rollouts_per_branch,
+                    "resource_caps": {
+                        "branch_width": config.branch_width,
+                        "rollout_horizon": config.rollout_horizon,
+                        "rollouts_per_branch": config.rollouts_per_branch,
+                    },
                 }, sink)
 
                 reward_map: dict[str, float] = {}
@@ -415,7 +369,6 @@ class WorldForgeEngine:
                     }, sink)
 
             before = state.model_copy(deep=True)
-            action_counter[selected.value] += 1
             sandbox.record(selected)
             state, reward, done, info = env.step(GameAction(
                 kind=selected,
@@ -468,7 +421,6 @@ class WorldForgeEngine:
                 if alternatives:
                     alternative = alternatives[0]
                     before = state.model_copy(deep=True)
-                    action_counter[alternative.value] += 1
                     state, reward, done, info = env.step(GameAction(
                         kind=alternative,
                         rationale="rollback alternative",
@@ -485,12 +437,10 @@ class WorldForgeEngine:
                         "verification": verification.__dict__,
                     }, sink)
 
-            min_hp = min(min_hp, state.player_hp)
             summary.invalid_actions += 1 if info.get("invalid") else 0
-            signature = self.memory.signature(before)
             record = OutcomeRecord(
                 config.scenario_id,
-                signature,
+                run_memory.signature(before),
                 state.last_action or selected.value,
                 reward,
                 bool(state.outcome == "victory"),
@@ -515,82 +465,57 @@ class WorldForgeEngine:
 
         evolved = False
         human_feedback_gate = bool((session_meta or {}).get("human_feedback_gate", True))
-        # Policy / Skill / global Memory are shared learning state. Commit those
-        # updates in one short critical section while keeping the expensive run
-        # itself fully concurrent.
+        # The canonical execution kernel only commits shared memory/policy updates here.
+        # Harness-program evolution is owned by SelfEvolvingWorldForgeEngine outside this kernel.
         async with self._evolution_lock:
             for record in episode_records:
                 self.memory.add(record)
 
-            if config.enable_evolution:
-                signal = self.evolver.attribute(
-                    outcome=state.outcome,
-                    min_hp=min_hp,
-                    farm_count=action_counter[ActionKind.FARM.value],
-                    invalid_actions=summary.invalid_actions,
-                    last_action=state.last_action,
+            if config.enable_evolution and policy_groups:
+                candidate_policy, optimization = self.policy_optimizer.optimize(
+                    self.policy_model, policy_groups
                 )
-                if signal:
-                    await self._emit(
-                        session_id, "evolution.attributed", signal.__dict__, sink
-                    )
-                    patch = self.evolver.evolve(
-                        signal,
-                        lambda candidate: self._regression_eval(
-                            config.scenario_id, candidate, self.policy_model
+                baseline = self._regression_eval(
+                    config.scenario_id, None, self.policy_model
+                )
+                candidate_score = self._regression_eval(
+                    config.scenario_id, None, candidate_policy
+                )
+                policy_accepted = (
+                    human_feedback_gate
+                    and optimization["updates"] > 0
+                    and candidate_score >= baseline + .001
+                    and optimization["mean_kl"] <= self.policy_optimizer.kl_limit
+                )
+                if policy_accepted:
+                    self.policy_model = candidate_policy
+                    self.policy_model.save(self.policy_path)
+                    self.planner.policy_model = self.policy_model
+                    self.plugins.mount(
+                        PluginDescriptor(
+                            "worldforge-policy",
+                            "model",
+                            metadata={
+                                "owned": True,
+                                "external_api": False,
+                                "generation": self.policy_model.card.generation,
+                            },
                         ),
-                        human_approved=human_feedback_gate,
+                        self.policy_model,
                     )
-                    evolved = patch.accepted
-                    await self._emit(
-                        session_id, "evolution.patch", patch.model_dump(), sink
-                    )
-
-                if policy_groups:
-                    candidate_policy, optimization = self.policy_optimizer.optimize(
-                        self.policy_model, policy_groups
-                    )
-                    baseline = self._regression_eval(
-                        config.scenario_id, None, self.policy_model
-                    )
-                    candidate_score = self._regression_eval(
-                        config.scenario_id, None, candidate_policy
-                    )
-                    policy_accepted = (
-                        human_feedback_gate
-                        and optimization["updates"] > 0
-                        and candidate_score >= baseline + .001
-                        and optimization["mean_kl"] <= self.policy_optimizer.kl_limit
-                    )
-                    if policy_accepted:
-                        self.policy_model = candidate_policy
-                        self.policy_model.save(self.policy_path)
-                        self.planner.policy_model = self.policy_model
-                        self.plugins.mount(
-                            PluginDescriptor(
-                                "worldforge-policy",
-                                "model",
-                                metadata={
-                                    "owned": True,
-                                    "external_api": False,
-                                    "generation": self.policy_model.card.generation,
-                                },
-                            ),
-                            self.policy_model,
-                        )
-                        evolved = True
-                    await self._emit(session_id, "policy.optimization", {
-                        **optimization,
-                        "regression_before": round(baseline, 4),
-                        "regression_after": round(candidate_score, 4),
-                        "accepted": policy_accepted,
-                        "human_feedback_gate": human_feedback_gate,
-                        "generation": (
-                            self.policy_model.card.generation
-                            if policy_accepted
-                            else candidate_policy.card.generation
-                        ),
-                    }, sink)
+                    evolved = True
+                await self._emit(session_id, "policy.optimization", {
+                    **optimization,
+                    "regression_before": round(baseline, 4),
+                    "regression_after": round(candidate_score, 4),
+                    "accepted": policy_accepted,
+                    "human_feedback_gate": human_feedback_gate,
+                    "generation": (
+                        self.policy_model.card.generation
+                        if policy_accepted
+                        else candidate_policy.card.generation
+                    ),
+                }, sink)
 
         summary.status = "completed"
         summary.outcome = state.outcome
@@ -614,7 +539,7 @@ class WorldForgeEngine:
         candidate: Skill | None,
         policy: WorldForgePolicy,
     ) -> float:
-        """Deterministic replay gate for skill and policy changes."""
+        """Frozen replay gate for the inner policy optimizer."""
         bank = SkillBank()
         bank.skills = {
             key: value.model_copy(deep=True)
