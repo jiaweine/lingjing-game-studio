@@ -1,35 +1,38 @@
-# WorldForge / 灵境 Architecture
+# 灵境 / WorldForge Architecture
 
 ## 1. 系统边界
 
-灵境分成两层：
+灵境分成三个明确边界：
 
-1. **产品控制面**：身份、工作空间、任务、消息、素材、执行 Job、证据、交付、人工反馈、审批、指标、审计与实时事件。
-2. **WorldForge Runtime**：世界状态、规划、候选未来试演、Sandbox、Verifier、Memory / Skill / Policy 与回归约束。
+1. **Product Control Plane**：身份、工作空间、任务、消息、素材、Job、证据、交付、反馈、审批、指标与审计。
+2. **Self-Evolving Harness**：表示、Belief、Memory、Skill、Specialist 拓扑、Planner 融合、反事实搜索预算、风险效用和 mutation policy。
+3. **Frozen Runtime Kernel**：canonical state、checkpoint、Sandbox、Verifier、rollback / replan、事件链、sealed evaluation 与 atomic promotion。
 
-外部或本地推理资源只提供感知、文本理解和推理能力。它们不能直接绕过产品权限、修改 canonical state、跳过验证、消费审批或决定任务是否完成。
+推理模型只是可替换资源。它不能绕过 workspace 权限，不能直接写 canonical state，不能修改 Verifier，也不能让自己的 Harness candidate 直接上线。
 
 ```text
 Browser Workspace
     ↓
 FastAPI / Auth / Workspace Guard
     ↓
-Product Store ───── Object Storage
-    ↓                    ↓
-Durable Job Queue ── Asset Materialization
+Product Store ───────── Object Storage
+    ↓                         ↓
+Durable Job Queue ───── Asset Materialization
     ↓
 Worker / ProductAnalyzer
     ↓
-WorldForge Runtime + Server-side Inference Routing
+Self-Evolving WorldForge Harness
+    ↓
+Frozen Execution Kernel
     ↓
 Result / Evidence / Deliverables
     ↓
-Human Feedback / Quality Gate / Product Events
+Human Feedback / Audit / Product Events
 ```
 
 ## 2. 产品控制面
 
-产品持久化状态包括：
+持久化产品状态包括：
 
 - users
 - workspaces
@@ -45,171 +48,155 @@ Human Feedback / Quality Gate / Product Events
 - result_feedback
 - product_events
 
-`conversations` 同时保存任务负责人、任务状态、置顶和归档信息。
+所有资源都按 workspace membership 在服务端校验。前端按钮可见性不是权限边界。
 
-### 工作空间与权限
+任务生命周期支持搜索、重命名、置顶、归档 / 恢复、负责人交接、深链接、真实停止、安全重试、永久删除审批和 latest-result human quality gate。
 
-所有产品资源都在服务端按 workspace membership 校验。前端隐藏按钮不是权限边界。
+任务接收时，user message、queued job 与 `message.accepted` 同事务提交；完成时，job completed、assistant answer 与 `answer.ready` 同事务提交。迟到的旧执行事件不能覆盖更新状态。
 
-- Owner / Admin：成员管理、邀请和治理动作；
-- Member：在权限范围内创建和推进任务；
-- Viewer：服务端只读。
+## 3. 多模态任务上下文
 
-会话解析会重新读取当前 membership role，使角色降级或移除能够及时生效，而不是只等待旧 token 过期。
+图片、视频、音频、日志、配置和文档统一进入 workspace 资产生命周期。Job payload 会携带当前任务已存在的素材上下文，因此后续追问不会因为本轮 `asset_ids=[]` 丢失之前的证据。
 
-### 任务生命周期
+对象存储写入成功但数据库登记失败时会清理已写入对象，减少孤儿资源。
 
-产品任务支持：
+## 4. Frozen Kernel
 
-- 搜索、重命名、置顶；
-- 归档 / 恢复；
-- 负责人分配与交接；
-- 深链接；
-- 实际停止；
-- 最近一次失败/停止 Job 的安全重试；
-- 持久化永久删除审批；
-- latest-result human quality gate。
+`worldforge/runtime/engine.py` 是冻结执行内核。它只负责不可委托给 Harness candidate 的职责：
 
-任务状态包括 active、review、waiting_approval、blocked、verified、stopped 等语义。
+- canonical world-state ownership；
+- checkpoint / restore；
+- Sandbox；
+- invariant verification；
+- rollback / replan；
+- append-only Runtime event chain；
+- bounded inner-policy update；
+- 真实动作提交与完成语义。
 
-## 3. 确定性 Job 生命周期
+Frozen Kernel 不包含“低血量应该 heal”“某标签应该 farm”“某场景应该启动某 Specialist”之类任务策略。
 
-### 接收任务
+环境上报 anomaly 时，Verifier 统一记录为 `finding:<name>`。Finding 是研发证据；只有关键不变量、灾难性生存风险和 terminal failure 等 unsafe state 才触发安全失败 / 恢复语义。
 
-用户提交任务时，以下内容在同一数据库事务中写入：
+## 5. Evolvable Harness Genome
 
-1. user message；
-2. queued job；
-3. `message.accepted` event。
+当前 active Harness 由 `HarnessGenome` 表示并持久化。可进化面包括：
 
-创建 Job 时会锁定并验证 conversation，同时检查是否已经存在 active Job，避免消息/Job 分裂或重复运行。
+- feature representation / scales / caps；
+- belief uncertainty；
+- memory feature weights / similarity temperature / recency；
+- Skill gate / action bias / reliability；
+- Specialist topology / gate / confidence / action feature weights；
+- Planner fusion / repeat friction / epistemic action coefficients；
+- counterfactual width / horizon / rollout allocation；
+- branch risk utility；
+- mutation operator logits / sigma / temperature / exploration。
 
-### 完成任务
+Bootstrap prior 只存在 `default_harness_genome.json`。Python Runtime 是解释器，不是任务策略表。
 
-完成时以下内容同事务提交：
+动态标签统一变成 `tag:<name>` 特征；Runtime 不需要预先知道 `economy`、`boss` 或任何具体项目标签。
 
-1. job → completed；
-2. 最终 assistant message；
-3. `answer.ready` event。
+## 6. Runtime Phenotype
 
-取消或更新的执行状态不会被迟到的旧失败/成功事件覆盖。进度事件带 `job_id`，前端恢复时只绑定当前或最近一次执行。
+每个 decision step：
 
-### 停止与重试
+1. Frozen Kernel 建 checkpoint；
+2. active Genome 将当前 state 映射成 feature phenotype；
+3. core / dynamic Specialists 通过平滑 gate 激活；
+4. Skill、Memory、Policy prior、Specialist bias 汇合到 Genome-interpreting Planner；
+5. CounterfactualBrancher 在调用方资源上限内，由 Genome 动态分配 width / horizon / rollouts；
+6. clone-world rollout 由 Verifier 独立检查；
+7. Sandbox 在 canonical commit 前检查；
+8. 只有 Kernel 能向真实环境提交动作；
+9. post-state Verifier 决定 continue / rollback / replan / finding。
 
-停止是持久化终止状态，不是假 UI。安全重试只允许最近一次失败或停止的执行，并复用原 Job payload、历史任务上下文和素材上下文。
+候选未来只能操作 clone，不持有 canonical state 写权限。
 
-系统不承诺外部推理调用可以在任意 token / 指令点无损恢复，因此没有伪造 pause/resume 语义。
+## 7. Harness Self-Evolution
 
-## 4. 多模态任务上下文
+产品入口是 `SelfEvolvingWorldForgeEngine`。出现失败、finding、恢复或 invalid action 时，运行轨迹会形成 Harness evolution evidence。
 
-上传素材先写对象存储，再登记 Product Store。若数据库登记失败，会清理已经写入的 source / keyframe 对象，减少孤儿对象。
+当前进化链：
 
-支持：
+```text
+Verified Trace
+  → policy-agnostic reflection
+  → WHERE × WHY semantic cell
+  → true antithetic mutation pairs
+  → behavior-plateau detection / sigma escalation
+  → stable train elites
+  → topology / gate / skill / memory / parameter refinement
+  → minimum-effective-edit trust region
+  → freeze search trajectory
+  → sealed held-out evaluation
+  → Pareto / semantic-QD credit
+  → atomic generation promotion or reject
+```
 
-- image
-- video + adaptive keyframe extraction
-- audio
-- logs / config / structured text
-- generic documents / text
+### Proposal 与 credit 分离
 
-用户消息只记录本轮显式选择的附件，但执行 Job payload 会携带**当前任务全部已有素材上下文 + 本轮显式素材**。因此后续追问即使 `asset_ids=[]`，也不会丢失任务早先的截图、录像、音频、日志或配置。
+候选生成、elite selection、refinement、trust-region 和 behavior-boundary bisection只使用 train cases。整个搜索轨迹冻结后才打开 held-out。
 
-## 5. 永久删除治理
+候选 Harness 无法修改：
 
-永久删除不是浏览器 `confirm()`。
+- Verifier；
+- game-R&D evaluator；
+- train / held-out split；
+- paired-bootstrap credit；
+- safety / quality / efficiency floor；
+- promotion transaction。
 
-1. 用户创建 delete approval request；
-2. conversation 进入 `waiting_approval` 并锁定突变操作；
-3. Owner / Admin approve 或 reject；
-4. reject 恢复 `previous_status`；
-5. approve 后执行对象存储清理；
-6. 对象存储成功后，审批校验 + conversation 数据删除 + `conversation.delete` audit 在一个数据库事务中完成。
+因此 candidate 不能通过“把裁判改松”取得晋升。
 
-如果对象存储删除失败，任务和 approved approval 都保留，可以重试；如果数据库事务失败，approved approval 也不会提前被消费掉。
+## 8. Game R&D Evaluator
 
-Local 和 S3-compatible delete 都按幂等语义处理。
+`game_harness_evaluator.py` 把游戏研发与单纯 game-playing 区分开：
 
-## 6. 人工反馈与质量门
+- 胜利、进度、健康、环境 score 贡献 task quality；
+- hidden mechanic observation / anomaly finding 贡献 diagnostic coverage；
+- rollback / replan / critical invariant 贡献 unsafe penalty；
+- counterfactual operations 显式计入 efficiency。
 
-`result_feedback` 针对最近一次 assistant 交付保存：
+Finding 与 unsafe execution 分离，避免“发现漏洞反而被 benchmark 惩罚”。
 
-- verdict: correct / partial / incorrect
-- evidence usefulness
-- human verified
-- note
+## 9. 持续 Memory 与 Skill
 
-质量门只评估**最新交付**，避免历史错误永久污染后续修正结果：
+Memory 使用 Genome 定义的连续相似度核，不使用 `low / mid / high` 人工状态桶。Genome 可以改变检索特征、距离权重、温度、recency decay 和 success bonus。
 
-- 没有交付 → active
-- 交付完成 → review
-- 最新交付存在 incorrect → blocked
-- 最新交付至少一个 `human_verified && correct` 且无 incorrect → verified
+Skill 的名称/描述是可审计元数据；真正 gate、action bias、reliability 来自 active Genome，并可由 Harness evolution 修改。
 
-该 gate 也会作为后续候选策略演进的输入。人工反馈不会直接修改在线策略。
+## 10. Semantic QD 与代际谱系
 
-## 7. 产品指标
+Archive 使用 `WHERE × WHY` cell 保存互补 elite，而不是只维护一个全局 champion。候选同时比较 objective、safety、efficiency 与 novelty。
 
-`product_events` 用于计算产品级闭环指标，包括：
+每个 Genome 保存：
 
-- task count / active tasks
-- first-task completion rate
-- average time to first result
-- interruption rate
-- failure rate
-- recovery rate
-- continuation rate
-- manual intervention rate
-- evidence open rate
-- result adoption rate
-- human verified feedback rate
+- `genome_id`
+- `generation`
+- `parent_ids`
+- `origin`
 
-指标按 conversation / event set 去重，而不是简单按事件条数相除。
+Promotion 采用原子替换：被持久化的对象就是 held-out 评估过的同一个 Genome，不允许评估之后再偷偷修改参数。
 
-## 8. WorldForge Runtime
+## 11. 可复现 promotion gate
 
-WorldForge 将动态游戏环境本身作为执行对象。只有一个 **Canonical World State** 代表真实提交路径；候选未来运行在隔离副本中。
+仓库提供独立命令：
 
-核心组件：
+```bash
+python scripts/harness_evolution_benchmark.py
+```
 
-- `AdaptivePlanner`：根据 Goal / Belief / World State / Skill / Memory 形成动态候选空间；
-- bounded specialists：根据状态提供有界偏置，不能直接提交动作；
-- `CounterfactualBrancher`：在多个候选未来中试演动作；
-- `ActionSandbox`：提交前检查动作契约和风险预算；
-- `StateVerifier`：执行后检查状态不变量、灾难性风险和异常奖励循环；
-- Event Store：append-only hash chain、checkpoint、replay、fork；
-- Failure-driven evolution：从失败轨迹生成候选更新，经回归与人工质量门约束后才能进入后续运行。
+协议 `sealed-heldout-game-harness-2026-08` 从 bootstrap Genome 启动，train seeds 为 11 / 23，held-out seeds 为 37 / 51。当前已验证的独立进程结果：36 个候选中 4 个通过门禁，generation 1 晋升到 generation 3；train objective gain `+0.004712`，sealed held-out gain `+0.000559`，paired-bootstrap lower bound `0.000000`。
 
-自主性来自受约束的状态循环，不依赖固定 DAG，也不等同于让推理模型自由提交动作。
+这些数字证明 promotion mechanism 可工作，不代表跨项目通用 SOTA。
 
-## 9. Canonical Future Anchor
+## 12. Event Sourcing 与 Realtime
 
-随机 rollout 可能在高方差游戏里低估当前真实随机状态对应的风险。每个候选动作至少包含一个与 canonical RNG 对齐的 exact future，再用额外扰动未来估计泛化风险。
+Runtime Event Store 保存环境状态、decision、Verifier、checkpoint、Harness evolution / promotion 等轨迹；Product Store 的 `task_events` 是客户工作台进度事实源。二者边界不同。
 
-因此候选评估同时回答：
+产品 realtime 使用 durable cursor + fan-out。WebSocket 采用 subscribe-before-replay、event-id deduplication 与 `after_id` 续传。
 
-- 如果现在真的执行，最接近当前真实状态的后果是什么？
-- 如果随机性变化，这个选择是否仍稳定？
+## 13. 推理资源边界
 
-## 10. Event Sourcing 与 Realtime
+`worldforge/providers/` 是服务端推理资源适配层。客户工作台不展示供应商或内部模型选择器。
 
-Runtime Event Store 用于环境状态、决策、Verifier、Replay / Fork 等运行时轨迹；Product Store 的 `task_events` 是客户工作台实时进度的事实源，两者边界不同。
-
-产品 realtime 通过 durable cursor 读取并 fan-out。WebSocket 使用 subscribe-before-replay、event-id deduplication 和 `after_id` 续传，减少重连时的事件丢失和重复。
-
-## 11. 推理资源边界
-
-`worldforge/providers/` 是服务端推理资源适配层。客户工作台不展示供应商或模型选择器。
-
-推理路由可以根据文本、视觉、音频等输入能力选择可用资源，但以下职责始终属于灵境 / WorldForge：
-
-- workspace authorization
-- task lifecycle
-- canonical state
-- planning and execution control
-- sandbox / verifier
-- rollback / replan
-- approvals
-- human quality gate
-- completion semantics
-
-因此更换推理资源不等于更换产品控制面或执行语义。
+更换推理资源不会改变以下灵境职责：workspace authorization、task lifecycle、canonical state、Harness generation、Sandbox / Verifier、rollback / replan、approval、human quality gate 与 completion semantics。

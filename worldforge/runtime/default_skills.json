@@ -1,0 +1,46 @@
+[
+  {
+    "skill_id": "survival_guard",
+    "name": "Survival Guard",
+    "generation": 1,
+    "description": "Reusable survival behavior; executable gate and action preferences live in HarnessGenome.",
+    "trigger": "harness-genome",
+    "action_bias": {},
+    "evidence_count": 0,
+    "success_rate": 0.72,
+    "status": "active"
+  },
+  {
+    "skill_id": "burst_window",
+    "name": "Burst Window",
+    "generation": 1,
+    "description": "Reusable finishing behavior; executable gate and action preferences live in HarnessGenome.",
+    "trigger": "harness-genome",
+    "action_bias": {},
+    "evidence_count": 0,
+    "success_rate": 0.69,
+    "status": "active"
+  },
+  {
+    "skill_id": "information_first",
+    "name": "Information First",
+    "generation": 1,
+    "description": "Reusable information-gathering behavior; executable policy lives in HarnessGenome.",
+    "trigger": "harness-genome",
+    "action_bias": {},
+    "evidence_count": 0,
+    "success_rate": 0.66,
+    "status": "active"
+  },
+  {
+    "skill_id": "economy_guard",
+    "name": "Economy Guard",
+    "generation": 1,
+    "description": "Reusable resource behavior; executable gate and action preferences live in HarnessGenome.",
+    "trigger": "harness-genome",
+    "action_bias": {},
+    "evidence_count": 0,
+    "success_rate": 0.61,
+    "status": "active"
+  }
+]
