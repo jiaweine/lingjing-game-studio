@@ -18,11 +18,7 @@ class PlannerOutput:
 
 
 class AdaptivePlanner:
-    """Planner whose behavioral parameters and specialist topology live in HarnessGenome.
-
-    The planner code is part of the frozen Runtime kernel. It only interprets an evolvable
-    genome; it does not own the actual strategy constants anymore.
-    """
+    """Frozen planner interpreter for the active HarnessGenome."""
 
     def __init__(self, skills, memory, policy_model=None):
         self.skills = skills
@@ -52,25 +48,19 @@ class AdaptivePlanner:
 
     @staticmethod
     def _epistemic_adjustment(action, scores, state, belief):
+        """One data-driven equation for every action; no action policy lives in Python."""
         gene = HarnessGenomeStore.current().planner
         disagreement = pstdev(scores) if len(scores) > 1 else 0.0
         tension = min(gene.disagreement_cap, disagreement) * belief.uncertainty
-        if action == ActionKind.SCOUT:
-            return gene.scout_base + tension * gene.scout_gain
-        if action == ActionKind.DEFEND:
-            return tension * state.threat * gene.defend_gain
-        if action in (ActionKind.HEAVY_ATTACK, ActionKind.CAST):
-            return -tension * (
-                gene.commit_base + state.threat * gene.commit_threat_gain
-            )
-        if action == ActionKind.RETREAT:
-            gain = (
-                gene.retreat_low_gain
-                if state.threat < gene.retreat_threat_boundary
-                else gene.retreat_high_gain
-            )
-            return tension * gain
-        return -tension * state.threat * gene.default_risk_friction
+        name = action.value
+        base = gene.epistemic_base.get(name, gene.epistemic_base.get("*", 0.0))
+        tension_gain = gene.epistemic_tension.get(
+            name, gene.epistemic_tension.get("*", 0.0)
+        )
+        threat_gain = gene.epistemic_threat_tension.get(
+            name, gene.epistemic_threat_tension.get("*", 0.0)
+        )
+        return base + tension * tension_gain + tension * state.threat * threat_gain
 
     def rank(
         self,
