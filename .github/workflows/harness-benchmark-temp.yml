@@ -1,0 +1,23 @@
+name: Temporary harness evolution benchmark
+
+on:
+  push:
+    branches:
+      - agent/self-evolving-harness
+
+permissions:
+  contents: read
+
+jobs:
+  harness-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run sealed harness evolution benchmark
+        run: python scripts/harness_evolution_benchmark.py
