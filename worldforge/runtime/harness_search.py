@@ -26,9 +26,9 @@ from .harness_genome import HarnessGenome, HarnessGenomeStore
 class GameEvolutionConfig(EvolutionConfig):
     """Frozen search/admission protocol for the game-R&D harness.
 
-    These values govern how candidate programs are searched and judged. They are deliberately
-    outside HarnessGenome: the harness may evolve its executable behavior, but it cannot edit
-    its own evaluator, confidence protocol, safety floor, or resource ceiling.
+    Search hyperparameters and admission rules live outside HarnessGenome on purpose: the
+    harness can evolve its executable behavior, but cannot rewrite its evaluator, confidence
+    protocol, safety floor, or resource ceiling.
     """
 
     refinement_rounds: int = 2
@@ -40,12 +40,13 @@ class GameEvolutionConfig(EvolutionConfig):
     max_sigma: float = 0.85
     trust_region_elites: int = 4
     trust_region_alphas: tuple[float, ...] = (0.25, 0.50, 0.75)
+    trust_region_bisection_steps: int = 7
     min_heldout_gain: float = 0.0
     min_lower_bound: float = 0.0
     quality_tolerance: float = 0.0
     efficiency_tolerance: float = 0.02
 
-    # Frozen game-R&D evaluation protocol. Findings are useful evidence; unsafe execution is not.
+    # Frozen game-R&D evaluation protocol. Findings are evidence; unsafe execution is not.
     quality_success_weight: float = 0.50
     quality_progress_weight: float = 0.18
     quality_health_weight: float = 0.10
@@ -60,9 +61,8 @@ class GameEvolutionConfig(EvolutionConfig):
 class GameHarnessMutator(HarnessMutator):
     """Vertical program mutator for game-R&D harnesses.
 
-    The searchable surface includes representation, memory, skills, specialist topology,
-    gates, planner/search/utility parameters and the mutation policy itself. Mutation never
-    edits the frozen verifier, canonical-state owner, evaluator, or promotion gate.
+    Representation, memory, skills, specialist topology, gates, planner/search/utility and the
+    mutation policy are searchable. The frozen verifier, evaluator and promotion gate are not.
     """
 
     def propose(
@@ -274,9 +274,9 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
     """Behavior-sensitive self-evolving search for game R&D.
 
     Broad antithetic exploration is followed by train-only stable-elite refinement and a
-    trust-region line search. Held-out cases remain sealed until the complete search trajectory
-    has been frozen. Promotion requires positive paired held-out evidence and no quality/safety
-    regression.
+    minimum-effective-edit trust region. Held-out cases stay sealed until the entire search
+    trajectory is frozen. Promotion requires non-regressive paired held-out evidence and no
+    quality/safety regression.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -363,8 +363,6 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         candidate: HarnessGenome,
         alpha: float,
     ) -> HarnessGenome | None:
-        # Structural edits are not interpolated. Trust-region scaling applies to same-topology
-        # programs where a smaller numerical step has a well-defined meaning.
         if len(baseline.specialists) != len(candidate.specialists):
             return None
         if [gene.gene_id for gene in baseline.specialists] != [
@@ -373,14 +371,69 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
             return None
         if set(baseline.skills) != set(candidate.skills):
             return None
-        payload = self._blend_value(
-            baseline.model_dump(), candidate.model_dump(), alpha
-        )
+        payload = self._blend_value(baseline.model_dump(), candidate.model_dump(), alpha)
         payload["genome_id"] = f"hg-{uuid.uuid4().hex[:10]}"
         payload["generation"] = candidate.generation
         payload["parent_ids"] = [baseline.genome_id, candidate.genome_id]
-        payload["origin"] = f"trust-region:{candidate.origin}:{alpha:.2f}"
+        payload["origin"] = f"trust-region:{candidate.origin}:{alpha:.4f}"
         return HarnessGenome.model_validate(payload)
+
+    def _minimum_effective_edit(
+        self,
+        baseline: HarnessGenome,
+        elite: EvolutionCandidate,
+        evidence: EvolutionEvidence,
+        train_cases,
+        baseline_train,
+        baseline_signature,
+    ) -> list[EvolutionCandidate]:
+        """Train-only bisection to cross an argmax behavior boundary with minimal edit size."""
+        assert elite.train is not None
+        if elite.train.objective < baseline_train.objective + self.config.min_train_gain:
+            return []
+        if self._evaluation_signature(elite.train) == baseline_signature:
+            return []
+        if self._blend_genomes(baseline, elite.genome, 1.0) is None:
+            return []
+
+        low = 0.0
+        high = 1.0
+        best: EvolutionCandidate | None = None
+        probes: list[EvolutionCandidate] = []
+        for _ in range(max(1, self.config.trust_region_bisection_steps)):
+            alpha = (low + high) / 2.0
+            blended = self._blend_genomes(baseline, elite.genome, alpha)
+            if blended is None:
+                break
+            probe = self._candidate(
+                blended,
+                f"boundary:{alpha:.4f}:{elite.operator}",
+                evidence,
+                baseline,
+                train_cases,
+            )
+            probes.append(probe)
+            assert probe.train is not None
+            effective = (
+                self._evaluation_signature(probe.train) != baseline_signature
+                and probe.train.objective
+                >= baseline_train.objective + self.config.min_train_gain
+            )
+            if effective:
+                best = probe
+                high = alpha
+            else:
+                low = alpha
+
+        if best is None:
+            return probes
+        # Keep the minimal effective probe plus its nearest tested neighbor. This remains
+        # train-only selection; held-out data has not been touched yet.
+        near = sorted(
+            probes,
+            key=lambda item: abs(float(item.operator.split(":")[1]) - high),
+        )[:2]
+        return list({item.genome.genome_id: item for item in [best, *near]}.values())
 
     def evolve(
         self,
@@ -476,9 +529,18 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                         refined.append(max(pair, key=self._train_rank))
                 candidates.extend(refined)
 
-            # Train-only trust region: shrink promising numerical edits before sealed judging.
             ranked = sorted(candidates, key=self._train_rank, reverse=True)
-            for elite in ranked[: max(1, self.config.trust_region_elites)]:
+            numerical_elites = [
+                item
+                for item in ranked
+                if len(item.genome.specialists) == len(baseline.specialists)
+                and [gene.gene_id for gene in item.genome.specialists]
+                == [gene.gene_id for gene in baseline.specialists]
+                and set(item.genome.skills) == set(baseline.skills)
+            ][: max(1, self.config.trust_region_elites)]
+
+            # Coarse train-only trust-region probes.
+            for elite in numerical_elites:
                 assert elite.train is not None
                 if elite.train.objective <= baseline_train.objective:
                     continue
@@ -496,7 +558,22 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                         )
                     )
 
-        # Search is now frozen. Held-out cases are used only for credit/promotion.
+            # Then bisect the behavior boundary using train only. This is the key protection
+            # against discrete argmax plateaus: take the smallest edit that is measurably useful.
+            for elite in numerical_elites:
+                candidates.extend(
+                    self._minimum_effective_edit(
+                        baseline,
+                        elite,
+                        evidence,
+                        train_cases,
+                        baseline_train,
+                        baseline_signature,
+                    )
+                )
+
+        # The search trajectory is frozen here. Held-out cases have not influenced generation,
+        # ranking, refinement, trust-region scaling or boundary selection.
         operation_limit = baseline_heldout.operations * self.config.max_operation_ratio
         for index, candidate in enumerate(candidates):
             candidate.heldout = self.evaluator.evaluate(candidate.genome, heldout_cases)
@@ -523,8 +600,6 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                 and candidate.heldout.operations
                 <= max(operation_limit, baseline_heldout.operations + 1.0)
             )
-            base_operator = candidate.operator.split(":")[-1]
-            self.mutator.reinforce_operator(candidate.genome, base_operator, train_gain)
 
         eligible = [candidate for candidate in candidates if candidate.accepted]
         pool = self._pareto_frontier(eligible or candidates)
@@ -546,6 +621,7 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         for candidate in self._pareto_frontier(candidates):
             self.archive.add(evidence.cell, candidate)
 
+        # The promoted object is byte-for-byte the object that passed held-out evaluation.
         if promoted:
             HarnessGenomeStore.promote(selected)
 
