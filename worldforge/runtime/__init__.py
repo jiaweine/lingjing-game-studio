@@ -10,6 +10,7 @@ from .selfplay import PopulationSelfPlay
 from .recursive import RecursiveAgentScheduler
 from .policy import WorldForgePolicy, GroupRelativePolicyOptimizer, PolicyGroup
 from .harness_genome import HarnessGenome, HarnessGenomeStore, LinearGate, SpecialistGene
-from .harness_evolution import EvolutionConfig, EvolutionEvidence, TraceReflector
+from .harness_evolution import EvolutionConfig, EvolutionEvidence
+from .harness_reflection import TraceReflector
 from .harness_search import GameEvolutionConfig, GameHarnessMutator, HarnessEvolutionEngine
 from .self_evolving_engine import SelfEvolvingWorldForgeEngine, SelfEvolvingWorldForgeEngine as WorldForgeEngine
