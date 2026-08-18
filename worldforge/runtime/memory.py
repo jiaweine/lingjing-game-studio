@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import json
 import math
 
-from .harness_genome import HarnessGenomeStore
+from .harness_genome import HarnessGenomeStore, lightweight_features
 
 
 @dataclass
@@ -31,7 +31,7 @@ class EpisodicMemory:
         if not target:
             return 0.0
         gene = HarnessGenomeStore.current().memory
-        temperature = max(0.02, gene.similarity_temperature)
+        temperature = max(1e-6, gene.similarity_temperature)
         weighted = 0.0
         mass = 0.0
         records = list(self.records)
@@ -66,19 +66,12 @@ class EpisodicMemory:
 
     @staticmethod
     def signature(state) -> str:
-        representation = HarnessGenomeStore.current().features
+        gene = HarnessGenomeStore.current().memory
+        features = lightweight_features(state, uncertainty=0.0)
         vector = {
-            "hp": state.player_hp / max(1.0, state.player_max_hp),
-            "enemy_hp": state.enemy_hp / max(1.0, state.enemy_max_hp),
-            "energy": state.energy / max(1.0, state.max_energy),
-            "gold": state.gold / representation.scale("gold"),
-            "attack": state.attack / representation.scale("attack"),
-            "armor": state.armor / representation.scale("armor"),
-            "enemy_attack": state.enemy_attack / representation.scale("enemy_attack"),
-            "enemy_variance": state.enemy_variance / representation.scale("enemy_variance"),
-            "threat": state.threat,
-            "combo": state.combo / representation.scale("combo"),
-            "stage": state.stage / representation.scale("stage"),
+            name: features[name]
+            for name in gene.feature_weights
+            if name in features
         }
         return json.dumps(vector, separators=(",", ":"), sort_keys=True)
 
