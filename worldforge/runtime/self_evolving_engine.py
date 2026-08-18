@@ -8,8 +8,8 @@ from worldforge.envs import get_scenario
 from worldforge.models import RunConfig, WorldState
 
 from .engine import WorldForgeEngine as FrozenWorldForgeEngine
-from .harness_evolution import TraceReflector
 from .harness_genome import HarnessGenomeStore
+from .harness_reflection import TraceReflector
 from .harness_search import HarnessEvolutionEngine
 from .plugin import PluginDescriptor
 
