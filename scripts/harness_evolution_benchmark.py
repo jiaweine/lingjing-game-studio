@@ -11,6 +11,8 @@ from worldforge.runtime import (
     HarnessGenomeStore,
 )
 
+BENCHMARK_PROTOCOL = "sealed-heldout-game-harness-2026-08"
+
 
 def run_benchmark() -> dict:
     """Run the sealed train/held-out promotion protocol and return auditable metrics."""
@@ -69,6 +71,7 @@ def run_benchmark() -> dict:
     )
     payload = result.to_dict()
     payload["protocol"] = {
+        "id": BENCHMARK_PROTOCOL,
         "train_seeds": list(config.train_seeds),
         "heldout_seeds": list(config.heldout_seeds),
         "heldout_used_for_search": False,
