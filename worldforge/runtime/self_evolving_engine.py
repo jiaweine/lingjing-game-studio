@@ -14,20 +14,12 @@ from .harness_search import HarnessEvolutionEngine
 from .plugin import PluginDescriptor
 
 
-class _DisabledLegacySkillEvolver:
-    """Compatibility shim: the old rule-based skill patcher is not part of the main path."""
-
-    @staticmethod
-    def attribute(**kwargs):
-        return None
-
-
 class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
     """Product Runtime: frozen execution kernel + self-evolving harness.
 
     The base engine keeps canonical-state ownership, sandboxing, verification, rollback,
-    event integrity and policy optimization. This outer harness owns the evolvable program
-    surface and its independent shadow-arena promotion loop.
+    event integrity and bounded policy optimization. This outer harness owns the evolvable
+    program surface and its independent shadow-arena promotion loop.
     """
 
     def __init__(self, db_path: str | Path, **kwargs) -> None:
@@ -35,9 +27,6 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
         self.harness_path = db_path.with_name("worldforge_harness.json")
         HarnessGenomeStore.configure(self.harness_path)
         super().__init__(db_path, **kwargs)
-
-        self.evolver = _DisabledLegacySkillEvolver()
-        self.plugins.unmount("failure-evolver")
 
         self.harness_evolver = HarnessEvolutionEngine(
             archive_path=db_path.with_name("worldforge_harness_archive.json")
