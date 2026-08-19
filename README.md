@@ -518,7 +518,6 @@ python scripts/harness_evolution_benchmark.py
 |---|---|---|---|
 | [Adaptive Auto-Harness](https://arxiv.org/abs/2606.01770) · [code](https://github.com/A-EVO-Lab/AdaptiveHarness) | **2026 public research + open source** | 把 prompt / tool / skill / memory / orchestration / infrastructure 视为 harness surface；stateful evolution + archive | Genome 覆盖 representation / memory / skill / topology / planner / search / mutation；Frozen Kernel 独立 |
 | [Self-Evolving Agent Harnesses via GSME](https://arxiv.org/abs/2607.13683) | **2026 public research** | proposal-credit separation、WHERE×WHY semantic QD、sealed test | 变成游戏研发病理 archive + deterministic shadow arena + sealed held-out promotion |
-| [ADAS / Automated Design of Agentic Systems](https://openreview.net/forum?id=VbI7wVEy0r) · [code](https://github.com/ShengranHu/ADAS) | **ICLR 2025** | Agent architecture / code-level search | Specialist topology、gate、recombination进入可搜索程序面 |
 | [Promptbreeder](https://proceedings.mlr.press/v235/fernando24a.html) | **ICML 2024** | self-referential mutation | mutation operator logits / sigma / temperature / exploration 自身进入 Genome |
 | [Pi](https://github.com/badlogic/pi-mono) | **open-source engineering baseline** | 小核心、session/tool loop、extensions/skills | 对标 Harness 工程纪律；灵境进一步加入 world-state / verifier / self-evolution |
 | [DeerFlow](https://github.com/bytedance/deer-flow) | **ByteDance open-source engineering baseline** | subagents、memory、sandbox、skills、long-horizon harness | 对标长任务工程能力；灵境重点放在可验证游戏研发状态和 Harness generation |
