@@ -486,7 +486,7 @@ python scripts/harness_evolution_benchmark.py
 | Promoted held-out operations | **23.25** |
 | Winning lineage | **Memory mutation → elite refinement → trust-region minimum edit** |
 
-这组数据的意义是**机制证明，不是通用 SOTA 宣称**。held-out 增益很小，因此 README 不把它包装成“大幅性能提升”；真正重要的是：候选在看不到 held-out 的情况下改变 Harness，随后仍能通过独立 quality / safety / efficiency / bootstrap credit，并产生新的持久化 generation。
+这组数据的意义是**机制证明，不是通用 SOTA 宣称**。held-out 增益很小，真正重要的是：候选在看不到 held-out 的情况下改变 Harness，随后仍能通过独立 quality / safety / efficiency / bootstrap credit，并产生新的持久化 generation。
 
 场景覆盖 Boss 爆发窗口、经济陷阱、玻璃大炮极端 Build、奖励循环漏洞回归。`tests/test_harness_promotion.py` 还会在 pytest 内再跑一条 promotion regression，独立 benchmark 则防止测试进程全局状态造成假绿。
 
