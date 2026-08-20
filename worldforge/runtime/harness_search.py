@@ -119,6 +119,97 @@ class GameHarnessMutator(HarnessMutator):
             if allow_recombine or name != "recombine"
         ]
 
+    @staticmethod
+    def _skill_evidence_alignment(
+        skill,
+        evidence: EvolutionEvidence,
+    ) -> float:
+        return sum(
+            abs(skill.gate.weights.get(feature, 0.0)) * max(0.0, priority)
+            for feature, priority in evidence.feature_priorities.items()
+        )
+
+    def skill_search_plans(
+        self,
+        genome: HarnessGenome,
+        evidence: EvolutionEvidence,
+        *,
+        limit: int,
+    ) -> list[dict[str, str]]:
+        """Train-search coordinates aligned with WHERE × WHY evidence.
+
+        This does not inspect held-out outcomes. It only turns the reflector's feature pressure
+        into deterministic, auditable Skill coordinates so a finite search budget is not spent
+        on unrelated catalog entries by chance.
+        """
+        active = [
+            (skill_id, gene)
+            for skill_id, gene in genome.skills.items()
+            if gene.enabled
+        ]
+        if not active or limit <= 0:
+            return []
+
+        ranked = sorted(
+            active,
+            key=lambda item: (
+                self._skill_evidence_alignment(item[1], evidence),
+                item[0],
+            ),
+            reverse=True,
+        )
+        aligned = [
+            item
+            for item in ranked
+            if self._skill_evidence_alignment(item[1], evidence) > 0.0
+        ] or ranked
+
+        plans: list[dict[str, str]] = []
+        # First touch reliability across the evidence-aligned Skills. Reliability is now the
+        # sole executable Skill-confidence source, so it must be directly searchable.
+        for skill_id, _ in aligned:
+            plans.append({"skill_id": skill_id, "mode": "reliability"})
+            if len(plans) >= limit:
+                return plans
+
+        # Then inspect the strongest action coordinate per aligned Skill.
+        for skill_id, skill in aligned:
+            if not skill.action_bias:
+                continue
+            action = max(
+                skill.action_bias,
+                key=lambda name: (abs(skill.action_bias[name]), name),
+            )
+            plans.append(
+                {"skill_id": skill_id, "mode": "action_bias", "key": action}
+            )
+            if len(plans) >= limit:
+                return plans
+
+        # Finally inspect the gate feature with the strongest evidence-weight overlap.
+        for skill_id, skill in aligned:
+            overlapping = [
+                feature
+                for feature in evidence.feature_priorities
+                if feature in skill.gate.weights
+            ]
+            if not overlapping:
+                continue
+            feature = max(
+                overlapping,
+                key=lambda name: (
+                    abs(skill.gate.weights[name])
+                    * max(0.0, evidence.feature_priorities[name]),
+                    name,
+                ),
+            )
+            plans.append(
+                {"skill_id": skill_id, "mode": "gate_weight", "key": feature}
+            )
+            if len(plans) >= limit:
+                return plans
+        return plans
+
     def propose(
         self,
         parent: HarnessGenome,
@@ -127,6 +218,7 @@ class GameHarnessMutator(HarnessMutator):
         peers: list[HarnessGenome] | None = None,
         direction: float | None = None,
         operator: str | None = None,
+        skill_plan: dict[str, str] | None = None,
     ) -> tuple[HarnessGenome, str]:
         peers = peers or []
         available = self.available_operators(parent, allow_recombine=bool(peers))
@@ -147,7 +239,12 @@ class GameHarnessMutator(HarnessMutator):
         elif operator == "gate_mutation":
             self._gate_mutation(child, evidence, sign)
         elif operator == "skill_mutation":
-            detail = self._skill_mutation(child, evidence, sign)
+            detail = self._skill_mutation(
+                child,
+                evidence,
+                sign,
+                plan=skill_plan,
+            )
             child.origin = f"skill_mutation:{detail}"
         elif operator == "memory_mutation":
             self._memory_mutation(child, evidence, sign)
@@ -173,6 +270,7 @@ class GameHarnessMutator(HarnessMutator):
         peers: list[HarnessGenome] | None = None,
         sigma_scale: float = 1.0,
         operator: str | None = None,
+        skill_plan: dict[str, str] | None = None,
     ) -> tuple[tuple[HarnessGenome, str], tuple[HarnessGenome, str]]:
         """True antithetic pair: same sampled edit plan, opposite numerical direction."""
         scaled = parent.model_copy(deep=True)
@@ -187,6 +285,7 @@ class GameHarnessMutator(HarnessMutator):
             peers=peers,
             direction=1.0,
             operator=operator,
+            skill_plan=skill_plan,
         )
         end_state = self.rng.getstate()
         self.rng.setstate(state)
@@ -196,6 +295,7 @@ class GameHarnessMutator(HarnessMutator):
             peers=peers,
             direction=-1.0,
             operator=operator,
+            skill_plan=skill_plan,
         )
         self.rng.setstate(end_state)
         return plus, minus
@@ -282,6 +382,8 @@ class GameHarnessMutator(HarnessMutator):
         genome: HarnessGenome,
         evidence: EvolutionEvidence,
         sign: float,
+        *,
+        plan: dict[str, str] | None = None,
     ) -> str:
         active = [
             (skill_id, gene)
@@ -291,29 +393,46 @@ class GameHarnessMutator(HarnessMutator):
         if not active:
             return "noop"
 
-        skill_id, skill = self.rng.choice(active)
-        sigma = genome.mutation_policy.sigma
-        modes = ["reliability", "gate_weight"]
-        if skill.action_bias:
-            modes.append("action_bias")
-        mode = self.rng.choice(modes)
+        active_map = dict(active)
+        if plan is not None and plan.get("skill_id") in active_map:
+            skill_id = plan["skill_id"]
+            skill = active_map[skill_id]
+            mode = plan.get("mode", "reliability")
+        else:
+            skill_id, skill = self.rng.choice(active)
+            modes = ["reliability", "gate_weight"]
+            if skill.action_bias:
+                modes.append("action_bias")
+            mode = self.rng.choice(modes)
 
+        sigma = genome.mutation_policy.sigma
         if mode == "reliability":
             value = skill.reliability
             skill.reliability = max(
                 .05,
                 min(2.0, value + sign * max(.1, abs(value)) * sigma),
             )
-        elif mode == "action_bias":
-            action = self.rng.choice(list(skill.action_bias))
+        elif mode == "action_bias" and skill.action_bias:
+            action = (
+                plan.get("key")
+                if plan is not None and plan.get("key") in skill.action_bias
+                else self.rng.choice(list(skill.action_bias))
+            )
             value = skill.action_bias[action]
             skill.action_bias[action] = value + sign * max(.1, abs(value)) * sigma
         else:
-            feature = self._sample_evidence_feature(evidence)
+            mode = "gate_weight"
+            feature = (
+                plan.get("key")
+                if plan is not None and plan.get("key")
+                else self._sample_evidence_feature(evidence)
+            )
             skill.gate.weights[feature] = (
                 skill.gate.weights.get(feature, 0.0) + sign * sigma
             )
-        return f"{mode}:{skill_id}"
+        key = plan.get("key") if plan is not None else None
+        suffix = f":{key}" if key else ""
+        return f"{mode}:{skill_id}{suffix}"
 
     def _memory_mutation(
         self,
@@ -551,42 +670,45 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         candidates: list[EvolutionCandidate] = []
         population = max(2, self.config.population)
         pair_count = int(math.ceil(population / 2))
-        stratified_operators = (
-            self.mutator.available_operators(
+        search_rounds = 1 if population < 4 else max(1, self.config.plateau_rounds + 1)
+        pair_budget = pair_count * search_rounds
+
+        search_plan: list[tuple[str, dict[str, str] | None]] = []
+        if population >= 4:
+            available = self.mutator.available_operators(
                 baseline,
                 allow_recombine=bool(archive_peers),
             )
-            if population >= 4
-            else []
-        )
-        coverage_rounds = (
-            int(math.ceil(len(stratified_operators) / pair_count))
-            if stratified_operators
-            else 1
-        )
-        search_rounds = (
-            1
-            if population < 4
-            else max(coverage_rounds, max(1, self.config.plateau_rounds + 1))
-        )
+            non_skill = [name for name in available if name != "skill_mutation"]
+            skill_budget = max(1, pair_budget - len(non_skill))
+            search_plan.extend(
+                ("skill_mutation", plan)
+                for plan in self.mutator.skill_search_plans(
+                    baseline,
+                    evidence,
+                    limit=skill_budget,
+                )
+            )
+            search_plan.extend((name, None) for name in non_skill)
+            search_plan = search_plan[:pair_budget]
 
         sigma_scale = 1.0
-        coverage_index = 0
-        covered_operators: set[str] = set()
+        plan_index = 0
         for plateau_round in range(search_rounds):
             round_candidates: list[EvolutionCandidate] = []
             for _ in range(pair_count):
                 forced_operator = None
-                if coverage_index < len(stratified_operators):
-                    forced_operator = stratified_operators[coverage_index]
-                    coverage_index += 1
-                    covered_operators.add(forced_operator)
+                skill_plan = None
+                if plan_index < len(search_plan):
+                    forced_operator, skill_plan = search_plan[plan_index]
+                    plan_index += 1
                 plus, minus = self.mutator.propose_pair(
                     baseline,
                     evidence,
                     peers=archive_peers,
                     sigma_scale=sigma_scale,
                     operator=forced_operator,
+                    skill_plan=skill_plan,
                 )
                 for genome, operator in (plus, minus):
                     round_candidates.append(
@@ -604,13 +726,15 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                 for candidate in round_candidates
                 if candidate.train is not None
             )
-            coverage_complete = set(stratified_operators) <= covered_operators
-            if coverage_complete and informative >= max(2, len(round_candidates) // 3):
+            plan_complete = plan_index >= len(search_plan)
+            informative_threshold = max(2, len(round_candidates) // 3)
+            if plan_complete and informative >= informative_threshold:
                 break
-            sigma_scale = min(
-                self.config.max_sigma / max(.01, baseline.mutation_policy.sigma),
-                sigma_scale * self.config.plateau_sigma_growth,
-            )
+            if informative < informative_threshold:
+                sigma_scale = min(
+                    self.config.max_sigma / max(.01, baseline.mutation_policy.sigma),
+                    sigma_scale * self.config.plateau_sigma_growth,
+                )
 
         if population >= 4:
             for round_index in range(max(0, self.config.refinement_rounds)):
