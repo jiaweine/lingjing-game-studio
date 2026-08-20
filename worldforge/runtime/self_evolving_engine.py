@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
 
 from worldforge.envs import get_scenario
@@ -11,6 +12,7 @@ from .engine import WorldForgeEngine as FrozenWorldForgeEngine
 from .harness_genome import HarnessGenome, HarnessGenomeStore
 from .harness_reflection import TraceReflector
 from .harness_search import HarnessEvolutionEngine
+from .memory import EpisodicMemory
 from .plugin import PluginDescriptor
 
 
@@ -68,12 +70,34 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
         )
 
     async def run(self, config: RunConfig, **kwargs):
-        # A worker refreshes durable state only at the task boundary, then pins that exact
-        # generation for the whole canonical trajectory. Another worker may promote meanwhile,
-        # but this task never changes phenotype halfway through execution.
-        baseline = HarnessGenomeStore.snapshot()
+        # Managed callers may capture the durable baseline before execution so audit
+        # provenance and the canonical trajectory refer to the exact same Harness.
+        # Direct callers still refresh durable state at this task boundary.
+        provided_baseline = kwargs.pop("_harness_baseline", None)
+        baseline = (
+            provided_baseline.model_copy(deep=True)
+            if provided_baseline is not None
+            else HarnessGenomeStore.snapshot()
+        )
         self._mount_harness_genome(baseline)
-        with HarnessGenomeStore.use(baseline):
+
+        # Non-adaptive/product-safe runs keep per-run memory learning but must not
+        # mutate the shared EpisodicMemory used by later sessions. Explicit session
+        # metadata can override this independently from Harness/policy evolution.
+        session_meta = kwargs.get("session_meta") or {}
+        commit_shared_memory = bool(
+            session_meta.get("commit_shared_memory", config.enable_evolution)
+        )
+        memory_scope = (
+            nullcontext()
+            if commit_shared_memory
+            else EpisodicMemory.suppress_commits_for(self.memory)
+        )
+
+        # One exact Harness generation remains pinned for the canonical trajectory.
+        # Another worker may promote concurrently, but this task's phenotype cannot
+        # change halfway through execution.
+        with HarnessGenomeStore.use(baseline), memory_scope:
             summary = await super().run(config, **kwargs)
             if not config.enable_evolution:
                 return summary
