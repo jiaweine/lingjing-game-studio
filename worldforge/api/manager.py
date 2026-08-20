@@ -9,7 +9,14 @@ from worldforge.runtime import WorldForgeEngine
 
 
 class RunManager:
-    def __init__(self, data_dir: str | Path, *, summary_limit: int = 256) -> None:
+    def __init__(
+        self,
+        data_dir: str | Path,
+        *,
+        summary_limit: int = 256,
+        max_subscribers_per_run: int = 64,
+        max_subscribers_total: int = 2048,
+    ) -> None:
         data_dir = Path(data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
         self.engine = WorldForgeEngine(data_dir / "worldforge.db")
@@ -17,6 +24,12 @@ class RunManager:
         self.summaries: OrderedDict[str, object] = OrderedDict()
         self.queues: dict[str, list[asyncio.Queue]] = {}
         self.summary_limit = max(1, int(summary_limit))
+        self.max_subscribers_per_run = max(1, int(max_subscribers_per_run))
+        self.max_subscribers_total = max(
+            self.max_subscribers_per_run,
+            int(max_subscribers_total),
+        )
+        self._subscriber_count = 0
 
     async def start(
         self,
@@ -123,8 +136,17 @@ class RunManager:
         return {"session_id": session_id, "status": "cancelled"}
 
     def subscribe(self, session_id):
+        queues = self.queues.setdefault(session_id, [])
+        if (
+            len(queues) >= self.max_subscribers_per_run
+            or self._subscriber_count >= self.max_subscribers_total
+        ):
+            if not queues:
+                self.queues.pop(session_id, None)
+            raise RuntimeError("too many run subscribers")
         queue = asyncio.Queue(maxsize=500)
-        self.queues.setdefault(session_id, []).append(queue)
+        queues.append(queue)
+        self._subscriber_count += 1
         return queue
 
     def unsubscribe(self, session_id, queue):
@@ -133,5 +155,10 @@ class RunManager:
             return
         if queue in queues:
             queues.remove(queue)
+            self._subscriber_count = max(0, self._subscriber_count - 1)
         if not queues:
             self.queues.pop(session_id, None)
+
+    @property
+    def subscriber_count(self) -> int:
+        return self._subscriber_count
