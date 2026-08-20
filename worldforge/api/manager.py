@@ -12,6 +12,18 @@ from worldforge.runtime.provenance import build_runtime_provenance
 from worldforge.runtime.run_report import build_run_report
 
 
+def resolve_managed_run_config(config: RunConfig) -> RunConfig:
+    """Apply product-safe defaults without changing research/runtime defaults.
+
+    `RunConfig` intentionally keeps evolution enabled by default for direct runtime and
+    benchmark callers. Managed/API runs are more conservative: if a client omitted the
+    field entirely, evolution is disabled. An explicit true or false is always honored.
+    """
+    if "enable_evolution" in config.model_fields_set:
+        return config
+    return config.model_copy(update={"enable_evolution": False})
+
+
 class RunManager:
     def __init__(self, data_dir: str | Path) -> None:
         data_dir = Path(data_dir)
@@ -29,6 +41,7 @@ class RunManager:
         user_id: str | None = None,
     ) -> str:
         import uuid
+        config = resolve_managed_run_config(config)
         session_id = f"wf-{uuid.uuid4().hex[:10]}"
 
         async def sink(event: RuntimeEvent) -> None:
