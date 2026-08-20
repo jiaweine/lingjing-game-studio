@@ -679,6 +679,8 @@ async def asset_upload(
     suffix = Path(filename).suffix[:16]
     max_bytes = settings.max_upload_mb * 1024 * 1024
     size = 0
+    object_key = ""
+    frame_keys: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="lingjing-upload-") as tmpdir:
         tmp = Path(tmpdir) / f"upload{suffix}"
@@ -716,15 +718,15 @@ async def asset_upload(
         object_key = (
             f"{principal.workspace_id}/assets/{asset_uuid}/source{suffix}"
         )
-        await asyncio.to_thread(storage.put_file, object_key, tmp, mime)
-        frame_keys = []
-        for index, frame in enumerate(frame_paths):
-            key = (
-                f"{principal.workspace_id}/assets/{asset_uuid}/frames/"
-                f"{index:02d}.jpg"
-            )
-            await asyncio.to_thread(storage.put_file, key, frame, "image/jpeg")
-            frame_keys.append(key)
+        frame_keys = [
+            f"{principal.workspace_id}/assets/{asset_uuid}/frames/{index:02d}.jpg"
+            for index, _ in enumerate(frame_paths)
+        ]
+        bundle = [(object_key, tmp, mime)] + [
+            (key, frame, "image/jpeg")
+            for key, frame in zip(frame_keys, frame_paths)
+        ]
+        await asyncio.to_thread(storage.put_files_atomic, bundle)
         if frame_keys:
             meta["keyframes"] = frame_keys
 
@@ -743,6 +745,8 @@ async def asset_upload(
         )
     except Exception as exc:
         for key in [object_key, *frame_keys]:
+            if not key:
+                continue
             try:
                 await asyncio.to_thread(storage.delete, key)
             except Exception:
@@ -1394,7 +1398,7 @@ async def cancel_run(
     session_id: str,
     principal: Principal = Depends(require_editor),
 ):
-    _assert_run_access(session_id, principal)
+    await asyncio.to_thread(_assert_run_access, session_id, principal)
     return await manager.cancel(session_id)
 
 
