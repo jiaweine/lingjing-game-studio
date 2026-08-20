@@ -7,6 +7,7 @@ from pathlib import Path
 from worldforge.envs import get_scenario
 from worldforge.models import RunConfig, RuntimeEvent
 from worldforge.runtime import WorldForgeEngine
+from worldforge.runtime.engine import WorldForgeEngine as FrozenWorldForgeEngine
 from worldforge.runtime.harness_genome import HarnessGenomeStore
 from worldforge.runtime.provenance import build_runtime_provenance
 from worldforge.runtime.run_report import build_run_report
@@ -62,7 +63,8 @@ class RunManager:
                 scenario = get_scenario(config.scenario_id)
                 harness_baseline = HarnessGenomeStore.snapshot()
                 session_meta["provenance"] = build_runtime_provenance(
-                    kernel=self.engine,
+                    kernel=FrozenWorldForgeEngine,
+                    runtime_wrapper=self.engine,
                     policy=self.engine.policy_model,
                     harness_genome=harness_baseline,
                     skill_bank=self.engine.skills,
