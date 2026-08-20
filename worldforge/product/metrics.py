@@ -88,11 +88,15 @@ def calculate_product_metrics(store, *, workspace_id: str) -> dict[str, Any]:
         .subquery()
     )
 
-    failed_or_cancelled_tasks = select(jobs.c.conversation_id).where(
+    failed_or_cancelled_tasks = select(
+        jobs.c.conversation_id.label("conversation_id")
+    ).where(
         jobs.c.workspace_id == workspace_id,
         jobs.c.status.in_(("failed", "cancelled")),
     )
-    explicit_intervention_tasks = select(events.c.conversation_id).where(
+    explicit_intervention_tasks = select(
+        events.c.conversation_id.label("conversation_id")
+    ).where(
         events.c.workspace_id == workspace_id,
         events.c.conversation_id.is_not(None),
         events.c.name.in_(("task.retry", "task.handoff")),
@@ -101,6 +105,11 @@ def calculate_product_metrics(store, *, workspace_id: str) -> dict[str, Any]:
         failed_or_cancelled_tasks,
         explicit_intervention_tasks,
     ).subquery()
+    executed_task_ids = (
+        select(distinct(jobs.c.conversation_id).label("conversation_id"))
+        .where(jobs.c.workspace_id == workspace_id)
+        .subquery()
+    )
 
     with store.engine.connect() as connection:
         task_count = int(
@@ -131,9 +140,7 @@ def calculate_product_metrics(store, *, workspace_id: str) -> dict[str, Any]:
         task_ids_with_jobs = int(
             _scalar(
                 connection,
-                select(func.count(distinct(jobs.c.conversation_id))).where(
-                    jobs.c.workspace_id == workspace_id
-                ),
+                select(func.count()).select_from(executed_task_ids),
             )
         )
         first_attempt_completed = int(
@@ -215,7 +222,14 @@ def calculate_product_metrics(store, *, workspace_id: str) -> dict[str, Any]:
         manual_intervention_count = int(
             _scalar(
                 connection,
-                select(func.count()).select_from(manual_intervention_tasks),
+                select(func.count())
+                .select_from(
+                    manual_intervention_tasks.join(
+                        executed_task_ids,
+                        manual_intervention_tasks.c.conversation_id
+                        == executed_task_ids.c.conversation_id,
+                    )
+                ),
             )
         )
 
