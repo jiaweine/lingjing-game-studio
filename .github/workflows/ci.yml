@@ -15,6 +15,36 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+      - name: Dependency manifest consistency
+        run: |
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          def requirements(path: str, *, include_refs: bool = False) -> list[str]:
+              rows = []
+              for raw in Path(path).read_text(encoding='utf-8').splitlines():
+                  row = raw.strip()
+                  if not row or row.startswith('#'):
+                      continue
+                  if row.startswith('-r '):
+                      if include_refs:
+                          rows.append(row)
+                      continue
+                  rows.append(row)
+              return rows
+
+          project = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))
+          runtime = requirements('requirements.txt')
+          development = requirements('requirements-dev.txt')
+          expected_runtime = project['project']['dependencies']
+          expected_development = project['project']['optional-dependencies']['dev']
+
+          assert runtime == expected_runtime, (runtime, expected_runtime)
+          assert development == expected_development, (development, expected_development)
+          assert requirements('requirements-dev.txt', include_refs=True)[0] == '-r requirements.txt'
+          print(f'dependency-manifests-ok runtime={len(runtime)} dev={len(development)}')
+          PY
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Python compile check
