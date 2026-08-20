@@ -25,5 +25,6 @@ jobs:
           tests/test_production_config.py
           tests/test_product_metrics.py
           tests/test_worker_queue.py
+          tests/test_migrations.py
       - name: Bounded API concurrency smoke
         run: python scripts/stress_smoke.py
