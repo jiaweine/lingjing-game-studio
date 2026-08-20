@@ -4,7 +4,7 @@
 
 ### Self-Evolving Game R&D Agent Harness Runtime
 
-**不是把模型接进一个聊天框，而是把游戏研发任务交给一个会执行、会验证、会恢复，也会改进自己工作方式的 Harness。**
+**不是把模型接进一个聊天框，而是把游戏研发任务放进一个有状态、可验证、可恢复，并能在独立门禁下改进 Harness 的执行系统。**
 
 `STATEFUL` · `SELF-EVOLVING HARNESS` · `COUNTERFACTUAL` · `SEALED EVAL` · `RECOVERABLE`
 
@@ -14,17 +14,19 @@
 
 ![灵境游戏研发执行工作台总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png)
 
+> **当前产品边界（2026-08）**：仓库内 `canonical execution / rollback / verifier / counterfactual` 针对内置可验证环境 **BalanceLab**。用户上传的图片、视频、音频、日志和配置不会自动变成“可执行的真实游戏环境”。工作台对用户素材形成事实性内容结论时依赖已配置、且能力匹配的推理 Provider；`demo` 只用于产品流程与内部 Harness 自检，内部 BalanceLab 结果不会被当作用户素材的“同条件复现”或证据。真正对某个游戏版本做自动操作与同条件复现，需要额外接入该游戏的可执行 adapter / telemetry / test environment。
+
 ---
 
 ## Product Thesis · 从“调用 Agent”变成“拥有一个可进化的研发执行系统”
 
-> **目标 → 素材 → 状态 → Harness phenotype → Agent 决策 → clone 试演 → canonical 执行 → Verifier → 证据 → 交付 → Harness evolution**
+> **目标 → 素材 / 可执行状态 → Harness phenotype → Agent 决策 → clone 试演 → canonical 执行 → Verifier → 证据 → 交付 → Harness evolution**
 
 | CONTROL | TRUST | LIFECYCLE | EVOLUTION |
 |---|---|---|---|
-| **执行可控**：任务可停止、重试、回滚，canonical state 只有 Runtime 能推进 | **结论可核验**：执行、发现、证据、Verifier 与结果保持同一事件链 | **任务可治理**：身份、协作、搜索、归档、审批删除、反馈门禁持久化 | **Harness 可进化**：调度、专家结构、Skill、Memory、搜索与融合策略都进入 Genome，并由 sealed held-out gate 决定是否晋升 |
+| **执行可控**：产品任务可停止、重试；BalanceLab Runtime 支持 checkpoint / rollback / replan，canonical state 只有 Runtime 能推进 | **结论有边界**：素材索引、任务事件、推理结果与人工反馈可追踪；内部 demo 自检不冒充用户证据 | **任务可治理**：身份、协作、搜索、归档、审批删除、反馈门禁持久化 | **Harness 可进化**：调度、专家结构、Skill、Memory、搜索与融合策略进入 Genome，并由 sealed held-out gate 决定是否晋升 |
 
-灵境把“模型能力”与“Agent Harness 能力”分开：模型可以替换；**任务状态所有权、工具循环、上下文、恢复、验证、Harness 进化与代际谱系**属于 Runtime。
+灵境把“模型能力”与“Agent Harness 能力”分开：模型可以替换；**任务状态所有权、工具循环、上下文、恢复、验证、Harness 进化与代际谱系**属于 Runtime。对于用户上传素材，模型/Provider 负责语义理解；Runtime 不会因为任务被分类成“战斗/数值/回归/NPC”就凭空生成事实判断。
 
 ---
 
@@ -32,7 +34,7 @@
 
 WorldForge 现在不是“固定 Planner + 若干手写 Specialist”。产品入口是 `SelfEvolvingWorldForgeEngine`：外层 Harness 可以进化自己的可执行程序面，内层 Frozen Kernel 负责不可被候选篡改的状态、安全、验证和晋升协议。
 
-> **核心边界：Harness 可以改变“怎么工作”，但不能改变“谁拥有真实状态、什么算安全、谁给候选打分、什么条件允许上线”。**
+> **核心边界：Harness 可以改变“怎么工作”，但不能改变“谁拥有 canonical state、什么算安全、谁给候选打分、什么条件允许上线”。当前仓库里的 canonical environment 是 BalanceLab，不等同于任意用户游戏进程。**
 
 ### 01 · Architecture at a glance
 
@@ -104,7 +106,7 @@ flowchart TB
 | Planner fusion / epistemic action coefficients | **Evolvable** | 不再把 `1.65`、`2.2`、`scout +1.15` 写进 Runtime 逻辑 |
 | Counterfactual width / horizon / rollouts / risk utility | **Evolvable** | 调用方只给资源上限，Genome 决定实际预算 |
 | Mutation operator policy | **Evolvable** | 连“用哪种变异更有效”也能随代际改变 |
-| Canonical state ownership | **Frozen** | 候选 Harness 永远不能直接写真实世界状态 |
+| Canonical state ownership | **Frozen** | 候选 Harness 永远不能直接写 canonical state |
 | Sandbox / invariant verification / rollback | **Frozen** | 不能通过“把安全规则改松”获得高分 |
 | Train / held-out split 与 credit protocol | **Frozen** | held-out 不参与候选生成与 refinement |
 | Atomic promotion / lineage | **Frozen** | 只有被独立评估的同一 Genome 对象才能晋升 |
@@ -166,7 +168,7 @@ flowchart LR
 
 ## 工作台 · Real Product Surface
 
-下面 8 张图全部来自**真实浏览器产品状态**，不是生成图。README Gallery 会从运行中的产品重新采集 PNG，发布到稳定 Release 资产，然后再次用 Chromium 打开 GitHub 仓库页验证像素实际加载。
+下面 8 张图来自浏览器产品状态。README Gallery 会从运行中的产品采集 PNG，发布到稳定 Release 资产，并在 CI 中检查 README 资源可访问性。
 
 | **01 · 身份入口** | **02 · 新任务** |
 |---|---|
@@ -174,15 +176,22 @@ flowchart LR
 
 | **03 · 素材输入** | **04 · 执行中** |
 |---|---|
-| 图片、视频、音频、日志、配置和文档进入同一个任务上下文。<br><br>![多模态素材上传](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/upload.png) | 真实进度持续进入任务轨迹，需要时可以停止。<br><br>![任务执行状态](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/task-running.png) |
+| 图片、视频、音频、日志、配置和文档进入同一个任务上下文。<br><br>![多模态素材上传](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/upload.png) | 产品任务进度持续进入任务事件轨迹，需要时可以停止。<br><br>![任务执行状态](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/task-running.png) |
 
 | **05 · 任务结果** | **06 · 证据核验** |
 |---|---|
-| 结论、后续动作、结构化交付和协作留在同一个工作台。<br><br>![任务结果工作台](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/workspace.png) | 每个关键结论都能回到截图、关键帧、日志或复核来源。<br><br>![证据核验](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/evidence.png) |
+| 推理结果、后续动作、结构化交付和协作留在同一个工作台；无可用 Provider 时会明确返回“证据不足”，而不是生成场景化事实。<br><br>![任务结果工作台](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/workspace.png) | 结果保留素材索引与可用证据入口；只有实际用户素材能计入用户证据，内部 BalanceLab demo 自检不会被伪装成“同条件复现”。<br><br>![证据核验](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/evidence.png) |
 
 | **07 · 持续上下文** | **08 · 产品总览** |
 |---|---|
 | 后续追问继承当前任务已有素材，不把上一轮上下文丢掉。<br><br>![多模态任务上下文](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/multimodal.png) | 控制、证据、交付与协作集中在同一个任务空间。<br><br>![产品总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png) |
+
+### Inference / Demo boundary
+
+- `auto`：只会选择**当前已配置且能力匹配**的 Provider；没有可用 Provider 时不生成具体游戏事实结论。
+- `demo`：不是一个伪装成模型的 inference provider。它可以运行内部 BalanceLab Harness 自检，但返回会标记 `scope=internal_balance_lab`、`user_evidence=false`，不会进入用户证据，也不会因为一次产品任务的人工反馈直接触发 Harness evolution。
+- 图片/视频/音频是否能被真正理解取决于所选 Provider 的 multimodal / audio 能力；文本文件可通过提取后的文本上下文进入文本 Provider。
+- 如果要声称“真实游戏同条件复现”，必须接入该游戏的可执行测试环境；仅有录像、截图或日志不等于自动复现。
 
 ---
 
@@ -315,7 +324,7 @@ N_G(s)&=\mathrm{clip}(b_N+u\,k_N,1,N_{\max})
 \end{aligned}
 ```
 
-调用方只提供硬资源上限 $W_{\max},H_{\max},N_{\max}$；实际搜索预算由 Genome 按当前 uncertainty / threat 分配。
+调用方只提供硬资源上限 $W_{\max},H_{\max},N_{\max}$；实际搜索预算由 Genome 按当前 uncertainty / threat 分配。API 的 `RunConfig` 另外有请求级硬上限，避免单个请求把步数无限放大。
 
 ### 10 · Risk-adjusted branch utility
 
@@ -469,7 +478,7 @@ python scripts/harness_evolution_benchmark.py
 
 它从干净进程、bootstrap Genome 开始，对 4 个 BalanceLab 研发场景使用独立 train / held-out seeds。held-out **不参与候选生成**；只有最后 promotion credit 才能看到。
 
-当前 `sealed-heldout-game-harness-2026-08` 最终 CI 原始日志对应的可复现实验结果：
+当前 `sealed-heldout-game-harness-2026-08` 记录的仓库基准结果：
 
 | Metric | Result |
 |---|---:|
@@ -486,9 +495,9 @@ python scripts/harness_evolution_benchmark.py
 | Promoted held-out operations | **23.25** |
 | Winning lineage | **Gate mutation → minimum-effective boundary at α = 0.6406** |
 
-这组数据的意义是**机制证明，不是通用 SOTA 宣称**。held-out 增益很小，真正重要的是：候选在看不到 held-out 的情况下改变 Harness，随后仍能通过独立 quality / safety / efficiency / bootstrap credit，并产生新的持久化 generation。
+这组数据的意义是**仓库内 BalanceLab 机制证明，不是外部游戏产品成绩，也不是通用 SOTA 宣称**。held-out 增益很小，真正重要的是：候选在看不到 held-out 的情况下改变 Harness，随后仍能通过独立 quality / safety / efficiency / bootstrap credit，并产生新的持久化 generation。
 
-场景覆盖 Boss 爆发窗口、经济陷阱、玻璃大炮极端 Build、奖励循环漏洞回归。`tests/test_harness_promotion.py` 还会在 pytest 内再跑一条 promotion regression，独立 benchmark 则防止测试进程全局状态造成假绿。
+场景覆盖 Boss 爆发窗口、经济陷阱、玻璃大炮极端 Build、奖励循环漏洞回归。`tests/test_harness_promotion.py` 会在 pytest 内再跑 promotion regression，独立 benchmark 则用于隔离测试进程全局状态。
 
 ---
 
@@ -510,24 +519,24 @@ python scripts/harness_evolution_benchmark.py
 ---
 
 <details>
-<summary><strong>Research provenance · 2026 最新研究、顶会底座与工程基线</strong></summary>
+<summary><strong>Research provenance · verified public references (checked 2026-08-21)</strong></summary>
 
-我们没有逐仓库复制代码，而是把公开方法中适合游戏研发 Harness 的机制复现、组合并重新约束。研究来源和实际实现边界如下。
+这些链接用于说明公开研究/工程中的相关机制；README 不声称逐仓库复制其实现。外部引用本身与灵境的代码正确性、benchmark 结果相互独立。
 
-| Source | Status | 我们吸收的机制 | 灵境的垂直改造 |
+| Source | Status | 相关机制 | 灵境中的对应方向 |
 |---|---|---|---|
-| [Adaptive Auto-Harness](https://arxiv.org/abs/2606.01770) · [code](https://github.com/A-EVO-Lab/AdaptiveHarness) | **2026 public research + open source** | 把 prompt / tool / skill / memory / orchestration / infrastructure 视为 harness surface；stateful evolution + archive | Genome 覆盖 representation / memory / skill / topology / planner / search / mutation；Frozen Kernel 独立 |
-| [Self-Evolving Agent Harnesses via GSME](https://arxiv.org/abs/2607.13683) | **2026 public research** | proposal-credit separation、WHERE×WHY semantic QD、sealed test | 变成游戏研发病理 archive + deterministic shadow arena + sealed held-out promotion |
-| [Promptbreeder](https://proceedings.mlr.press/v235/fernando24a.html) | **ICML 2024** | self-referential mutation | mutation operator logits / sigma / temperature / exploration 自身进入 Genome |
-| [Pi](https://github.com/badlogic/pi-mono) | **open-source engineering baseline** | 小核心、session/tool loop、extensions/skills | 对标 Harness 工程纪律；灵境进一步加入 world-state / verifier / self-evolution |
-| [DeerFlow](https://github.com/bytedance/deer-flow) | **ByteDance open-source engineering baseline** | subagents、memory、sandbox、skills、long-horizon harness | 对标长任务工程能力；灵境重点放在可验证游戏研发状态和 Harness generation |
-| [DeepSeek Agent ecosystem](https://github.com/deepseek-ai/awesome-deepseek-agent) | **DeepSeek official integration curation** | DeepSeek 模型进入多种 Agent / coding harness 的生态方式 | 作为模型生态兼容性参考；**不把第三方 `deepseek-harness` 冒充 DeepSeek 官方统一 Runtime** |
+| [Adaptive Auto-Harness](https://arxiv.org/abs/2606.01770) · [code](https://github.com/A-EVO-Lab/AdaptiveHarness) | **2026 public research + open source** | open-ended task streams、stateful evolution、harness routing / adaptation | Genome / archive / stateful evolution 的研究参考 |
+| [Self-Evolving Agent Harnesses via Gated Semantic Quality-Diversity](https://arxiv.org/abs/2607.13683) | **2026 public research** | proposal-credit separation、WHERE×WHY categorical QD、sealed test | pathology archive + sealed held-out promotion 的研究参考 |
+| [Promptbreeder](https://proceedings.mlr.press/v235/fernando24a.html) | **ICML 2024** | self-referential prompt mutation | mutation policy 自身获得 credit 的研究参考 |
+| [Pi](https://github.com/badlogic/pi-mono) | **open-source engineering baseline** | minimal coding harness、sessions、skills / extensions | Harness 工程纪律参考；不是灵境的上游代码 |
+| [DeerFlow](https://github.com/bytedance/deer-flow) | **ByteDance open-source engineering baseline** | subagents、memory、sandbox、skills、long-horizon harness | 长任务 Harness 工程能力参考；不是灵境 benchmark 对手 |
+| [Awesome DeepSeek Agent](https://github.com/deepseek-ai/awesome-deepseek-agent) | **DeepSeek organization curated integration guides** | DeepSeek 模型在 Agent / coding harness 中的接入方式 | 模型生态兼容性参考；不把第三方 Harness 冒充 DeepSeek 官方统一 Runtime |
 
-当前算法组合可以概括为：
+当前仓库算法组合可以概括为：
 
 > **Evidence-linked Genome Search + Antithetic Adaptive ES + Behavior Plateau Escalation + Stable-Elite Refinement + Minimum Effective Edit + Semantic Pareto-QD + Sealed Held-out Promotion**
 
-其中后四项的组合与游戏 QA evaluator / finding-safety separation 是灵境为了垂直场景新增的实现设计。
+这是对仓库实现的组合性描述，不代表上述论文作者为该组合背书，也不代表灵境复现了它们的全部实验结论。
 
 </details>
 
@@ -553,6 +562,7 @@ python scripts/harness_evolution_benchmark.py
 | Genome-budgeted counterfactual search | `worldforge/runtime/counterfactual.py` |
 | Frozen invariant / finding verifier | `worldforge/runtime/verifier.py` |
 | Promotion regression | `tests/test_harness_promotion.py` |
+| Stress / hallucination regressions | `tests/test_stress_hardening.py` |
 | Standalone sealed benchmark | `scripts/harness_evolution_benchmark.py` |
 
 </details>
@@ -561,20 +571,24 @@ python scripts/harness_evolution_benchmark.py
 
 ## Multimodal R&D Context
 
-任务可以持续携带图片、视频、音频、日志、配置与文档。素材不是一次性附件：资产、证据、消息、任务事件和反馈都进入 workspace 生命周期，后续追问继续继承同一个研发上下文。
+任务可以持续携带图片、视频、音频、日志、配置与文档。素材不是一次性附件：资产、消息、任务事件和反馈都进入 workspace 生命周期，后续追问继续继承同一个研发上下文。媒体文件会做格式探测；视频会提取关键帧；真正的语义理解仍取决于所配置 Provider 的能力。
 
 ## 适合的工作
 
-- 战斗与 Boss 机制复现、极端 Build 风险检查；
-- 经济、成长、掉落与奖励循环异常分析；
+- 战斗 / Boss 录像、截图、日志的证据整理、分析与复现计划；
+- 经济、成长、掉落、奖励循环等数值问题的证据分析与验证计划；
 - 截图 / 视频 / 日志 / 配置的跨模态证据汇总；
-- 长任务执行、停止、重试、rollback / replan；
-- 结构化复现卡、风险清单、回归清单和 evidence pack；
-- 让 Harness 从真实失败轨迹中搜索更合适的调度、Skill、Memory 与反事实策略。
+- 产品任务的停止、重试、归档、协作、反馈与审批删除；
+- BalanceLab 内可验证 Runtime 的 counterfactual、rollback / replan、Verifier 与 Harness evolution；
+- 结构化风险清单、回归清单和 evidence pack。
+
+如果目标是“系统自己启动某个真实游戏版本、操控角色、复现 bug、采集引擎 telemetry 并判定修复”，需要实现并接入对应游戏 adapter；当前仓库没有一个能对任意用户游戏自动完成上述动作的通用 adapter。
 
 ## Product Boundary
 
-灵境不会把“Agent 自主”理解成无限权限。删除工作空间、真实状态推进、关键副作用、Harness promotion 都有明确控制边界；候选 Genome 永远只能在隔离评估环境中证明自己，不能通过修改 Verifier 或 held-out protocol 获得晋升。
+灵境不会把“Agent 自主”理解成无限权限：永久删除任务需要审批；工作空间角色限制写操作；Harness promotion 有独立门禁；候选 Genome 不能通过修改 Verifier 或 held-out protocol 获得晋升。
+
+同时，**产品工作台的用户素材结论与 BalanceLab Runtime 是两条不同的证据边界**：BalanceLab 可以证明 Harness 机制和内置环境中的执行/恢复能力，但不能证明某个用户游戏 bug 已被真实复现。没有可用推理 Provider 时，工作台只会保留素材与验证计划，不再输出固定场景结论。
 
 ---
 
@@ -600,15 +614,31 @@ python scripts/harness_evolution_benchmark.py
 python scripts/product_backend_e2e.py
 ```
 
-浏览器 E2E 与真实 README 图片加载由 GitHub Actions 运行。
+浏览器 E2E 与 README 图片加载检查由 GitHub Actions 运行。
 
-## Runtime API
+## Runtime / Product API
 
-- `POST /runs`：启动 WorldForge 任务；
-- `GET /runs/{id}`：查询状态；
-- `GET /runs/{id}/events`：读取持久事件链；
-- `GET /runs/{id}/stream`：SSE 订阅实时事件；
-- `POST /runs/{id}/cancel`：停止真实运行任务。
+Runtime run API 实际挂在 `/api` 前缀下：
+
+- `POST /api/runs`：启动 BalanceLab / WorldForge Runtime run；请求中的 `max_steps`、branch width、rollout horizon / count 都有硬上限；
+- `GET /api/runs/{id}`：查询状态；
+- `GET /api/runs/{id}/events?after_seq=N`：读取持久事件链；
+- `GET /api/runs/{id}/verify`：验证该 run 的事件 hash chain；
+- `GET /api/runs/{id}/report`：读取 run report；
+- `POST /api/runs/{id}/cancel`：停止当前进程中仍在执行的 Runtime run。
+
+当前**没有** `GET /runs/{id}/stream` 这条 SSE API。产品任务的实时事件使用：
+
+- `WS /ws/conversations/{conversation_id}?after_id=N`：订阅工作台任务事件；断线后可用 `after_id` 从持久事件补放。
+
+主要产品 API 还包括 `/api/conversations`、`/api/assets`、`/api/jobs/{id}`、`/api/messages/{id}/feedback`、`/api/workspace/*`、`/api/metrics`。生产环境默认要求认证，并建议配合外部反向代理 / 分布式限流与外部队列使用。
+
+## Load / safety notes
+
+- `RunConfig.max_steps` 有请求级硬上限；benchmark scenario fan-out 也有限制，防止单请求无限放大工作量。
+- 进程内 `RunManager` 只保留有界数量的完成 summary，并释放完成的 `asyncio.Task` 和空订阅队列；持久事件仍是历史状态来源。
+- 进程内滑动窗口限流器对跟踪 key 数量设置硬上限，避免高基数身份/IP 造成无限内存增长。
+- 这些是单进程保护，不替代生产级网关限流、worker concurrency、队列 backpressure、数据库连接池和容量规划。
 
 ## Repository
 
@@ -619,7 +649,7 @@ worldforge/product/             工作空间、协作、任务与证据生命周
 worldforge/runtime/             Frozen Kernel + Self-Evolving Harness
 worldforge/envs/                可验证游戏环境 / BalanceLab
 scripts/                        E2E 与独立 Harness benchmark
-tests/                          Runtime / Product / Promotion 回归
+tests/                          Runtime / Product / Promotion / Stress 回归
 docs/                           架构、运行与研究说明
 ```
 
