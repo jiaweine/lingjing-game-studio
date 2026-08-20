@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from worldforge.api.run_metrics import compute_verifier_metrics
+from worldforge.runtime.report_metrics import compute_verifier_metrics
 
 
 @dataclass
