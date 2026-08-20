@@ -60,10 +60,11 @@ class RunManager:
                     "user_id": user_id,
                 }
                 scenario = get_scenario(config.scenario_id)
+                harness_baseline = HarnessGenomeStore.snapshot()
                 session_meta["provenance"] = build_runtime_provenance(
                     kernel=self.engine,
                     policy=self.engine.policy_model,
-                    harness_genome=HarnessGenomeStore.current(),
+                    harness_genome=harness_baseline,
                     skill_bank=self.engine.skills,
                     memory=self.engine.memory,
                     verifier=self.engine.verifier,
@@ -76,6 +77,7 @@ class RunManager:
                     session_id=session_id,
                     sink=sink,
                     session_meta=session_meta,
+                    _harness_baseline=harness_baseline,
                 )
             except Exception as exc:
                 event = self.engine.events.append(
