@@ -22,4 +22,7 @@ EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8765/api/health/ready || exit 1
 
-CMD ["uvicorn", "worldforge.api.app:app", "--host", "0.0.0.0", "--port", "8765", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# Uvicorn defaults FORWARDED_ALLOW_IPS to 127.0.0.1 when the environment variable
+# is unset. Do not trust forwarded client addresses from every Internet peer: set
+# FORWARDED_ALLOW_IPS explicitly to the actual reverse-proxy address/subnet when used.
+CMD ["uvicorn", "worldforge.api.app:app", "--host", "0.0.0.0", "--port", "8765", "--proxy-headers"]
