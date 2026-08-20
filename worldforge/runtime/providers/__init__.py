@@ -2,11 +2,16 @@
 
 Providers adapt Lingjing execution semantics to concrete game runtimes.
 
-Current providers may be synthetic or real-game implementations. The core
-runtime should depend only on the provider contract, never on engine details.
+The core runtime depends only on the provider contract, never on engine
+specific implementation details.
 """
 
 from .base import RuntimeProvider
 from .synthetic import SyntheticWorldForgeProvider
+from .unreal import UnrealRuntimeProvider
 
-__all__ = ["RuntimeProvider", "SyntheticWorldForgeProvider"]
+__all__ = [
+    "RuntimeProvider",
+    "SyntheticWorldForgeProvider",
+    "UnrealRuntimeProvider",
+]
