@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from worldforge.product.store import ConversationStore
 from worldforge.settings import load_settings
-from worldforge.storage import S3ObjectStorage
+from worldforge.storage import ObjectStorage, S3ObjectStorage
 
 
 def _store(tmp_path):
@@ -148,3 +148,37 @@ def test_s3_materialize_streams_to_target_without_get_bytes(tmp_path):
     assert result == target
     assert target.read_bytes() == b"streamed"
     assert storage.client.calls == [("bucket", "ws/asset.bin", str(target))]
+
+
+def test_object_bundle_upload_compensates_partial_failure(tmp_path):
+    class FailingStorage(ObjectStorage):
+        def __init__(self):
+            self.puts = []
+            self.deletes = []
+
+        def put_file(self, key, source, content_type):
+            self.puts.append(key)
+            if key == "frame-1":
+                raise RuntimeError("simulated object store failure")
+            return key
+
+        def delete(self, key):
+            self.deletes.append(key)
+
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"frame")
+    storage = FailingStorage()
+
+    with pytest.raises(RuntimeError, match="simulated"):
+        storage.put_files_atomic(
+            [
+                ("source", source, "application/octet-stream"),
+                ("frame-0", frame, "image/jpeg"),
+                ("frame-1", frame, "image/jpeg"),
+            ]
+        )
+
+    assert storage.puts == ["source", "frame-0", "frame-1"]
+    assert storage.deletes == ["frame-0", "source"]
