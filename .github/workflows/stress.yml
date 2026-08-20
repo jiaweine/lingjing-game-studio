@@ -3,9 +3,14 @@ name: Stress smoke
 on:
   push:
     branches: [audit/stress-readme-hardening-20260821]
+    paths-ignore:
+      - stress-result.json
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   stress:
@@ -19,15 +24,22 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
-      - name: Stress hardening regressions
-        run: >-
-          pytest -q
-          tests/test_stress_hardening.py
-          tests/test_fanout.py
-          tests/test_production_config.py
-          tests/test_product_metrics.py
-          tests/test_worker_queue.py
-          tests/test_migrations.py
-          tests/test_context_bounds.py
-      - name: Bounded API concurrency smoke
-        run: python scripts/stress_smoke.py
+      - name: Stress regressions and bounded API smoke
+        id: stress
+        continue-on-error: true
+        run: python scripts/run_stress_ci.py
+      - name: Publish branch-local stress result
+        if: always() && github.event_name == 'push'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f stress-result.json
+          if git diff --cached --quiet; then
+            echo 'Stress result is unchanged.'
+          else
+            git commit -m 'ci: record stress result'
+            git push
+          fi
+      - name: Fail workflow when stress checks failed
+        if: steps.stress.outcome == 'failure'
+        run: exit 1
