@@ -44,6 +44,7 @@ class ReproductionResult:
     seed: int | None
     baseline_checkpoint: ExecutionCheckpoint
     observations: list[ObservationRecord] = field(default_factory=list)
+    assertions: tuple[AssertionSpec, ...] = ()
     verifications: list[VerificationResult] = field(default_factory=list)
     provenance: EvidenceProvenance = EvidenceProvenance.REPRODUCED
 
@@ -61,6 +62,28 @@ class ReproductionResult:
 
     def evidence_context(self) -> dict[str, Any]:
         """Return stable provenance metadata suitable for evidence packs/audit logs."""
+        action_trace = [
+            {
+                "index": record.action_index,
+                "name": record.action.name,
+                "arguments": dict(record.action.arguments),
+            }
+            for record in self.observations
+            if record.action is not None
+        ]
+        assertion_results = [
+            {
+                "assertion": spec.assertion,
+                "expected": spec.expected,
+                "passed": verification.passed,
+                "details": dict(verification.details),
+            }
+            for spec, verification in zip(
+                self.assertions,
+                self.verifications,
+                strict=True,
+            )
+        ]
         return {
             "provenance": self.provenance.value,
             "claim_status": self.claim_status,
@@ -70,13 +93,13 @@ class ReproductionResult:
             "build_version": self.build.version,
             "source_revision": self.build.source_revision,
             "seed": self.seed,
-            "action_count": sum(
-                1 for record in self.observations if record.action is not None
-            ),
-            "assertion_count": len(self.verifications),
+            "action_count": len(action_trace),
+            "action_trace": action_trace,
+            "assertion_count": len(assertion_results),
             "assertions_passed": sum(
-                1 for verification in self.verifications if verification.passed
+                1 for result in assertion_results if result["passed"]
             ),
+            "assertion_results": assertion_results,
             "checkpoint_id": self.baseline_checkpoint.checkpoint_id,
         }
 
@@ -142,6 +165,7 @@ class GameReproductionService:
                 seed=request.seed,
                 baseline_checkpoint=checkpoint,
                 observations=observations,
+                assertions=request.assertions,
                 verifications=verifications,
             )
         finally:
