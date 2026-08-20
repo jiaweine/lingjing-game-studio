@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import mimetypes
 from pathlib import Path
@@ -10,11 +11,20 @@ import httpx
 from .base import BaseProvider, ProviderError, ProviderInfo
 
 
-def _data_url(path: str | Path, mime: str | None = None) -> str:
+MAX_PROVIDER_IMAGES = 10
+MAX_PROVIDER_AUDIO = 3
+MAX_PROVIDER_MEDIA_BYTES = 64 * 1024 * 1024
+
+
+def _encode_data_url(path: str | Path, mime: str | None = None) -> str:
     source = Path(path)
     media_type = mime or mimetypes.guess_type(source.name)[0] or "application/octet-stream"
     encoded = base64.b64encode(source.read_bytes()).decode()
     return f"data:{media_type};base64,{encoded}"
+
+
+async def _data_url(path: str | Path, mime: str | None = None) -> str:
+    return await asyncio.to_thread(_encode_data_url, path, mime)
 
 
 class OpenAICompatProvider(BaseProvider):
@@ -64,14 +74,13 @@ class OpenAICompatProvider(BaseProvider):
 
         out = [dict(message) for message in messages]
         assets = assets or []
-        images = [
-            asset for asset in assets
-            if str(asset.get("mime", "")).startswith("image/")
-        ]
-        audio = [
-            asset for asset in assets
-            if str(asset.get("mime", "")).startswith("audio/")
-        ]
+        images = [asset for asset in assets if str(asset.get("mime", "")).startswith("image/")]
+        audio = [asset for asset in assets if str(asset.get("mime", "")).startswith("audio/")]
+
+        selected_media = images[:MAX_PROVIDER_IMAGES] + audio[:MAX_PROVIDER_AUDIO]
+        total_bytes = sum(Path(a["path"]).stat().st_size for a in selected_media if a.get("path"))
+        if total_bytes > MAX_PROVIDER_MEDIA_BYTES:
+            raise ProviderError("provider context too large: media budget exceeded")
 
         if out and out[-1].get("role") == "user" and (
             (images and self.info.multimodal)
@@ -81,20 +90,16 @@ class OpenAICompatProvider(BaseProvider):
                 {"type": "text", "text": str(out[-1].get("content", ""))}
             ]
             if self.info.multimodal:
-                for asset in images[:10]:
+                for asset in images[:MAX_PROVIDER_IMAGES]:
                     content.append({
                         "type": "image_url",
-                        "image_url": {
-                            "url": _data_url(asset["path"], asset.get("mime"))
-                        },
+                        "image_url": {"url": await _data_url(asset["path"], asset.get("mime"))},
                     })
             if self.info.supports_audio:
-                for asset in audio[:3]:
+                for asset in audio[:MAX_PROVIDER_AUDIO]:
                     content.append({
                         "type": "audio_url",
-                        "audio_url": {
-                            "url": _data_url(asset["path"], asset.get("mime"))
-                        },
+                        "audio_url": {"url": await _data_url(asset["path"], asset.get("mime"))},
                     })
             out[-1] = {"role": "user", "content": content}
 
