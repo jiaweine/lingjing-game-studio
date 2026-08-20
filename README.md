@@ -186,7 +186,7 @@ README Gallery workflow 会把这些 UI fixture PNG 发布到稳定 Release 资�
 
 | **07 · 持续上下文** | **08 · 产品总览** |
 |---|---|
-| 后续追问继承当前任务已有素材的前端状态。<br><br>![多模态任务上下文](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/multimodal.png) | 控制、证据、交付与协作的整体 UI。<br><br>![产品总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png) |
+| 资产会持续保留在任务中；每次执行自动带入的是有界的最近/显式选择上下文，而不是无限复制全部历史素材。<br><br>![多模态任务上下文](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/multimodal.png) | 控制、证据、交付与协作的整体 UI。<br><br>![产品总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png) |
 
 ### Inference / Demo boundary
 
@@ -501,6 +501,8 @@ python scripts/harness_evolution_benchmark.py
 
 场景覆盖 Boss 爆发窗口、经济陷阱、玻璃大炮极端 Build、奖励循环漏洞回归。`tests/test_harness_promotion.py` 会在 pytest 内再跑 promotion regression，独立 benchmark 则用于隔离测试进程全局状态。
 
+> 上表是仓库记录的 benchmark snapshot，不自动代表当前工作分支的最新运行值。修改 Harness/evaluator 后，应重新执行 `python scripts/harness_evolution_benchmark.py` 再更新精确数字。
+
 ---
 
 # 为什么这不是“把常数搬进 JSON”
@@ -565,6 +567,8 @@ python scripts/harness_evolution_benchmark.py
 | Frozen invariant / finding verifier | `worldforge/runtime/verifier.py` |
 | Promotion regression | `tests/test_harness_promotion.py` |
 | Stress / hallucination regressions | `tests/test_stress_hardening.py` |
+| Context / storage bounds | `tests/test_context_bounds.py` |
+| Queue / migration regressions | `tests/test_worker_queue.py`, `tests/test_migrations.py` |
 | Standalone sealed benchmark | `scripts/harness_evolution_benchmark.py` |
 
 </details>
@@ -573,7 +577,9 @@ python scripts/harness_evolution_benchmark.py
 
 ## Multimodal R&D Context
 
-任务可以持续携带图片、视频、音频、日志、配置与文档。素材不是一次性附件：资产、消息、任务事件和反馈都进入 workspace 生命周期，后续追问继续继承同一个研发上下文。媒体文件会做格式探测；视频会提取关键帧；真正的语义理解仍取决于所配置 Provider 的能力。
+任务可以持续保存图片、视频、音频、日志、配置与文档；资产、消息、任务事件和反馈都进入 workspace 生命周期。但“持久保存”不等于“每轮无限复制进模型上下文”：当前每次分析自动携带**最近 8 条任务消息**，素材则按**本轮显式选择优先、再补最近素材**的顺序，在 `WORLDFORGE_MAX_CONTEXT_ASSETS`（默认 24）和 `WORLDFORGE_MAX_CONTEXT_MB`（默认 256MB）预算内选取。超出预算的较早素材仍保存在 workspace，可在后续任务中显式重新选择；显式选择本身超过硬预算时请求会被拒绝，而不是偷偷截断。
+
+媒体文件会做格式探测；视频会提取关键帧；远端 S3/MinIO 素材在分析时通过任务级临时目录流式 materialize，任务结束后删除临时副本，避免把整个远端对象先读入 Python 内存，也避免长期本地 cache 无界增长。真正的语义理解仍取决于所配置 Provider 的能力。
 
 ## 适合的工作
 
@@ -614,9 +620,10 @@ pip install -r requirements-dev.txt
 pytest -q
 python scripts/harness_evolution_benchmark.py
 python scripts/product_backend_e2e.py
+python scripts/stress_smoke.py
 ```
 
-浏览器 UI fixture E2E、后端 E2E 与 README 图片加载检查由 GitHub Actions 运行。
+浏览器 UI fixture E2E、后端 E2E、压力回归与 README 图片加载检查由 GitHub Actions 运行。
 
 ## Runtime / Product API
 
@@ -634,18 +641,22 @@ Runtime run API 实际挂在 `/api` 前缀下：
 - `WS /ws/conversations/{conversation_id}?after_id=N`：订阅工作台任务事件；断线后可用 `after_id` 从持久事件补放；
 - `WS /ws/runs/{session_id}`：订阅 Runtime run 事件，并在连接时先 replay 已持久化事件。
 
-主要产品 API 还包括 `/api/conversations`、`/api/assets`、`/api/jobs/{id}`、`/api/messages/{id}/feedback`、`/api/workspace/*`、`/api/metrics`。生产环境默认要求认证，并建议配合外部反向代理 / 分布式限流与外部队列使用。
+主要产品 API 还包括 `/api/conversations`、`/api/assets`、`/api/jobs/{id}`、`/api/messages/{id}/feedback`、`/api/workspace/*`、`/api/metrics`。`/api/product` 会返回当前自动上下文预算。`/api/metrics` 在数据库内聚合，并区分 `first_attempt_completion_rate`（首次执行完成率）、`eventual_task_completion_rate`（最终完成率）和 `recovery_rate`；旧的 `first_task_completion_rate` 仅作为兼容 alias 保留。生产环境默认要求认证，并建议配合外部反向代理 / 分布式限流与外部队列使用。
 
 ## Load / safety notes
 
 - `RunConfig.max_steps` 有请求级硬上限；benchmark scenario fan-out 也有限制，防止单请求无限放大工作量。
+- 产品分析上下文有消息、素材数量和素材总字节预算；长对话不会把完整历史消息反复复制进每个 job payload，也不会把任务历史上的全部大素材自动 materialize。
+- 上传对象 bundle（源文件 + 视频关键帧）采用 best-effort compensation：任一对象写入失败会清理之前已成功的同 bundle 对象；数据库登记随后失败也会再次清理，减少孤儿对象。
+- 远端对象分析使用 boto3 managed download / 任务级临时目录，避免 whole-object `read()` 进入 Python 内存和持久 cache 无界增长。
+- 外部 worker 使用租约 heartbeat；进程崩溃后，过期 running job 会按尝试次数重新入队或最终标记失败。PostgreSQL 多 worker claim 使用 `FOR UPDATE SKIP LOCKED`，避免多个 worker 对同一最老 job 争抢。
+- 队列、lease reclaim、conversation replay / latest-job 等热路径有独立复合索引 migration；迁移测试会从空库执行 `upgrade head` 并验证 downgrade。
 - 进程内 `RunManager` 只保留有界数量的完成 summary，并释放完成的 `asyncio.Task` 和空订阅队列；持久事件仍是历史状态来源。
 - 进程内滑动窗口限流器对跟踪 key 数量设置硬上限，避免高基数身份/IP 造成无限内存增长。
 - conversation / run WebSocket 对单会话订阅者和单进程总订阅者都有限制；队列本身也是有界的，超限连接会被拒绝。
 - 没有 WebSocket subscriber 时，conversation event fanout 不再每 120ms 空轮询数据库；新订阅出现后由持久事件 replay 补齐断线期间的数据。
-- 上传的媒体 probe、视频关键帧提取和上传阶段对象存储写入会移出 FastAPI event loop，避免 ffprobe / ffmpeg 或慢存储阻塞同 worker 的其他请求。
-- 这些是单进程保护，不替代生产级网关限流、worker concurrency、队列 backpressure、数据库连接池和容量规划。
-- 如果使用远端对象存储，分析任务中的素材 materialization / 本地缓存仍需要根据真实素材大小和并发量做容量规划；当前不是一个跨节点共享的有界媒体缓存服务。
+- 上传媒体 probe、视频关键帧提取、对象存储 I/O，以及关键 async 路径里的同步数据库访问会移出 FastAPI event loop；普通同步 `def` 路由由 FastAPI/Starlette 的线程池执行。
+- 这些是单进程与应用层保护，不替代生产级网关限流、worker concurrency、队列 backpressure、数据库连接池和容量规划。`scripts/stress_smoke.py` 是有界 ASGI smoke，不是生产容量 benchmark。
 
 ## Repository
 
@@ -655,9 +666,9 @@ worldforge/api/                 Runtime / Product API
 worldforge/product/             工作空间、协作、任务与证据生命周期
 worldforge/runtime/             Frozen Kernel + Self-Evolving Harness
 worldforge/envs/                可验证游戏环境 / BalanceLab
-scripts/                        E2E 与独立 Harness benchmark
+scripts/                        E2E、stress smoke 与独立 Harness benchmark
 tests/                          Runtime / Product / Promotion / Stress 回归
-docs/                           架构、运行与研究说明
+migrations/                     Alembic schema 与热路径索引
 ```
 
 ---
