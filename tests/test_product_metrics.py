@@ -53,7 +53,52 @@ def test_metrics_distinguish_first_attempt_eventual_completion_and_recovery(tmp_
     assert metrics["recovery_rate"] == 1.0
     assert metrics["interruption_rate"] == 0.5
     assert metrics["failure_rate"] == 0.0
+    assert metrics["manual_intervention_rate"] == 1.0
     assert metrics["avg_time_to_first_result_seconds"] is not None
+
+
+def test_metrics_ignore_handoff_only_tasks_in_execution_intervention_rate(tmp_path):
+    store = ConversationStore(
+        tmp_path / "product.db",
+        tmp_path / "assets",
+        seed_dev_identity=False,
+    )
+    owner = _owner(store)
+    workspace_id = owner["workspace_id"]
+
+    executed = store.create_conversation(
+        "executed",
+        workspace_id=workspace_id,
+        created_by=owner["user_id"],
+    )
+    job = store.enqueue_job(
+        workspace_id=workspace_id,
+        conversation_id=executed["id"],
+        payload={"text": "run", "asset_ids": []},
+    )
+    assert store.claim_job("metrics-worker", job_id=job["id"])
+    assert store.complete_job_answer(
+        job["id"],
+        workspace_id=workspace_id,
+        content="done",
+        payload={"evidence": [], "deliverables": []},
+    )
+
+    handoff_only = store.create_conversation(
+        "handoff only",
+        workspace_id=workspace_id,
+        created_by=owner["user_id"],
+    )
+    store.record_product_event(
+        workspace_id=workspace_id,
+        user_id=owner["user_id"],
+        conversation_id=handoff_only["id"],
+        name="task.handoff",
+    )
+
+    metrics = calculate_product_metrics(store, workspace_id=workspace_id)
+    assert metrics["manual_intervention_rate"] == 0.0
+    assert 0.0 <= metrics["manual_intervention_rate"] <= 1.0
 
 
 def test_metrics_empty_workspace_is_stable_and_does_not_divide_by_zero(tmp_path):
