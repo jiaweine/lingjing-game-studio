@@ -1,6 +1,8 @@
 name: Stress smoke
 
 on:
+  push:
+    branches: [audit/stress-readme-hardening-20260821]
   pull_request:
     branches: [main]
   workflow_dispatch:
