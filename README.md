@@ -580,6 +580,8 @@ python scripts/harness_evolution_benchmark.py
 
 ## Quick Start
 
+运行产品只需要 runtime 依赖：
+
 ```bash
 git clone https://github.com/jiaweine/lingjing-game-studio.git
 cd lingjing-game-studio
@@ -589,9 +591,10 @@ uvicorn worldforge.api.app:app --reload
 
 打开 `http://127.0.0.1:8000`。
 
-验证完整产品与 Harness：
+开发、测试和完整 Harness 验证使用 development 依赖：
 
 ```bash
+pip install -r requirements-dev.txt
 pytest -q
 python scripts/harness_evolution_benchmark.py
 python scripts/product_backend_e2e.py
