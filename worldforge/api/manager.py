@@ -9,6 +9,7 @@ from worldforge.models import RunConfig, RuntimeEvent
 from worldforge.runtime import WorldForgeEngine
 from worldforge.runtime.harness_genome import HarnessGenomeStore
 from worldforge.runtime.provenance import build_runtime_provenance
+from worldforge.runtime.run_report import build_run_report
 
 
 class RunManager:
@@ -107,6 +108,15 @@ class RunManager:
             "last_event": events[-1].model_dump() if events else None,
             "provenance": (session or {}).get("meta", {}).get("provenance"),
         }
+
+    def report(self, session_id):
+        events = self.engine.events.list_events(session_id)
+        return build_run_report(
+            session_id,
+            events,
+            policy_fallback=self.engine.policy_model.card_dict(),
+            hash_chain_valid=lambda: self.engine.events.verify_chain(session_id),
+        )
 
     async def cancel(self, session_id):
         task = self.tasks.get(session_id)
