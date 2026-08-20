@@ -15,7 +15,7 @@ def _load_seed_skills() -> list[Skill]:
 
 
 class SkillBank:
-    """Skill metadata/evidence store; executable behavior lives in HarnessGenome."""
+    """Non-executable Skill catalog; gates, reliability and action behavior live in Genome."""
 
     def __init__(self) -> None:
         self.skills: dict[str, Skill] = {
@@ -48,9 +48,9 @@ class SkillBank:
         genome = HarnessGenomeStore.current()
         features = self._features(state, uncertainty, goal)
         out: dict[str, float] = {}
-        for skill_id, skill in self.skills.items():
+        for skill_id in self.skills:
             gene = genome.skills.get(skill_id)
-            if skill.status != "active" or gene is None or not gene.enabled:
+            if gene is None or not gene.enabled:
                 continue
             out[skill_id] = gene.gate.activation(features)
         return out
@@ -66,7 +66,7 @@ class SkillBank:
         return [
             skill
             for skill_id, skill in self.skills.items()
-            if skill.status == "active" and activations.get(skill_id, 0.0) >= .5
+            if activations.get(skill_id, 0.0) >= .5
         ]
 
     def bias(
@@ -80,9 +80,9 @@ class SkillBank:
         genome = HarnessGenomeStore.current()
         activations = self.activations(state, uncertainty, goal=goal)
         total = 0.0
-        for skill_id, skill in self.skills.items():
+        for skill_id in self.skills:
             gene = genome.skills.get(skill_id)
-            if skill.status != "active" or gene is None or not gene.enabled:
+            if gene is None or not gene.enabled:
                 continue
             total += (
                 gene.action_bias.get(action, 0.0)
