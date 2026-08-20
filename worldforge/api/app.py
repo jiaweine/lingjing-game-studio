@@ -4,7 +4,6 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 import mimetypes
-import statistics
 import tempfile
 import time
 import uuid
@@ -1083,7 +1082,7 @@ def diagnostics(principal: Principal = Depends(require_principal)):
         "event_chain": True,
         "counterfactual_brancher": "counterfactual-brancher" in names,
         "state_verifier": "state-verifier" in names,
-        "regression_gated_evolution": "failure-evolver" in names,
+        "regression_gated_evolution": "harness-evolution" in names,
     }
     return {
         "ok": all(checks.values()),
@@ -1199,84 +1198,10 @@ def verify_run(
 
 
 def _run_report(session_id):
-    events = manager.engine.events.list_events(session_id)
-    if not events:
-        raise HTTPException(404, "未找到该运行会话")
-    by_type = {}
-    for event in events:
-        by_type.setdefault(event.event_type, []).append(event)
-
-    started = by_type.get("run.started", [None])[0]
-    completed = by_type.get("run.completed", [None])[-1]
-    decisions = by_type.get("decision.committed", [])
-    actions = by_type.get("action.executed", [])
-    branches = by_type.get("counterfactual.evaluated", [])
-    findings = by_type.get("qa.finding", [])
-    rollbacks = by_type.get("runtime.rollback", [])
-    replans = by_type.get("runtime.replan", [])
-    policy_events = by_type.get("policy.prior", [])
-    latencies = [
-        float(event.payload.get("latency_ms", 0))
-        for event in decisions
-        if event.payload.get("latency_ms") is not None
-    ]
-    confidences = [
-        float(event.payload.get("confidence", 0))
-        for event in decisions
-    ]
-    branch_count = sum(
-        len(event.payload.get("branches", [])) for event in branches
-    )
-    verified = sum(
-        1 for event in actions
-        if event.payload.get("verification", {}).get("recommendation")
-        in {"accept", "continue", "proceed"}
-    )
-    summary = completed.payload.get("summary") if completed else None
-    final_state = completed.payload.get("final_state") if completed else None
-    scenario = started.payload.get("scenario", {}) if started else {}
-    policy = (
-        started.payload.get("policy") if started else None
-    ) or manager.engine.policy_model.card_dict()
-    return {
-        "session_id": session_id,
-        "status": "completed" if completed else "running",
-        "scenario": scenario,
-        "policy": policy,
-        "summary": summary,
-        "final_state": final_state,
-        "metrics": {
-            "decision_count": len(decisions),
-            "action_count": len(actions),
-            "counterfactual_futures": branch_count,
-            "rollback_count": len(rollbacks),
-            "replan_count": len(replans),
-            "finding_count": len(findings),
-            "verifier_coverage": round(
-                len(actions) / max(1, len(actions)), 4
-            ),
-            "verified_accept_rate": round(
-                verified / max(1, len(actions)), 4
-            ),
-            "avg_decision_confidence": (
-                round(statistics.mean(confidences), 4)
-                if confidences else 0.0
-            ),
-            "avg_decision_latency_ms": (
-                round(statistics.mean(latencies), 2)
-                if latencies else 0.0
-            ),
-            "policy_decision_frames": len(policy_events),
-            "event_count": len(events),
-            "hash_chain_valid": manager.engine.events.verify_chain(session_id),
-        },
-        "findings": [event.payload for event in findings],
-        "evolution": [
-            event.payload for event in by_type.get("evolution.patch", [])
-        ] + [
-            event.payload for event in by_type.get("policy.optimization", [])
-        ],
-    }
+    try:
+        return manager.report(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "未找到该运行会话") from exc
 
 
 @app.get("/api/runs/{session_id}/report")
