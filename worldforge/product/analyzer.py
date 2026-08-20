@@ -74,12 +74,36 @@ class ProductAnalyzer:
         return "\n".join(lines) or "没有额外素材"
 
     @staticmethod
-    def _evidence_confidence(evidence, runtime_result):
-        kinds = {item.get("type") for item in evidence}
-        diversity = min(.24, max(0, len(kinds) - 1) * .06)
-        volume = min(.18, len(evidence) * .035)
-        verified = .34 if runtime_result else 0.0
-        return round(min(.92, .18 + diversity + volume + verified), 2)
+    def _evidence_confidence(evidence, runtime_result=None):
+        """Estimate confidence without treating synthetic simulation as reproduction.
+
+        User-provided artifacts are observed evidence. A WorldForge scenario run is
+        synthetic evidence unless a real game execution adapter explicitly marks the
+        evidence as reproduced. Synthetic evidence can support hypothesis formation,
+        but it must not receive the same confidence boost as real reproduction.
+        """
+        observed = [
+            item for item in evidence
+            if item.get("provenance", "observed") == "observed"
+        ]
+        reproduced = [
+            item for item in evidence
+            if item.get("provenance") == "reproduced"
+        ]
+        synthetic = [
+            item for item in evidence
+            if item.get("provenance") == "synthetic"
+        ]
+
+        observed_kinds = {item.get("type") for item in observed}
+        diversity = min(.24, max(0, len(observed_kinds) - 1) * .06)
+        volume = min(.18, len(observed) * .035)
+        reproduced_boost = min(.34, len(reproduced) * .17)
+        synthetic_support = min(.08, len(synthetic) * .04)
+        return round(
+            min(.92, .18 + diversity + volume + reproduced_boost + synthetic_support),
+            2,
+        )
 
     async def run(self, *, text, assets, provider_key, sink, history=None, human_feedback_gate=False):
         history = history or []
@@ -115,6 +139,8 @@ class ProductAnalyzer:
                 "label": label,
                 "title": title,
                 "asset_id": asset.get("id"),
+                "provenance": "observed",
+                "provenance_label": "用户提供 / 观察证据",
             })
 
         await sink("progress", {
@@ -131,8 +157,8 @@ class ProductAnalyzer:
                 "regression": "loot_exploit",
             }[intent]
             await sink("progress", {
-                "step": "主动复核",
-                "detail": "正在用一致的初始条件重复关键路径，区分偶发与稳定问题",
+                "step": "模拟复核",
+                "detail": "正在内部 WorldForge 场景中验证相似假设；该结果不代表已在用户真实游戏中复现",
                 "percent": 58,
             })
             summary = await self.engine.run(
@@ -146,22 +172,32 @@ class ProductAnalyzer:
                     enable_evolution=bool(human_feedback_gate),
                 ),
                 demo_delay=0,
-                session_meta={"human_feedback_gate": bool(human_feedback_gate)},
+                session_meta={
+                    "human_feedback_gate": bool(human_feedback_gate),
+                    "evidence_provenance": "synthetic",
+                },
             )
             runtime_result = summary.model_dump()
+            runtime_result["evidence_provenance"] = "synthetic"
+            runtime_result["evidence_scope"] = "worldforge-internal-scenario"
+            runtime_result["source_scenario"] = scenario
+            runtime_result["real_game_reproduction"] = False
             evidence.append({
                 "id": f"E{len(evidence) + 1}",
-                "type": "replay",
-                "label": "复核结果",
+                "type": "simulation",
+                "label": "内部模拟复核",
                 "title": (
-                    f"同条件复核 {summary.steps} 步 · "
-                    f"{'异常路径已复现' if summary.outcome not in {'victory', 'success'} else '结果稳定'}"
+                    f"WorldForge 场景 {scenario} · {summary.steps} 步 · "
+                    f"{'命中相似异常路径' if summary.outcome not in {'victory', 'success'} else '模拟结果稳定'}"
                 ),
+                "provenance": "synthetic",
+                "provenance_label": "内部模拟 / 非真实游戏复现",
+                "claim_scope": "hypothesis_support_only",
             })
 
         await sink("progress", {
             "step": "交叉核对",
-            "detail": "正在对照图像、录像关键帧、声音、日志与复核结果，寻找相互支持或冲突的证据",
+            "detail": "正在对照用户观察证据与内部模拟结果，寻找相互支持或冲突的线索",
             "percent": 78,
         })
 
@@ -199,7 +235,9 @@ class ProductAnalyzer:
                             "role": "system",
                             "content": (
                                 "你是游戏研发任务的证据分析器。只根据给定素材、任务历史和复核结果形成结论；"
-                                "区分观察、推断和待验证项；不要把猜测写成事实；优先给出可执行的下一步验证。"
+                                "严格区分 observed（用户观察）、synthetic（内部模拟）、reproduced（真实环境复现）"
+                                "和 inferred（模型推断）。synthetic 只能支持假设，不能写成用户真实游戏已复现。"
+                                "不要把猜测写成事实；优先给出可执行的下一步验证。"
                             ),
                         },
                         *prior,
@@ -220,9 +258,12 @@ class ProductAnalyzer:
 
         confidence = self._evidence_confidence(evidence, runtime_result)
         modality_counts = Counter(item.get("type", "file") for item in evidence)
+        provenance_counts = Counter(
+            item.get("provenance", "observed") for item in evidence
+        )
         await sink("progress", {
             "step": "形成结论",
-            "detail": "已完成证据归并、冲突检查和下一步验证建议",
+            "detail": "已完成证据归并、来源分层、冲突检查和下一步验证建议",
             "percent": 100,
         })
         return {
@@ -236,6 +277,8 @@ class ProductAnalyzer:
                 "task_assets": len(assets),
                 "evidence_confidence": confidence,
                 "modality_counts": dict(modality_counts),
+                "provenance_counts": dict(provenance_counts),
+                "real_game_reproduced": bool(provenance_counts.get("reproduced")),
             },
             "suggestions": self._suggestions(intent),
         }
@@ -245,7 +288,7 @@ class ProductAnalyzer:
         evidence_pack = {
             "type": "evidence_pack",
             "title": "证据包",
-            "summary": "保留本次判断使用的素材索引与主动复核结果，方便团队复查。",
+            "summary": "保留本次判断使用的用户观察证据与内部模拟证据，并标注来源，方便团队复查。",
             "items": [item.get("title", "") for item in evidence if item.get("title")],
             "evidence_ids": evidence_ids,
         }
@@ -253,16 +296,16 @@ class ProductAnalyzer:
             return [
                 {
                     "type": "reproduction_card",
-                    "title": "问题复现卡",
-                    "summary": "把当前异常窗口固化成可交接的复现入口。",
-                    "items": ["使用当前素材作为复现基线", "锁定异常阶段与资源窗口", "修复后按同条件再次执行"],
+                    "title": "问题验证卡",
+                    "summary": "把当前异常窗口固化成待真实环境复现的验证入口。",
+                    "items": ["使用当前素材作为观察基线", "锁定异常阶段与资源窗口", "接入真实游戏执行环境后按同条件复现"],
                     "evidence_ids": evidence_ids,
                 },
                 {
                     "type": "regression_checklist",
                     "title": "回归检查清单",
                     "summary": "覆盖触发条件、邻近条件与修复后复核。",
-                    "items": ["原触发条件不再复现", "相邻时间窗无新增异常", "资源与伤害变化符合预期"],
+                    "items": ["真实环境确认原触发条件", "相邻时间窗无新增异常", "资源与伤害变化符合预期"],
                     "evidence_ids": evidence_ids,
                 },
                 evidence_pack,
@@ -289,16 +332,16 @@ class ProductAnalyzer:
             return [
                 {
                     "type": "reproduction_card",
-                    "title": "回归复现卡",
-                    "summary": "把历史异常、当前复现条件和验证基线放在同一交付物。",
-                    "items": ["复用当前异常条件", "核对版本差异", "修复后重复同条件验证"],
+                    "title": "回归验证卡",
+                    "summary": "把历史异常、当前观察条件和内部模拟结果放在同一交付物，真实复现状态单独记录。",
+                    "items": ["复用当前异常观察条件", "核对版本差异", "在真实游戏构建中重复同条件验证"],
                     "evidence_ids": evidence_ids,
                 },
                 {
                     "type": "release_checklist",
                     "title": "发布前检查项",
-                    "summary": "只有关键路径重新通过后才适合关闭问题。",
-                    "items": ["原问题不可复现", "关键邻接路径通过", "证据与结果已人工复核"],
+                    "summary": "只有关键路径在真实目标环境重新通过后才适合关闭问题。",
+                    "items": ["真实环境原问题不可复现", "关键邻接路径通过", "证据与结果已人工复核"],
                     "evidence_ids": evidence_ids,
                 },
                 evidence_pack,
@@ -329,7 +372,7 @@ class ProductAnalyzer:
         return {
             "battle_review": "正在对齐异常时间段、关键受击、画面变化与资源变化",
             "balance": "正在比较高风险组合、资源曲线与胜负边界",
-            "regression": "正在核对版本差异并尝试复现异常路径",
+            "regression": "正在核对版本差异并整理可验证的异常路径",
             "npc": "正在检查角色行为、上下文一致性与异常跳变",
         }.get(intent, "正在拆解问题并寻找最相关的证据")
 
@@ -338,33 +381,34 @@ class ProductAnalyzer:
             f"当前研发目标：{text}\n"
             f"任务类型：{intent}\n"
             f"素材证据：\n{self._asset_context(assets)}\n"
-            f"证据索引：{evidence}\n"
-            f"主动复核结果：{runtime}\n"
+            f"证据索引（含 provenance）：{evidence}\n"
+            f"内部模拟结果（若存在则 provenance=synthetic，不等于真实游戏复现）：{runtime}\n"
             f"此前已有 {len(history)} 条任务消息。\n\n"
             "输出要求：\n"
             "1. 先给结论，并明确置信度高/中/低。\n"
-            "2. 用证据编号说明支持结论的依据；若素材互相冲突要指出。\n"
-            "3. 给出最可能触发条件，不足以证明的内容标记为待验证。\n"
-            "4. 最后给 2-4 个能最大幅度减少不确定性的下一步验证动作。"
+            "2. 用证据编号说明支持结论的依据，并标注观察、内部模拟或真实复现来源；若素材互相冲突要指出。\n"
+            "3. synthetic 内部模拟只能写成假设支持，绝不能表述为用户真实游戏已经复现。\n"
+            "4. 给出最可能触发条件，不足以证明的内容标记为待验证。\n"
+            "5. 最后给 2-4 个能最大幅度减少不确定性的下一步验证动作。"
         )
 
     def _demo_answer(self, intent):
         if intent == "battle_review":
             return (
-                "### 结论\n异常更像是**高爆发阶段的资源衔接问题**，不是单一伤害数值失控。\n\n"
-                "### 证据\n1. 高风险阶段承伤和资源消耗同时抬升。\n"
-                "2. 同条件复核可以再次定位关键窗口。\n\n"
-                "### 建议\n优先检查减伤覆盖、敌方爆发参数和技能冷却。"
+                "### 结论\n当前观察更像是**高爆发阶段的资源衔接问题**，不是单一伤害数值失控；内部模拟仅支持该假设，尚未在用户真实游戏中复现。\n\n"
+                "### 证据\n1. 用户素材显示高风险阶段承伤和资源消耗同时抬升。\n"
+                "2. WorldForge 内部模拟命中了相似关键窗口，但它属于 synthetic evidence。\n\n"
+                "### 建议\n优先在真实游戏构建中检查减伤覆盖、敌方爆发参数和技能冷却，并记录可重复输入序列。"
             )
         if intent == "balance":
             return (
-                "### 结论\n当前数值存在高收益高波动组合。\n\n"
-                "### 建议\n优先收窄极端波动，并用分层玩家策略重新验证。"
+                "### 结论\n当前数值存在高收益高波动组合；内部模拟用于发现风险边界，不等价于线上或目标 Build 的真实表现。\n\n"
+                "### 建议\n优先收窄极端波动，并用目标版本和分层玩家策略重新验证。"
             )
         if intent == "regression":
             return (
-                "### 结论\n异常具备稳定复现条件，建议按版本回归问题处理。\n\n"
-                "### 建议\n锁定配置差异并补自动回归用例。"
+                "### 结论\n当前证据提示存在可疑回归路径，内部模拟命中了相似异常，但**尚未证明目标游戏版本已稳定复现**。\n\n"
+                "### 建议\n锁定版本与配置差异，在真实 Build 中补可重复输入和自动回归用例。"
             )
         if intent == "npc":
             return (
@@ -375,8 +419,8 @@ class ProductAnalyzer:
 
     def _suggestions(self, intent):
         return {
-            "battle_review": ["把异常时间段单独展开", "继续核对伤害配置", "生成回归测试清单"],
+            "battle_review": ["把异常时间段单独展开", "继续核对伤害配置", "生成真实环境回归清单"],
             "balance": ["看不同玩家策略的结果", "找出最危险的数值组合", "生成调参建议"],
-            "regression": ["查看复现步骤", "对比两个版本配置", "生成发布前检查项"],
+            "regression": ["整理待真实复现步骤", "对比两个版本配置", "生成发布前检查项"],
             "npc": ["检查角色目标切换", "对比两段对话表现", "生成行为规则建议"],
         }.get(intent, ["继续追问", "补充素材", "生成结论摘要"])
