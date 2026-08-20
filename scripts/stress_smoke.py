@@ -3,10 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import statistics
+import sys
 import time
 from collections import Counter
+from pathlib import Path
 
 import httpx
+
+# Allow `python scripts/stress_smoke.py` from a clean checkout.
+# The workflow intentionally runs this as a script rather than `python -m`.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from worldforge.api.app import app
 
@@ -45,7 +53,6 @@ async def main():
         base_url="http://testserver",
         timeout=30,
     ) as client:
-        # Public path: verify a moderate concurrent burst does not produce server errors.
         public_rows = await _burst(
             client,
             "/api/health",
@@ -55,8 +62,6 @@ async def main():
         public = _summary(public_rows)
         assert set(public["statuses"]) == {200}, public
 
-        # Protected dev-mode path: deliberately exceed the per-minute limiter. The
-        # acceptable degradation mode is 429 backpressure, never a 5xx or hang.
         protected_rows = await _burst(
             client,
             "/api/conversations?limit=1",
