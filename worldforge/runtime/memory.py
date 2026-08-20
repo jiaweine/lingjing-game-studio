@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import json
 import math
@@ -20,11 +22,31 @@ class OutcomeRecord:
 class EpisodicMemory:
     """Continual state-similarity memory controlled by the active HarnessGenome."""
 
+    _suppressed_ids: ContextVar[frozenset[int]] = ContextVar(
+        "worldforge_memory_suppressed_ids",
+        default=frozenset(),
+    )
+
     def __init__(self, capacity: int = 2000):
         self.records = deque(maxlen=capacity)
 
     def add(self, record: OutcomeRecord) -> None:
+        # Suppression is scoped to one exact shared-memory instance. Per-run deep
+        # copies keep learning inside the trajectory while the persistent memory can
+        # remain unchanged for non-adaptive/product-safe executions.
+        if id(self) in self._suppressed_ids.get():
+            return
         self.records.append(record)
+
+    @classmethod
+    @contextmanager
+    def suppress_commits_for(cls, memory: "EpisodicMemory"):
+        suppressed = cls._suppressed_ids.get()
+        token = cls._suppressed_ids.set(suppressed | {id(memory)})
+        try:
+            yield memory
+        finally:
+            cls._suppressed_ids.reset(token)
 
     def prior(self, state_signature: str, action: str) -> float:
         target = self._decode(state_signature)
