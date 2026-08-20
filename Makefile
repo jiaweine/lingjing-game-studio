@@ -1,4 +1,4 @@
-.PHONY: run run-backend worker migrate test benchmark ui-e2e e2e train prod-up prod-down
+.PHONY: run run-backend worker migrate test benchmark stress ui-e2e e2e train prod-up prod-down
 
 run: run-backend
 
@@ -21,6 +21,9 @@ test:
 
 benchmark:
 	python -m worldforge.cli benchmark --seeds 12
+
+stress:
+	python scripts/stress_smoke.py
 
 ui-e2e:
 	python scripts/product_ui_e2e.py
