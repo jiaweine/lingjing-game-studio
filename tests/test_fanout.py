@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from worldforge.product.fanout import TaskEventFanoutHub
 from worldforge.product.store import ConversationStore
 
@@ -61,3 +63,23 @@ def test_fanout_does_not_poll_database_without_subscribers(tmp_path):
             await hub.stop()
 
     asyncio.run(scenario())
+
+
+def test_fanout_bounds_subscriber_count(tmp_path):
+    store = ConversationStore(
+        tmp_path / "product.db",
+        tmp_path / "assets",
+    )
+    conversation = store.create_conversation("subscriber cap")
+    hub = TaskEventFanoutHub(
+        store,
+        max_subscribers_per_conversation=1,
+        max_subscribers_total=1,
+    )
+    first = hub.subscribe(conversation["id"])
+    assert hub.subscriber_count == 1
+    with pytest.raises(RuntimeError, match="subscribers"):
+        hub.subscribe(conversation["id"])
+    hub.unsubscribe(conversation["id"], first)
+    assert hub.subscriber_count == 0
+    assert conversation["id"] not in hub.subscribers
