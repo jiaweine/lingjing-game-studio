@@ -1,0 +1,31 @@
+{
+  "ok": false,
+  "python": "3.12.14 (main, Aug 13 2026, 02:47:42) [GCC 13.3.0]",
+  "commands": [
+    {
+      "command": [
+        "/opt/hostedtoolcache/Python/3.12.14/x64/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_stress_hardening.py",
+        "tests/test_fanout.py",
+        "tests/test_production_config.py",
+        "tests/test_product_metrics.py",
+        "tests/test_worker_queue.py",
+        "tests/test_migrations.py",
+        "tests/test_context_bounds.py"
+      ],
+      "returncode": 0,
+      "output_tail": ".............................                                            [100%]\n=============================== warnings summary ===============================\ntests/test_migrations.py::test_alembic_upgrade_head_creates_queue_hotpath_indexes\ntests/test_migrations.py::test_alembic_upgrade_head_creates_queue_hotpath_indexes\n  /opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/site-packages/alembic/config.py:604: DeprecationWarning: No path_separator found in configuration; falling back to legacy splitting on spaces, commas, and colons for prepend_sys_path.  Consider adding path_separator=os to Alembic config.\n    util.warn_deprecated(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
+    },
+    {
+      "command": [
+        "/opt/hostedtoolcache/Python/3.12.14/x64/bin/python",
+        "scripts/stress_smoke.py"
+      ],
+      "returncode": 1,
+      "output_tail": "Traceback (most recent call last):\n  File \"/home/runner/work/lingjing-game-studio/lingjing-game-studio/scripts/stress_smoke.py\", line 11, in <module>\n    from worldforge.api.app import app\nModuleNotFoundError: No module named 'worldforge'\n"
+    }
+  ]
+}
