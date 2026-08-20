@@ -78,23 +78,16 @@ class SkillBank:
         goal: GoalState | None = None,
     ) -> float:
         genome = HarnessGenomeStore.current()
-        planner = genome.planner
         activations = self.activations(state, uncertainty, goal=goal)
         total = 0.0
         for skill_id, skill in self.skills.items():
             gene = genome.skills.get(skill_id)
             if skill.status != "active" or gene is None or not gene.enabled:
                 continue
-            activation = activations.get(skill_id, 0.0)
-            evidence_reliability = (
-                planner.skill_base_factor
-                + skill.success_rate * planner.skill_success_factor
-            )
             total += (
                 gene.action_bias.get(action, 0.0)
-                * activation
+                * activations.get(skill_id, 0.0)
                 * gene.reliability
-                * evidence_reliability
             )
         return total
 
