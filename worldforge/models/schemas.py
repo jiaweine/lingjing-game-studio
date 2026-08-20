@@ -172,14 +172,3 @@ class BenchmarkRow(BaseModel):
     invalid_action_rate: float
     recovery_rate: float
     avg_decision_ops: float
-
-
-class EvolutionPatch(BaseModel):
-    patch_id: str
-    reason: str
-    target_skill_id: str
-    before: Skill
-    after: Skill
-    regression_before: float
-    regression_after: float
-    accepted: bool

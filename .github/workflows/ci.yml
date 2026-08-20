@@ -16,7 +16,7 @@ jobs:
           python-version: '3.11'
           cache: pip
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
       - name: Python compile check
         run: python -m compileall -q worldforge migrations scripts tests
       - name: Test suite
