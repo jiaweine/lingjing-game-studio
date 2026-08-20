@@ -363,17 +363,17 @@ def product_info():
             {
                 "key": "battle_review",
                 "name": "战斗问题复现",
-                "desc": "结合录像、截图和日志定位稳定触发条件",
+                "desc": "结合录像、截图和日志整理证据与复现条件",
             },
             {
                 "key": "balance",
                 "name": "数值风险检查",
-                "desc": "验证极端组合、资源曲线与胜负边界",
+                "desc": "分析极端组合、资源曲线与胜负边界的验证证据",
             },
             {
                 "key": "regression",
                 "name": "版本回归验证",
-                "desc": "复现历史问题并核验修复结果",
+                "desc": "核对历史问题证据并生成回归验证计划",
             },
             {
                 "key": "npc",
@@ -561,7 +561,10 @@ async def asset_upload(
                     )
                 handle.write(chunk)
 
-        meta = probe_media(tmp, mime)
+        # Media probing and ffmpeg frame extraction are blocking subprocess / file
+        # operations. Keep them off the FastAPI event loop so one large upload cannot
+        # stall unrelated requests in the same worker.
+        meta = await asyncio.to_thread(probe_media, tmp, mime)
         claimed_kind = (
             "image" if mime.startswith("image/")
             else "video" if mime.startswith("video/")
@@ -573,7 +576,9 @@ async def asset_upload(
         ):
             raise HTTPException(415, "素材内容与声明类型不匹配")
         frame_paths = (
-            extract_video_frames(tmp, Path(tmpdir) / "frames", 3)
+            await asyncio.to_thread(
+                extract_video_frames, tmp, Path(tmpdir) / "frames", 3
+            )
             if meta.get("kind") == "video"
             else []
         )
@@ -581,14 +586,14 @@ async def asset_upload(
         object_key = (
             f"{principal.workspace_id}/assets/{asset_uuid}/source{suffix}"
         )
-        storage.put_file(object_key, tmp, mime)
+        await asyncio.to_thread(storage.put_file, object_key, tmp, mime)
         frame_keys = []
         for index, frame in enumerate(frame_paths):
             key = (
                 f"{principal.workspace_id}/assets/{asset_uuid}/frames/"
                 f"{index:02d}.jpg"
             )
-            storage.put_file(key, frame, "image/jpeg")
+            await asyncio.to_thread(storage.put_file, key, frame, "image/jpeg")
             frame_keys.append(key)
         if frame_keys:
             meta["keyframes"] = frame_keys
@@ -943,19 +948,35 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str):
     )
     try:
         principal = _decode_or_401(token)
+        host = websocket.client.host if websocket.client else "unknown"
+        rate_limiter.check(
+            f"ws:{principal.workspace_id}:{principal.user_id}:{host}"
+        )
         product_store.get_conversation(
             conversation_id, workspace_id=principal.workspace_id
         )
-    except (HTTPException, KeyError):
+    except HTTPException as exc:
+        await websocket.close(code=4429 if exc.status_code == 429 else 4401)
+        return
+    except KeyError:
         await websocket.close(code=4401)
         return
 
     # Subscribe before replay. Events that arrive during replay may appear in both
     # paths, so event-id deduplication below closes the replay/subscribe race.
-    queue = task_event_hub.subscribe(conversation_id)
-    last_event_id = max(
-        0, int(websocket.query_params.get("after_id", "0") or 0)
-    )
+    try:
+        queue = task_event_hub.subscribe(conversation_id)
+    except RuntimeError:
+        await websocket.close(code=4429)
+        return
+    try:
+        last_event_id = max(
+            0, int(websocket.query_params.get("after_id", "0") or 0)
+        )
+    except ValueError:
+        task_event_hub.unsubscribe(conversation_id, queue)
+        await websocket.close(code=4400)
+        return
     await websocket.accept()
     try:
         replay = product_store.list_events(
@@ -1139,7 +1160,7 @@ def recent_runs(
 @app.post("/api/runs")
 async def create_run(
     config: RunConfig,
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     try:
         return {
@@ -1167,7 +1188,7 @@ def run_status(
 @app.post("/api/runs/{session_id}/cancel")
 async def cancel_run(
     session_id: str,
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     _assert_run_access(session_id, principal)
     return await manager.cancel(session_id)
@@ -1208,6 +1229,8 @@ def _run_report(session_id):
 
     started = by_type.get("run.started", [None])[0]
     completed = by_type.get("run.completed", [None])[-1]
+    failed = by_type.get("run.failed", [None])[-1]
+    cancelled = by_type.get("run.cancelled", [None])[-1]
     decisions = by_type.get("decision.committed", [])
     actions = by_type.get("action.executed", [])
     branches = by_type.get("counterfactual.evaluated", [])
@@ -1227,8 +1250,13 @@ def _run_report(session_id):
     branch_count = sum(
         len(event.payload.get("branches", [])) for event in branches
     )
+    verified_actions = [
+        event for event in actions
+        if isinstance(event.payload.get("verification"), dict)
+        and bool(event.payload.get("verification"))
+    ]
     verified = sum(
-        1 for event in actions
+        1 for event in verified_actions
         if event.payload.get("verification", {}).get("recommendation")
         in {"accept", "continue", "proceed"}
     )
@@ -1238,9 +1266,15 @@ def _run_report(session_id):
     policy = (
         started.payload.get("policy") if started else None
     ) or manager.engine.policy_model.card_dict()
+    status = (
+        "completed" if completed
+        else "failed" if failed
+        else "cancelled" if cancelled
+        else "running"
+    )
     return {
         "session_id": session_id,
-        "status": "completed" if completed else "running",
+        "status": status,
         "scenario": scenario,
         "policy": policy,
         "summary": summary,
@@ -1253,10 +1287,10 @@ def _run_report(session_id):
             "replan_count": len(replans),
             "finding_count": len(findings),
             "verifier_coverage": round(
-                len(actions) / max(1, len(actions)), 4
+                len(verified_actions) / max(1, len(actions)), 4
             ),
             "verified_accept_rate": round(
-                verified / max(1, len(actions)), 4
+                verified / max(1, len(verified_actions)), 4
             ),
             "avg_decision_confidence": (
                 round(statistics.mean(confidences), 4)
@@ -1346,7 +1380,7 @@ def skills(principal: Principal = Depends(require_principal)):
 async def selfplay(
     scenario_id: str,
     seeds: int = Query(default=6, ge=2, le=40),
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     try:
         return await asyncio.to_thread(
@@ -1359,7 +1393,7 @@ async def selfplay(
 @app.post("/api/benchmarks")
 async def benchmark(
     req: BenchmarkRequest,
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_editor),
 ):
     rows = await asyncio.to_thread(
         run_benchmark, req.seeds, req.scenarios
@@ -1407,13 +1441,21 @@ async def run_ws(websocket: WebSocket, session_id: str):
     )
     try:
         principal = _decode_or_401(token)
+        host = websocket.client.host if websocket.client else "unknown"
+        rate_limiter.check(
+            f"ws-run:{principal.workspace_id}:{principal.user_id}:{host}"
+        )
         _assert_run_access(session_id, principal)
-    except HTTPException:
-        await websocket.close(code=4401)
+    except HTTPException as exc:
+        await websocket.close(code=4429 if exc.status_code == 429 else 4401)
         return
 
+    try:
+        queue = manager.subscribe(session_id)
+    except RuntimeError:
+        await websocket.close(code=4429)
+        return
     await websocket.accept()
-    queue = manager.subscribe(session_id)
     try:
         for event in manager.engine.events.list_events(session_id):
             await websocket.send_json(event.model_dump())
@@ -1426,7 +1468,7 @@ async def run_ws(websocket: WebSocket, session_id: str):
                     "event_type": "heartbeat",
                     "session_id": session_id,
                 })
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
         manager.unsubscribe(session_id, queue)
