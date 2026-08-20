@@ -1,0 +1,23 @@
+name: Stress smoke
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Stress hardening regressions
+        run: pytest -q tests/test_stress_hardening.py tests/test_fanout.py tests/test_production_config.py
+      - name: Bounded API concurrency smoke
+        run: python scripts/stress_smoke.py
