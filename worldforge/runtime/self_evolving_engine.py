@@ -61,6 +61,22 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
             ),
             self.harness_evolver,
         )
+        # Backward-compatible capability name for older diagnostics clients.
+        # `harness-evolution` remains the canonical plugin identity.
+        self.plugins.mount(
+            PluginDescriptor(
+                "failure-evolver",
+                "evolution",
+                dependencies=("harness-evolution",),
+                metadata={
+                    "compatibility_alias": True,
+                    "deprecated": True,
+                    "alias_for": "harness-evolution",
+                    "heldout_gate": True,
+                },
+            ),
+            self.harness_evolver,
+        )
 
     async def run(self, config: RunConfig, **kwargs):
         baseline = HarnessGenomeStore.current().model_copy(deep=True)
