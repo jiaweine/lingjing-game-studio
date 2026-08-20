@@ -17,12 +17,22 @@ class TaskEventFanoutHub:
         poll_interval: float = .12,
         batch_size: int = 1000,
         queue_size: int = 512,
+        max_subscribers_per_conversation: int = 64,
+        max_subscribers_total: int = 2048,
     ) -> None:
         self.store = store
         self.poll_interval = poll_interval
         self.batch_size = batch_size
         self.queue_size = queue_size
+        self.max_subscribers_per_conversation = max(
+            1, int(max_subscribers_per_conversation)
+        )
+        self.max_subscribers_total = max(
+            self.max_subscribers_per_conversation,
+            int(max_subscribers_total),
+        )
         self.subscribers: dict[str, set[asyncio.Queue]] = defaultdict(set)
+        self._subscriber_count = 0
         self._task: asyncio.Task | None = None
         self._cursor = 0
         self._subscriber_event = asyncio.Event()
@@ -45,8 +55,16 @@ class TaskEventFanoutHub:
         self._task = None
 
     def subscribe(self, conversation_id: str) -> asyncio.Queue:
+        rows = self.subscribers.get(conversation_id)
+        current = len(rows) if rows else 0
+        if (
+            current >= self.max_subscribers_per_conversation
+            or self._subscriber_count >= self.max_subscribers_total
+        ):
+            raise RuntimeError("too many conversation subscribers")
         queue = asyncio.Queue(maxsize=self.queue_size)
         self.subscribers[conversation_id].add(queue)
+        self._subscriber_count += 1
         self._subscriber_event.set()
         return queue
 
@@ -54,9 +72,15 @@ class TaskEventFanoutHub:
         rows = self.subscribers.get(conversation_id)
         if not rows:
             return
-        rows.discard(queue)
+        if queue in rows:
+            rows.discard(queue)
+            self._subscriber_count = max(0, self._subscriber_count - 1)
         if not rows:
             self.subscribers.pop(conversation_id, None)
+
+    @property
+    def subscriber_count(self) -> int:
+        return self._subscriber_count
 
     def _latest_id(self) -> int:
         with self.store.engine.connect() as connection:
