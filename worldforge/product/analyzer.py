@@ -74,12 +74,12 @@ class ProductAnalyzer:
         return "\n".join(lines) or "没有额外素材"
 
     @staticmethod
-    def _evidence_confidence(evidence, runtime_result):
+    def _evidence_confidence(evidence):
+        """Describe evidence richness, not truth of the model's conclusion."""
         kinds = {item.get("type") for item in evidence}
         diversity = min(.24, max(0, len(kinds) - 1) * .06)
         volume = min(.18, len(evidence) * .035)
-        verified = .34 if runtime_result else 0.0
-        return round(min(.92, .18 + diversity + volume + verified), 2)
+        return round(min(.60, .18 + diversity + volume), 2)
 
     async def run(self, *, text, assets, provider_key, sink, history=None, human_feedback_gate=False):
         history = history or []
@@ -123,16 +123,23 @@ class ProductAnalyzer:
             "percent": 34,
         })
 
+        model_assets = self._model_assets(assets)
+        provider = self.providers.choose(provider_key, model_assets)
+        generated = None
         runtime_result = None
-        if intent in {"battle_review", "balance", "regression"}:
+
+        # Demo mode may exercise the internal Harness, but that BalanceLab run is not a
+        # replay of the user's game, so it must never become user evidence or increase
+        # evidence confidence. It is also forbidden from evolving the global Harness.
+        if provider_key == "demo" and intent in {"battle_review", "balance", "regression"}:
             scenario = {
                 "battle_review": "boss_burst",
                 "balance": "glass_cannon",
                 "regression": "loot_exploit",
             }[intent]
             await sink("progress", {
-                "step": "主动复核",
-                "detail": "正在用一致的初始条件重复关键路径，区分偶发与稳定问题",
+                "step": "Harness 自检",
+                "detail": "正在运行内置 BalanceLab 示例场景；该结果不会被当作用户素材复现证据",
                 "percent": 58,
             })
             summary = await self.engine.run(
@@ -143,35 +150,34 @@ class ProductAnalyzer:
                     branch_width=3,
                     rollout_horizon=2,
                     rollouts_per_branch=2,
-                    enable_evolution=bool(human_feedback_gate),
+                    enable_evolution=False,
                 ),
                 demo_delay=0,
-                session_meta={"human_feedback_gate": bool(human_feedback_gate)},
+                session_meta={
+                    "source": "product_demo_self_check",
+                    "user_evidence": False,
+                    "human_feedback_gate": bool(human_feedback_gate),
+                },
             )
-            runtime_result = summary.model_dump()
-            evidence.append({
-                "id": f"E{len(evidence) + 1}",
-                "type": "replay",
-                "label": "复核结果",
-                "title": (
-                    f"同条件复核 {summary.steps} 步 · "
-                    f"{'异常路径已复现' if summary.outcome not in {'victory', 'success'} else '结果稳定'}"
-                ),
-            })
+            runtime_result = {
+                **summary.model_dump(),
+                "scope": "internal_balance_lab",
+                "user_evidence": False,
+            }
 
         await sink("progress", {
             "step": "交叉核对",
-            "detail": "正在对照图像、录像关键帧、声音、日志与复核结果，寻找相互支持或冲突的证据",
+            "detail": (
+                "正在对照图像、录像关键帧、声音和日志，寻找相互支持或冲突的证据"
+                if provider
+                else "已完成素材索引；当前没有可用推理资源，不会把元数据或内置示例场景写成事实结论"
+            ),
             "percent": 78,
         })
 
-        model_assets = self._model_assets(assets)
-        provider = self.providers.choose(provider_key, model_assets)
-        generated = None
-
         # If no full-capability route is available, keep useful visual evidence rather
         # than discarding the entire inference pass because one audio asset is present.
-        if provider is None and any(
+        if provider is None and provider_key != "demo" and any(
             str(asset.get("mime", "")).startswith("audio/") for asset in model_assets
         ):
             visual_assets = [
@@ -198,7 +204,7 @@ class ProductAnalyzer:
                         {
                             "role": "system",
                             "content": (
-                                "你是游戏研发任务的证据分析器。只根据给定素材、任务历史和复核结果形成结论；"
+                                "你是游戏研发任务的证据分析器。只根据给定素材和任务历史形成结论；"
                                 "区分观察、推断和待验证项；不要把猜测写成事实；优先给出可执行的下一步验证。"
                             ),
                         },
@@ -206,7 +212,7 @@ class ProductAnalyzer:
                         {
                             "role": "user",
                             "content": self._prompt(
-                                text, intent, evidence, runtime_result, history, assets
+                                text, intent, evidence, history, assets
                             ),
                         },
                     ],
@@ -218,37 +224,63 @@ class ProductAnalyzer:
                     "detail": str(exc),
                 })
 
-        confidence = self._evidence_confidence(evidence, runtime_result)
+        grounded = bool(generated)
+        confidence = self._evidence_confidence(evidence)
         modality_counts = Counter(item.get("type", "file") for item in evidence)
         await sink("progress", {
             "step": "形成结论",
-            "detail": "已完成证据归并、冲突检查和下一步验证建议",
+            "detail": (
+                "已完成基于当前素材的证据归并、冲突检查和下一步验证建议"
+                if grounded
+                else "已完成素材整理，但当前证据没有经过可用推理 Provider；结论保持为待验证"
+            ),
             "percent": 100,
         })
         return {
-            "answer": generated or self._demo_answer(intent),
+            "answer": generated or self._unavailable_answer(
+                intent, assets, provider_key, runtime_result
+            ),
             "intent": intent,
             "evidence": evidence,
-            "deliverables": self._deliverables(intent, evidence, runtime_result),
+            "deliverables": self._deliverables(
+                intent, evidence, runtime_result, grounded=grounded
+            ),
             "runtime": runtime_result,
             "context": {
                 "history_messages": len(history),
                 "task_assets": len(assets),
                 "evidence_confidence": confidence,
                 "modality_counts": dict(modality_counts),
+                "analysis_grounded": grounded,
+                "provider_requested": provider_key,
             },
-            "suggestions": self._suggestions(intent),
+            "suggestions": self._suggestions(intent, grounded=grounded),
         }
 
-    def _deliverables(self, intent, evidence, runtime_result):
+    def _deliverables(self, intent, evidence, runtime_result, *, grounded=True):
         evidence_ids = [item.get("id") for item in evidence if item.get("id")]
         evidence_pack = {
             "type": "evidence_pack",
             "title": "证据包",
-            "summary": "保留本次判断使用的素材索引与主动复核结果，方便团队复查。",
+            "summary": "保留本次任务的素材索引，方便团队复查；内部 BalanceLab 自检不计入用户证据。",
             "items": [item.get("title", "") for item in evidence if item.get("title")],
             "evidence_ids": evidence_ids,
         }
+        if not grounded:
+            return [
+                {
+                    "type": "validation_plan",
+                    "title": "待验证计划",
+                    "summary": "当前没有可用的素材推理结论；先补齐推理能力或可执行复现环境，再决定问题性质。",
+                    "items": [
+                        "配置与素材类型匹配的推理 Provider",
+                        "保留当前素材作为验证基线",
+                        "对关键触发条件做可重复的真实环境验证",
+                    ],
+                    "evidence_ids": evidence_ids,
+                },
+                evidence_pack,
+            ]
         if intent == "battle_review":
             return [
                 {
@@ -329,17 +361,16 @@ class ProductAnalyzer:
         return {
             "battle_review": "正在对齐异常时间段、关键受击、画面变化与资源变化",
             "balance": "正在比较高风险组合、资源曲线与胜负边界",
-            "regression": "正在核对版本差异并尝试复现异常路径",
+            "regression": "正在核对版本差异和可验证的复现条件",
             "npc": "正在检查角色行为、上下文一致性与异常跳变",
         }.get(intent, "正在拆解问题并寻找最相关的证据")
 
-    def _prompt(self, text, intent, evidence, runtime, history, assets):
+    def _prompt(self, text, intent, evidence, history, assets):
         return (
             f"当前研发目标：{text}\n"
             f"任务类型：{intent}\n"
             f"素材证据：\n{self._asset_context(assets)}\n"
             f"证据索引：{evidence}\n"
-            f"主动复核结果：{runtime}\n"
             f"此前已有 {len(history)} 条任务消息。\n\n"
             "输出要求：\n"
             "1. 先给结论，并明确置信度高/中/低。\n"
@@ -348,32 +379,32 @@ class ProductAnalyzer:
             "4. 最后给 2-4 个能最大幅度减少不确定性的下一步验证动作。"
         )
 
-    def _demo_answer(self, intent):
-        if intent == "battle_review":
-            return (
-                "### 结论\n异常更像是**高爆发阶段的资源衔接问题**，不是单一伤害数值失控。\n\n"
-                "### 证据\n1. 高风险阶段承伤和资源消耗同时抬升。\n"
-                "2. 同条件复核可以再次定位关键窗口。\n\n"
-                "### 建议\n优先检查减伤覆盖、敌方爆发参数和技能冷却。"
+    def _unavailable_answer(self, intent, assets, provider_key, runtime_result):
+        asset_note = (
+            f"已登记并解析 {len(assets)} 份素材的可用元数据。"
+            if assets
+            else "当前任务没有附加素材。"
+        )
+        demo_note = ""
+        if provider_key == "demo" and runtime_result:
+            demo_note = (
+                "\n\n### Harness 自检\n"
+                "已运行内置 BalanceLab 示例场景，用于检查 Harness 流程是否能执行。"
+                "这个结果不是你的游戏环境、不是同条件复现，也不作为用户素材证据。"
             )
-        if intent == "balance":
-            return (
-                "### 结论\n当前数值存在高收益高波动组合。\n\n"
-                "### 建议\n优先收窄极端波动，并用分层玩家策略重新验证。"
-            )
-        if intent == "regression":
-            return (
-                "### 结论\n异常具备稳定复现条件，建议按版本回归问题处理。\n\n"
-                "### 建议\n锁定配置差异并补自动回归用例。"
-            )
-        if intent == "npc":
-            return (
-                "### 结论\n角色行为存在上下文切换不够平滑的问题。\n\n"
-                "### 建议\n优先验证冲突指令和连续多轮交互。"
-            )
-        return "### 结论\n已完成当前素材整理与问题拆解。可以继续追加素材和追问，不需要重新描述背景。"
+        return (
+            "### 当前结论\n"
+            "**证据不足，暂不形成游戏事实结论。**\n\n"
+            f"{asset_note} 当前没有可用、且与这些素材能力匹配的推理 Provider，"
+            "因此系统不会根据任务类型自动写出 Boss 爆发、数值失衡、回归复现或 NPC 行为异常等具体判断。"
+            f"{demo_note}\n\n"
+            "### 下一步\n"
+            "配置可用的文本/多模态 Provider，或接入能真实执行你的游戏版本与测试条件的复现环境后，再基于证据形成结论。"
+        )
 
-    def _suggestions(self, intent):
+    def _suggestions(self, intent, *, grounded=True):
+        if not grounded:
+            return ["配置可用推理 Provider", "补充可验证的复现条件", "继续整理素材证据"]
         return {
             "battle_review": ["把异常时间段单独展开", "继续核对伤害配置", "生成回归测试清单"],
             "balance": ["看不同玩家策略的结果", "找出最危险的数值组合", "生成调参建议"],
