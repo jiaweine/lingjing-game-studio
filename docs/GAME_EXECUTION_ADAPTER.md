@@ -10,7 +10,7 @@ The `GameExecutionAdapter` contract is the boundary for real-game execution. Evi
 | --- | --- | --- |
 | `observed` | User-provided video, image, log, telemetry, or configuration | No |
 | `synthetic` | Internal WorldForge scenario or other simulated experiment | No |
-| `reproduced` | Observation captured by a `GameExecutionAdapter` from a loaded game build | Yes, within the adapter's recorded build/seed/input scope |
+| `reproduced` | Observation captured by a `GameExecutionAdapter` from a loaded game build | Only when explicit reproduction assertions pass |
 | `inferred` | Model or rule-based conclusion derived from evidence | No |
 
 ## Contract
@@ -27,6 +27,27 @@ The `GameExecutionAdapter` contract is the boundary for real-game execution. Evi
 
 Every `ExecutionObservation` produced by this boundary is explicitly marked `reproduced`. Synthetic experiments should never be wrapped in this adapter merely to obtain a stronger provenance label.
 
+## Reproduction orchestration
+
+`GameReproductionService` turns the adapter primitives into one bounded, auditable reproduction attempt:
+
+1. validate that the adapter engine matches the requested build;
+2. load the exact `GameBuildRef`;
+3. reset with the requested deterministic seed when supported;
+4. create a baseline checkpoint;
+5. execute the ordered action trace;
+6. capture the final observation;
+7. evaluate explicit assertions;
+8. close runner resources even when execution fails.
+
+The distinction between **real-runtime evidence** and a **verified issue reproduction** is intentional:
+
+- `executed_not_verified` — the real build was executed, but no explicit assertion was supplied;
+- `not_reproduced` — one or more explicit assertions failed;
+- `verified` — at least one assertion exists and all assertions passed.
+
+Therefore a real game frame/log can have `reproduced` provenance without the product claiming that the reported bug itself was reproduced. The stronger product claim requires `claim_status=verified`.
+
 ## Build identity
 
 A real reproduction should retain at least:
@@ -38,7 +59,8 @@ A real reproduction should retain at least:
 - deterministic seed when supported;
 - action/input sequence;
 - checkpoint/save-state identity;
-- relevant logs, metrics, frames, and videos.
+- relevant logs, metrics, frames, and videos;
+- assertion count and assertion outcomes.
 
 This information is required for replayability and for comparing a failing build with a candidate fix.
 
@@ -57,8 +79,8 @@ The first production adapter should stay narrow and deep rather than attempting 
 9. process timeout/crash handling;
 10. build/source revision metadata.
 
-Only after this path can reliably reproduce real issues should Lingjing promote a finding from `synthetic` hypothesis support to `reproduced` evidence.
+Only after this path can reliably reproduce real issues should Lingjing promote a finding from `synthetic` hypothesis support to a verified real-game reproduction claim.
 
 ## Non-goals of the current contract
 
-This change does **not** claim that Unity, Unreal, Godot, mobile emulators, consoles, or proprietary engines are already integrated. It establishes the stable boundary and evidence semantics those integrations must satisfy.
+This change does **not** claim that Unity, Unreal, Godot, mobile emulators, consoles, or proprietary engines are already integrated. It establishes the stable boundary, orchestration semantics, and evidence rules those integrations must satisfy.
