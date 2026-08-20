@@ -10,6 +10,53 @@ from sqlalchemy import and_, select, update
 from worldforge.api.app import _fail_product_job, _run_analysis_job, product_store
 
 
+def _postgres_claim_statement(store, now: float):
+    """Build the PostgreSQL queue claim with row-level skip-locked semantics."""
+    return (
+        select(store.jobs)
+        .where(
+            and_(
+                store.jobs.c.status == "queued",
+                store.jobs.c.available_at <= now,
+            )
+        )
+        .order_by(store.jobs.c.available_at, store.jobs.c.created_at)
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+
+
+def claim_external_job(store, worker_id: str) -> dict | None:
+    """Claim one job without making concurrent PostgreSQL workers fight over one row."""
+    if store.engine.dialect.name != "postgresql":
+        return store.claim_job(worker_id)
+
+    now = time.time()
+    with store.engine.begin() as connection:
+        row = connection.execute(_postgres_claim_statement(store, now)).first()
+        if not row:
+            return None
+        job = store._json_row(row)
+        result = connection.execute(
+            update(store.jobs)
+            .where(
+                and_(
+                    store.jobs.c.id == job["id"],
+                    store.jobs.c.status == "queued",
+                )
+            )
+            .values(
+                status="running",
+                worker_id=worker_id,
+                claimed_at=now,
+                attempts=int(job.get("attempts") or 0) + 1,
+            )
+        )
+        if result.rowcount != 1:
+            return None
+    return store.get_job(job["id"], workspace_id=job["workspace_id"])
+
+
 def renew_job_lease(store, job_id: str, worker_id: str, *, now: float | None = None) -> bool:
     """Refresh one running job lease only when it is still owned by this worker."""
     now = time.time() if now is None else float(now)
@@ -156,7 +203,7 @@ async def run_worker():
             )
             last_reap = now
 
-        job = await asyncio.to_thread(product_store.claim_job, worker_id)
+        job = await asyncio.to_thread(claim_external_job, product_store, worker_id)
         if not job:
             await asyncio.sleep(idle)
             continue
