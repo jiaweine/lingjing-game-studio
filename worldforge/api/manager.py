@@ -59,6 +59,7 @@ class RunManager:
                 session_meta = {
                     "workspace_id": workspace_id,
                     "user_id": user_id,
+                    "commit_shared_memory": bool(config.enable_evolution),
                 }
                 scenario = get_scenario(config.scenario_id)
                 harness_baseline = HarnessGenomeStore.snapshot()
