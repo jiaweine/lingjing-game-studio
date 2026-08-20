@@ -166,25 +166,27 @@ flowchart LR
 
 ---
 
-## 工作台 · Real Product Surface
+## 工作台 · Browser UI Fixtures
 
-下面 8 张图来自浏览器产品状态。README Gallery 会从运行中的产品采集 PNG，发布到稳定 Release 资产，并在 CI 中检查 README 资源可访问性。
+下面 8 张图用于展示和回归前端状态。`scripts/product_ui_e2e.py` 用 **Playwright 打开真实前端代码，并注入 mock API / mock WebSocket fixture** 来稳定构造登录、上传、执行、证据、反馈等 UI 状态，再采集 PNG。它能证明前端状态渲染和交互路径，不代表截图里的具体结论来自真实后端、真实模型或真实游戏复现。真实后端产品链路另由 `scripts/product_backend_e2e.py` 和 pytest 覆盖。
+
+README Gallery workflow 会把这些 UI fixture PNG 发布到稳定 Release 资产，并检查图片文件和 GitHub README 中的加载结果。
 
 | **01 · 身份入口** | **02 · 新任务** |
 |---|---|
-| 工作空间身份、权限与安全边界。<br><br>![登录与工作空间入口](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/auth.png) | 从研发目标开始，而不是从模型配置开始。<br><br>![空任务工作台](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/workspace-empty.png) |
+| 工作空间身份、权限与安全边界的 UI 状态。<br><br>![登录与工作空间入口](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/auth.png) | 从研发目标开始的空任务工作台 UI。<br><br>![空任务工作台](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/workspace-empty.png) |
 
 | **03 · 素材输入** | **04 · 执行中** |
 |---|---|
-| 图片、视频、音频、日志、配置和文档进入同一个任务上下文。<br><br>![多模态素材上传](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/upload.png) | 产品任务进度持续进入任务事件轨迹，需要时可以停止。<br><br>![任务执行状态](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/task-running.png) |
+| 图片、视频、音频、日志、配置和文档进入同一个任务上下文的 UI。<br><br>![多模态素材上传](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/upload.png) | 任务进度、停止等交互状态的 UI fixture。<br><br>![任务执行状态](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/task-running.png) |
 
 | **05 · 任务结果** | **06 · 证据核验** |
 |---|---|
-| 推理结果、后续动作、结构化交付和协作留在同一个工作台；无可用 Provider 时会明确返回“证据不足”，而不是生成场景化事实。<br><br>![任务结果工作台](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/workspace.png) | 结果保留素材索引与可用证据入口；只有实际用户素材能计入用户证据，内部 BalanceLab demo 自检不会被伪装成“同条件复现”。<br><br>![证据核验](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/evidence.png) |
+| 结果、后续动作、结构化交付和协作的前端呈现。真实后端在无可用 Provider 时会明确返回“证据不足”，而不是生成场景化事实。<br><br>![任务结果工作台](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/workspace.png) | 证据入口、反馈与核验状态的前端呈现；截图中的 mock replay 文案不代表真实用户游戏已被复现。<br><br>![证据核验](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/evidence.png) |
 
 | **07 · 持续上下文** | **08 · 产品总览** |
 |---|---|
-| 后续追问继承当前任务已有素材，不把上一轮上下文丢掉。<br><br>![多模态任务上下文](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/multimodal.png) | 控制、证据、交付与协作集中在同一个任务空间。<br><br>![产品总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png) |
+| 后续追问继承当前任务已有素材的前端状态。<br><br>![多模态任务上下文](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/multimodal.png) | 控制、证据、交付与协作的整体 UI。<br><br>![产品总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png) |
 
 ### Inference / Demo boundary
 
@@ -586,7 +588,7 @@ python scripts/harness_evolution_benchmark.py
 
 ## Product Boundary
 
-灵境不会把“Agent 自主”理解成无限权限：永久删除任务需要审批；工作空间角色限制写操作；Harness promotion 有独立门禁；候选 Genome 不能通过修改 Verifier 或 held-out protocol 获得晋升。
+灵境不会把“Agent 自主”理解成无限权限：永久删除任务需要审批；工作空间角色限制写操作；viewer 不能启动 Runtime run、selfplay 或 benchmark 等高成本计算；Harness promotion 有独立门禁；候选 Genome 不能通过修改 Verifier 或 held-out protocol 获得晋升。
 
 同时，**产品工作台的用户素材结论与 BalanceLab Runtime 是两条不同的证据边界**：BalanceLab 可以证明 Harness 机制和内置环境中的执行/恢复能力，但不能证明某个用户游戏 bug 已被真实复现。没有可用推理 Provider 时，工作台只会保留素材与验证计划，不再输出固定场景结论。
 
@@ -614,7 +616,7 @@ python scripts/harness_evolution_benchmark.py
 python scripts/product_backend_e2e.py
 ```
 
-浏览器 E2E 与 README 图片加载检查由 GitHub Actions 运行。
+浏览器 UI fixture E2E、后端 E2E 与 README 图片加载检查由 GitHub Actions 运行。
 
 ## Runtime / Product API
 
@@ -624,12 +626,13 @@ Runtime run API 实际挂在 `/api` 前缀下：
 - `GET /api/runs/{id}`：查询状态；
 - `GET /api/runs/{id}/events?after_seq=N`：读取持久事件链；
 - `GET /api/runs/{id}/verify`：验证该 run 的事件 hash chain；
-- `GET /api/runs/{id}/report`：读取 run report；
+- `GET /api/runs/{id}/report`：读取 run report；其中 `verifier_coverage` 只统计实际带 verification payload 的动作，不再用恒等式冒充 100% 覆盖；
 - `POST /api/runs/{id}/cancel`：停止当前进程中仍在执行的 Runtime run。
 
-当前**没有** `GET /runs/{id}/stream` 这条 SSE API。产品任务的实时事件使用：
+当前**没有** `GET /runs/{id}/stream` 这条 SSE API。实时事件使用 WebSocket：
 
-- `WS /ws/conversations/{conversation_id}?after_id=N`：订阅工作台任务事件；断线后可用 `after_id` 从持久事件补放。
+- `WS /ws/conversations/{conversation_id}?after_id=N`：订阅工作台任务事件；断线后可用 `after_id` 从持久事件补放；
+- `WS /ws/runs/{session_id}`：订阅 Runtime run 事件，并在连接时先 replay 已持久化事件。
 
 主要产品 API 还包括 `/api/conversations`、`/api/assets`、`/api/jobs/{id}`、`/api/messages/{id}/feedback`、`/api/workspace/*`、`/api/metrics`。生产环境默认要求认证，并建议配合外部反向代理 / 分布式限流与外部队列使用。
 
@@ -638,7 +641,11 @@ Runtime run API 实际挂在 `/api` 前缀下：
 - `RunConfig.max_steps` 有请求级硬上限；benchmark scenario fan-out 也有限制，防止单请求无限放大工作量。
 - 进程内 `RunManager` 只保留有界数量的完成 summary，并释放完成的 `asyncio.Task` 和空订阅队列；持久事件仍是历史状态来源。
 - 进程内滑动窗口限流器对跟踪 key 数量设置硬上限，避免高基数身份/IP 造成无限内存增长。
+- conversation / run WebSocket 对单会话订阅者和单进程总订阅者都有限制；队列本身也是有界的，超限连接会被拒绝。
+- 没有 WebSocket subscriber 时，conversation event fanout 不再每 120ms 空轮询数据库；新订阅出现后由持久事件 replay 补齐断线期间的数据。
+- 上传的媒体 probe、视频关键帧提取和上传阶段对象存储写入会移出 FastAPI event loop，避免 ffprobe / ffmpeg 或慢存储阻塞同 worker 的其他请求。
 - 这些是单进程保护，不替代生产级网关限流、worker concurrency、队列 backpressure、数据库连接池和容量规划。
+- 如果使用远端对象存储，分析任务中的素材 materialization / 本地缓存仍需要根据真实素材大小和并发量做容量规划；当前不是一个跨节点共享的有界媒体缓存服务。
 
 ## Repository
 
