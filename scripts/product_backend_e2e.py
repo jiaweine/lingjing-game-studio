@@ -53,6 +53,8 @@ with TestClient(app) as client:
 
     providers = client.get("/api/providers").json()
     assert len(providers) >= 7
+    demo = next(item for item in providers if item["key"] == "demo")
+    assert "不会" in demo["note"] or "不" in demo["note"]
     report["checks"]["provider_gateway"] = True
 
     conversation = client.post(
@@ -94,8 +96,14 @@ with TestClient(app) as client:
     data = client.get(f"/api/conversations/{conversation_id}").json()
     assert len(data["messages"]) == 2
     assert data["messages"][-1]["role"] == "assistant"
-    assert len(data["messages"][-1]["payload"].get("evidence", [])) >= len(asset_ids) + 1
+    payload = data["messages"][-1]["payload"]
+    assert len(payload.get("evidence", [])) == len(asset_ids)
+    assert payload.get("context", {}).get("analysis_grounded") is False
+    assert payload.get("runtime", {}).get("scope") == "internal_balance_lab"
+    assert payload.get("runtime", {}).get("user_evidence") is False
+    assert "证据不足" in data["messages"][-1]["content"]
     report["checks"]["execution_result"] = True
+    report["checks"]["demo_boundary"] = True
     report["events"] = [event["type"] for event in data["events"]]
     assert report["events"][-1] == "answer.ready"
     report["checks"]["durable_events"] = True
@@ -123,8 +131,11 @@ with TestClient(app) as client:
     assert response.status_code == 200, response.text
     data = client.get(f"/api/conversations/{conversation_id}").json()
     assert len(data["messages"]) == 4
-    assert data["messages"][-1]["payload"].get("context", {}).get("history_messages") == 2
-    assert data["messages"][-1]["payload"].get("context", {}).get("task_assets") == len(asset_ids)
+    followup = data["messages"][-1]["payload"]
+    assert followup.get("context", {}).get("history_messages") == 2
+    assert followup.get("context", {}).get("task_assets") == len(asset_ids)
+    assert followup.get("context", {}).get("analysis_grounded") is False
+    assert "证据不足" in data["messages"][-1]["content"]
     report["checks"]["followup_context"] = True
 
 report["ok"] = all(report["checks"].values()) and not report["errors"]
