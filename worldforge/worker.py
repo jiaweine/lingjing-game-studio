@@ -38,8 +38,9 @@ def requeue_expired_jobs(
     """Recover jobs abandoned by dead external workers.
 
     `api-inprocess` jobs are intentionally excluded: this lease protocol belongs to the
-    external worker mode. Each reclaim is compare-and-swap guarded by the stale
-    `claimed_at` value so a worker that renewed its lease after discovery is not stolen.
+    external worker mode. Each reclaim is compare-and-swap guarded by both the stale
+    lease timestamp and original worker id, so a renewed or reassigned job cannot be
+    stolen by a concurrent reaper.
     """
     now = time.time() if now is None else float(now)
     cutoff = now - max(30.0, float(lease_seconds))
@@ -53,6 +54,7 @@ def requeue_expired_jobs(
                 store.jobs.c.id,
                 store.jobs.c.conversation_id,
                 store.jobs.c.claimed_at,
+                store.jobs.c.worker_id,
                 store.jobs.c.attempts,
             ).where(
                 and_(
@@ -67,10 +69,12 @@ def requeue_expired_jobs(
 
         for row in rows:
             stale_claimed_at = row.claimed_at
+            stale_worker_id = row.worker_id
             where = and_(
                 store.jobs.c.id == row.id,
                 store.jobs.c.status == "running",
                 store.jobs.c.claimed_at == stale_claimed_at,
+                store.jobs.c.worker_id == stale_worker_id,
             )
             if int(row.attempts or 0) >= max_attempts:
                 result = connection.execute(
@@ -78,6 +82,8 @@ def requeue_expired_jobs(
                     .where(where)
                     .values(
                         status="failed",
+                        worker_id=None,
+                        claimed_at=None,
                         completed_at=now,
                         last_error="worker lease expired",
                     )
