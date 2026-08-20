@@ -6,13 +6,14 @@ from pathlib import Path
 from threading import RLock
 import json
 import math
-import os
 from typing import Literal
 import uuid
 
 from pydantic import BaseModel, Field
 
 from worldforge.models import BeliefState, GoalState, WorldState
+
+from .persistence import atomic_write_text, exclusive_path_lock
 
 
 class LinearGate(BaseModel):
@@ -286,37 +287,90 @@ class HarnessGenomeStore:
         return HarnessGenome.model_validate_json(path.read_text(encoding="utf-8"))
 
     @classmethod
+    def _read_persistent(cls) -> HarnessGenome:
+        configured = cls._path
+        if configured and configured.exists():
+            try:
+                return HarnessGenome.model_validate_json(
+                    configured.read_text(encoding="utf-8")
+                )
+            except (ValueError, json.JSONDecodeError):
+                return cls._bootstrap()
+        return cls._bootstrap()
+
+    @classmethod
     def current(cls) -> HarnessGenome:
+        """Return the pinned run genome or this process's active cached genome."""
+
         override = cls._override.get()
         if override is not None:
             return override
         with cls._lock:
             if cls._active is None:
-                configured = cls._path
-                if configured and configured.exists():
-                    try:
-                        cls._active = HarnessGenome.model_validate_json(
-                            configured.read_text(encoding="utf-8")
-                        )
-                    except (ValueError, json.JSONDecodeError):
-                        cls._active = cls._bootstrap()
-                else:
-                    cls._active = cls._bootstrap()
+                cls._active = cls._read_persistent()
             return cls._active
 
     @classmethod
-    def promote(cls, genome: HarnessGenome) -> None:
+    def snapshot(cls) -> HarnessGenome:
+        """Refresh from durable state at a task boundary and return an isolated copy."""
+
+        override = cls._override.get()
+        if override is not None:
+            return override.model_copy(deep=True)
         with cls._lock:
-            cls._active = genome.model_copy(deep=True)
+            cls._active = cls._read_persistent()
+            return cls._active.model_copy(deep=True)
+
+    @classmethod
+    def promote(
+        cls,
+        genome: HarnessGenome,
+        *,
+        expected_baseline: HarnessGenome | None = None,
+    ) -> bool:
+        """Atomically promote iff durable state still matches the evaluated baseline.
+
+        The compare-and-swap check prevents a slow worker from overwriting a newer generation
+        that another worker already promoted after both started from the same baseline.
+        """
+
+        with cls._lock:
             if cls._path:
-                cls._path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = cls._path.with_suffix(cls._path.suffix + ".tmp")
-                tmp.write_text(genome.model_dump_json(indent=2), encoding="utf-8")
-                os.replace(tmp, cls._path)
+                with exclusive_path_lock(cls._path):
+                    durable = cls._read_persistent()
+                    if expected_baseline is not None and (
+                        durable.genome_id != expected_baseline.genome_id
+                        or durable.generation != expected_baseline.generation
+                    ):
+                        cls._active = durable
+                        return False
+                    if genome.generation <= durable.generation:
+                        raise ValueError(
+                            "Harness promotion must advance the durable generation"
+                        )
+                    atomic_write_text(
+                        cls._path,
+                        genome.model_dump_json(indent=2),
+                    )
+                    cls._active = genome.model_copy(deep=True)
+                    return True
+
+            durable = cls._active or cls._bootstrap()
+            if expected_baseline is not None and (
+                durable.genome_id != expected_baseline.genome_id
+                or durable.generation != expected_baseline.generation
+            ):
+                return False
+            if genome.generation <= durable.generation:
+                raise ValueError("Harness promotion must advance the active generation")
+            cls._active = genome.model_copy(deep=True)
+            return True
 
     @classmethod
     @contextmanager
     def use(cls, genome: HarnessGenome):
+        """Pin one immutable generation for a run/evaluation context."""
+
         token = cls._override.set(genome)
         try:
             yield genome
