@@ -1,5 +1,5 @@
 {
-  "ok": false,
+  "ok": true,
   "python": "3.12.14 (main, Aug 13 2026, 02:47:42) [GCC 13.3.0]",
   "commands": [
     {
@@ -24,8 +24,8 @@
         "/opt/hostedtoolcache/Python/3.12.14/x64/bin/python",
         "scripts/stress_smoke.py"
       ],
-      "returncode": 1,
-      "output_tail": "Traceback (most recent call last):\n  File \"/home/runner/work/lingjing-game-studio/lingjing-game-studio/scripts/stress_smoke.py\", line 11, in <module>\n    from worldforge.api.app import app\nModuleNotFoundError: No module named 'worldforge'\n"
+      "returncode": 0,
+      "output_tail": "{\n  \"public_health_burst\": {\n    \"requests\": 240,\n    \"statuses\": {\n      \"200\": 240\n    },\n    \"avg_ms\": 51.81,\n    \"p95_ms\": 78.24,\n    \"max_ms\": 120.78\n  },\n  \"protected_rate_limit_burst\": {\n    \"requests\": 160,\n    \"statuses\": {\n      \"200\": 120,\n      \"429\": 40\n    },\n    \"avg_ms\": 99.13,\n    \"p95_ms\": 163.98,\n    \"max_ms\": 193.34\n  },\n  \"note\": \"In-process ASGI smoke only. It validates bounded degradation and catches 5xx/concurrency regressions; it is not a production capacity benchmark.\"\n}\n"
     }
   ]
 }
