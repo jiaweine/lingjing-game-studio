@@ -131,7 +131,7 @@ class ProviderRegistry:
                 True,
                 True,
                 True,
-                "无需密钥，用于完整体验与验收",
+                "只演示产品流程和 Harness 自检；不会把内置场景结果冒充用户素材结论",
             ).dict()
         )
         return rows
@@ -158,7 +158,13 @@ class ProviderRegistry:
         return True
 
     def choose(self, preferred: str | None, assets: list[dict]):
-        if preferred and preferred not in {"auto", "demo"}:
+        # Demo is deliberately not an inference provider. Treating it like "auto"
+        # previously allowed canned/local BalanceLab output to look like analysis of
+        # the user's uploaded game evidence.
+        if preferred == "demo":
+            return None
+
+        if preferred and preferred != "auto":
             provider = self.providers.get(preferred)
             return provider if provider and self._compatible(provider, assets) else None
 
