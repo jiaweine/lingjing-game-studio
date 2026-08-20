@@ -18,6 +18,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Stress hardening regressions
-        run: pytest -q tests/test_stress_hardening.py tests/test_fanout.py tests/test_production_config.py
+        run: >-
+          pytest -q
+          tests/test_stress_hardening.py
+          tests/test_fanout.py
+          tests/test_production_config.py
+          tests/test_product_metrics.py
+          tests/test_worker_queue.py
       - name: Bounded API concurrency smoke
         run: python scripts/stress_smoke.py
