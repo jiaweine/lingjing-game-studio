@@ -5,6 +5,7 @@ from typing import Callable
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from worldforge.product.metrics import calculate_product_metrics
 from worldforge.security import Principal
 
 
@@ -427,7 +428,10 @@ def build_control_router(
     @router.get("/api/metrics")
     def product_metrics(principal: Principal = Depends(require_principal)):
         require_manager(principal)
-        return store.product_metrics(workspace_id=principal.workspace_id)
+        return calculate_product_metrics(
+            store,
+            workspace_id=principal.workspace_id,
+        )
 
     @router.get("/api/quality-gate")
     def quality_gate(
