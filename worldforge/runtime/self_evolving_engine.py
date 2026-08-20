@@ -50,22 +50,6 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
             ),
             self.harness_evolver,
         )
-        # Backward-compatible capability name for older diagnostics clients.
-        # `harness-evolution` remains the canonical plugin identity.
-        self.plugins.mount(
-            PluginDescriptor(
-                "failure-evolver",
-                "evolution",
-                dependencies=("harness-evolution",),
-                metadata={
-                    "compatibility_alias": True,
-                    "deprecated": True,
-                    "alias_for": "harness-evolution",
-                    "heldout_gate": True,
-                },
-            ),
-            self.harness_evolver,
-        )
 
     def _mount_harness_genome(self, genome: HarnessGenome) -> None:
         self.plugins.mount(
@@ -84,15 +68,10 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
         )
 
     async def run(self, config: RunConfig, **kwargs):
-        # Managed callers may snapshot the durable generation first so audit provenance
-        # and the canonical trajectory refer to the exact same Harness. Direct callers
-        # still refresh the durable generation at this task boundary.
-        provided_baseline = kwargs.pop("_harness_baseline", None)
-        baseline = (
-            provided_baseline.model_copy(deep=True)
-            if provided_baseline is not None
-            else HarnessGenomeStore.snapshot()
-        )
+        # A worker refreshes durable state only at the task boundary, then pins that exact
+        # generation for the whole canonical trajectory. Another worker may promote meanwhile,
+        # but this task never changes phenotype halfway through execution.
+        baseline = HarnessGenomeStore.snapshot()
         self._mount_harness_genome(baseline)
         with HarnessGenomeStore.use(baseline):
             summary = await super().run(config, **kwargs)
