@@ -26,12 +26,24 @@ def test_managed_run_persists_and_exposes_runtime_provenance(tmp_path, monkeypat
         status = manager.status(session_id)
         stored = manager.engine.events.session_meta(session_id)
         provenance = status["provenance"]
+        started = next(
+            event
+            for event in manager.engine.events.list_events(session_id)
+            if event.event_type == "run.started"
+        )
+        harness_plugin = next(
+            plugin
+            for plugin in started.payload["plugins"]
+            if plugin["name"] == "harness-genome"
+        )
 
         assert status["status"] == "completed"
         assert provenance == stored["meta"]["provenance"]
         assert provenance["source_revision"] == "test-source-sha"
         assert provenance["policy"]["generation"] >= 1
         assert provenance["harness"]["genome_id"]
+        assert provenance["harness"]["genome_id"] == harness_plugin["metadata"]["genome_id"]
+        assert provenance["harness"]["generation"] == harness_plugin["metadata"]["generation"]
         assert provenance["skill_bank"]["count"] >= 1
         assert len(provenance["combined_fingerprint"]) == 64
 
