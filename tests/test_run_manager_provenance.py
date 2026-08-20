@@ -39,7 +39,13 @@ def test_managed_run_persists_and_exposes_runtime_provenance(tmp_path, monkeypat
 
         assert status["status"] == "completed"
         assert provenance == stored["meta"]["provenance"]
+        assert provenance["schema_version"] == 2
         assert provenance["source_revision"] == "test-source-sha"
+        assert provenance["kernel"]["class"] == "worldforge.runtime.engine.WorldForgeEngine"
+        assert provenance["runtime_wrapper"]["class"].endswith(
+            ".SelfEvolvingWorldForgeEngine"
+        )
+        assert provenance["kernel"]["fingerprint"] != provenance["runtime_wrapper"]["fingerprint"]
         assert provenance["policy"]["generation"] >= 1
         assert provenance["harness"]["genome_id"]
         assert provenance["harness"]["genome_id"] == harness_plugin["metadata"]["genome_id"]
