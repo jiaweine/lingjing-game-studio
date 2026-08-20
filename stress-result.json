@@ -25,7 +25,7 @@
         "scripts/stress_smoke.py"
       ],
       "returncode": 0,
-      "output_tail": "{\n  \"public_health_burst\": {\n    \"requests\": 240,\n    \"statuses\": {\n      \"200\": 240\n    },\n    \"avg_ms\": 51.81,\n    \"p95_ms\": 78.24,\n    \"max_ms\": 120.78\n  },\n  \"protected_rate_limit_burst\": {\n    \"requests\": 160,\n    \"statuses\": {\n      \"200\": 120,\n      \"429\": 40\n    },\n    \"avg_ms\": 99.13,\n    \"p95_ms\": 163.98,\n    \"max_ms\": 193.34\n  },\n  \"note\": \"In-process ASGI smoke only. It validates bounded degradation and catches 5xx/concurrency regressions; it is not a production capacity benchmark.\"\n}\n"
+      "output_tail": "{\n  \"public_health_burst\": {\n    \"requests\": 240,\n    \"statuses\": {\n      \"200\": 240\n    },\n    \"avg_ms\": 51.05,\n    \"p95_ms\": 77.34,\n    \"max_ms\": 120.34\n  },\n  \"protected_rate_limit_burst\": {\n    \"requests\": 160,\n    \"statuses\": {\n      \"200\": 120,\n      \"429\": 40\n    },\n    \"avg_ms\": 94.28,\n    \"p95_ms\": 158.51,\n    \"max_ms\": 194.99\n  },\n  \"note\": \"In-process ASGI smoke only. It validates bounded degradation and catches 5xx/concurrency regressions; it is not a production capacity benchmark.\"\n}\n"
     }
   ]
 }
