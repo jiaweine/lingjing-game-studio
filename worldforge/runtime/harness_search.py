@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 import random
 import statistics
@@ -16,10 +17,12 @@ from .harness_evolution import (
     EvolutionResult,
     HarnessEvolutionEngine as BaseHarnessEvolutionEngine,
     HarnessMutator,
+    SemanticQDArchive,
     _paired_bootstrap_lower_bound,
     genome_distance,
 )
 from .harness_genome import HarnessGenome, HarnessGenomeStore
+from .persistence import atomic_write_text, exclusive_path_lock
 
 
 @dataclass
@@ -56,6 +59,45 @@ class GameEvolutionConfig(EvolutionConfig):
     objective_quality_weight: float = 0.60
     objective_safety_weight: float = 0.25
     objective_efficiency_weight: float = 0.15
+
+
+class AtomicSemanticQDArchive(SemanticQDArchive):
+    """Cross-process-safe vertical archive using the same atomic persistence authority."""
+
+    def _reload(self) -> None:
+        if not self.path:
+            return
+        if not self.path.exists():
+            self.cells = {}
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            self.cells = dict(payload.get("cells", {}))
+        except (ValueError, json.JSONDecodeError):
+            self.cells = {}
+
+    def peer_genomes(self, cell: str) -> list[HarnessGenome]:
+        if not self.path:
+            return super().peer_genomes(cell)
+        with exclusive_path_lock(self.path):
+            self._reload()
+            return super().peer_genomes(cell)
+
+    def add(self, cell: str, candidate: EvolutionCandidate) -> None:
+        if not self.path:
+            super().add(cell, candidate)
+            return
+        with exclusive_path_lock(self.path):
+            self._reload()
+            super().add(cell, candidate)
+
+    def _save(self) -> None:
+        if not self.path:
+            return
+        atomic_write_text(
+            self.path,
+            json.dumps({"cells": self.cells}, ensure_ascii=False, indent=2),
+        )
 
 
 class GameHarnessMutator(HarnessMutator):
@@ -286,6 +328,10 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         elif not isinstance(raw, GameEvolutionConfig):
             kwargs["config"] = GameEvolutionConfig(**raw.__dict__)
         super().__init__(*args, **kwargs)
+        self.archive = AtomicSemanticQDArchive(
+            self.archive.path,
+            max_per_cell=self.archive.max_per_cell,
+        )
         self.mutator = GameHarnessMutator(random.Random(self.config.seed))
         self.evaluator = GameHarnessEvaluator(self.config)
 
@@ -611,8 +657,8 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                 self._train_rank(candidate),
             ),
         )
-        promoted = bool(eligible)
-        selected = champion_eval.genome if promoted else baseline
+        gate_passed = bool(eligible)
+        selected = champion_eval.genome if gate_passed else baseline
 
         assert champion_eval.train is not None and champion_eval.heldout is not None
         train_gain = champion_eval.train.objective - baseline_train.objective
@@ -622,8 +668,14 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
             self.archive.add(evidence.cell, candidate)
 
         # The promoted object is byte-for-byte the object that passed held-out evaluation.
-        if promoted:
-            HarnessGenomeStore.promote(selected)
+        # Durable compare-and-swap also proves that it was evaluated against the still-current
+        # baseline; a stale worker cannot overwrite a newer generation.
+        promoted = False
+        if gate_passed:
+            promoted = HarnessGenomeStore.promote(
+                selected,
+                expected_baseline=baseline,
+            )
 
         return EvolutionResult(
             baseline=baseline,
