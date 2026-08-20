@@ -107,6 +107,18 @@ class GameHarnessMutator(HarnessMutator):
     mutation policy are searchable. The frozen verifier, evaluator and promotion gate are not.
     """
 
+    @staticmethod
+    def available_operators(
+        genome: HarnessGenome,
+        *,
+        allow_recombine: bool,
+    ) -> list[str]:
+        return [
+            name
+            for name in genome.mutation_policy.operator_logits
+            if allow_recombine or name != "recombine"
+        ]
+
     def propose(
         self,
         parent: HarnessGenome,
@@ -114,9 +126,15 @@ class GameHarnessMutator(HarnessMutator):
         *,
         peers: list[HarnessGenome] | None = None,
         direction: float | None = None,
+        operator: str | None = None,
     ) -> tuple[HarnessGenome, str]:
         peers = peers or []
-        operator = self._sample_operator(parent, allow_recombine=bool(peers))
+        available = self.available_operators(parent, allow_recombine=bool(peers))
+        if operator is None:
+            operator = self._sample_operator(parent, allow_recombine=bool(peers))
+        elif operator not in available:
+            raise ValueError(f"mutation operator is unavailable for this population: {operator}")
+
         child = parent.model_copy(deep=True)
         child.genome_id = f"hg-{uuid.uuid4().hex[:10]}"
         child.generation = parent.generation + 1
@@ -129,7 +147,8 @@ class GameHarnessMutator(HarnessMutator):
         elif operator == "gate_mutation":
             self._gate_mutation(child, evidence, sign)
         elif operator == "skill_mutation":
-            self._skill_mutation(child, evidence, sign)
+            detail = self._skill_mutation(child, evidence, sign)
+            child.origin = f"skill_mutation:{detail}"
         elif operator == "memory_mutation":
             self._memory_mutation(child, evidence, sign)
         elif operator == "specialist_split":
@@ -153,6 +172,7 @@ class GameHarnessMutator(HarnessMutator):
         *,
         peers: list[HarnessGenome] | None = None,
         sigma_scale: float = 1.0,
+        operator: str | None = None,
     ) -> tuple[tuple[HarnessGenome, str], tuple[HarnessGenome, str]]:
         """True antithetic pair: same sampled edit plan, opposite numerical direction."""
         scaled = parent.model_copy(deep=True)
@@ -161,21 +181,32 @@ class GameHarnessMutator(HarnessMutator):
             max(0.01, scaled.mutation_policy.sigma * sigma_scale),
         )
         state = self.rng.getstate()
-        plus = self.propose(scaled, evidence, peers=peers, direction=1.0)
+        plus = self.propose(
+            scaled,
+            evidence,
+            peers=peers,
+            direction=1.0,
+            operator=operator,
+        )
         end_state = self.rng.getstate()
         self.rng.setstate(state)
-        minus = self.propose(scaled, evidence, peers=peers, direction=-1.0)
+        minus = self.propose(
+            scaled,
+            evidence,
+            peers=peers,
+            direction=-1.0,
+            operator=operator,
+        )
         self.rng.setstate(end_state)
         return plus, minus
 
     def _sample_operator(self, genome: HarnessGenome, *, allow_recombine: bool) -> str:
         """Learned softmax exploitation with an independent uniform exploration mixture."""
+        names = self.available_operators(genome, allow_recombine=allow_recombine)
         items = [
-            (name, value)
-            for name, value in genome.mutation_policy.operator_logits.items()
-            if allow_recombine or name != "recombine"
+            (name, genome.mutation_policy.operator_logits[name])
+            for name in names
         ]
-        names = [name for name, _ in items]
         exploration = max(0.0, min(1.0, genome.mutation_policy.exploration))
         if self.rng.random() < exploration:
             return self.rng.choice(names)
@@ -251,23 +282,38 @@ class GameHarnessMutator(HarnessMutator):
         genome: HarnessGenome,
         evidence: EvolutionEvidence,
         sign: float,
-    ) -> None:
-        active = [gene for gene in genome.skills.values() if gene.enabled]
+    ) -> str:
+        active = [
+            (skill_id, gene)
+            for skill_id, gene in genome.skills.items()
+            if gene.enabled
+        ]
         if not active:
-            return
-        skill = self.rng.choice(active)
+            return "noop"
+
+        skill_id, skill = self.rng.choice(active)
         sigma = genome.mutation_policy.sigma
-        if skill.action_bias and self.rng.random() < .7:
+        modes = ["reliability", "gate_weight"]
+        if skill.action_bias:
+            modes.append("action_bias")
+        mode = self.rng.choice(modes)
+
+        if mode == "reliability":
+            value = skill.reliability
+            skill.reliability = max(
+                .05,
+                min(2.0, value + sign * max(.1, abs(value)) * sigma),
+            )
+        elif mode == "action_bias":
             action = self.rng.choice(list(skill.action_bias))
             value = skill.action_bias[action]
             skill.action_bias[action] = value + sign * max(.1, abs(value)) * sigma
         else:
             feature = self._sample_evidence_feature(evidence)
-            skill.gate.weights[feature] = skill.gate.weights.get(feature, 0.0) + sign * sigma
-        skill.reliability = max(
-            .05,
-            min(2.0, skill.reliability * (1.0 + sign * sigma * .25)),
-        )
+            skill.gate.weights[feature] = (
+                skill.gate.weights.get(feature, 0.0) + sign * sigma
+            )
+        return f"{mode}:{skill_id}"
 
     def _memory_mutation(
         self,
@@ -473,8 +519,6 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
 
         if best is None:
             return probes
-        # Keep the minimal effective probe plus its nearest tested neighbor. This remains
-        # train-only selection; held-out data has not been touched yet.
         near = sorted(
             probes,
             key=lambda item: abs(float(item.operator.split(":")[1]) - high),
@@ -507,17 +551,42 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         candidates: list[EvolutionCandidate] = []
         population = max(2, self.config.population)
         pair_count = int(math.ceil(population / 2))
-        search_rounds = 1 if population < 4 else max(1, self.config.plateau_rounds + 1)
+        stratified_operators = (
+            self.mutator.available_operators(
+                baseline,
+                allow_recombine=bool(archive_peers),
+            )
+            if population >= 4
+            else []
+        )
+        coverage_rounds = (
+            int(math.ceil(len(stratified_operators) / pair_count))
+            if stratified_operators
+            else 1
+        )
+        search_rounds = (
+            1
+            if population < 4
+            else max(coverage_rounds, max(1, self.config.plateau_rounds + 1))
+        )
 
         sigma_scale = 1.0
+        coverage_index = 0
+        covered_operators: set[str] = set()
         for plateau_round in range(search_rounds):
             round_candidates: list[EvolutionCandidate] = []
             for _ in range(pair_count):
+                forced_operator = None
+                if coverage_index < len(stratified_operators):
+                    forced_operator = stratified_operators[coverage_index]
+                    coverage_index += 1
+                    covered_operators.add(forced_operator)
                 plus, minus = self.mutator.propose_pair(
                     baseline,
                     evidence,
                     peers=archive_peers,
                     sigma_scale=sigma_scale,
+                    operator=forced_operator,
                 )
                 for genome, operator in (plus, minus):
                     round_candidates.append(
@@ -535,7 +604,8 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                 for candidate in round_candidates
                 if candidate.train is not None
             )
-            if informative >= max(2, len(round_candidates) // 3):
+            coverage_complete = set(stratified_operators) <= covered_operators
+            if coverage_complete and informative >= max(2, len(round_candidates) // 3):
                 break
             sigma_scale = min(
                 self.config.max_sigma / max(.01, baseline.mutation_policy.sigma),
@@ -585,7 +655,6 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                 and set(item.genome.skills) == set(baseline.skills)
             ][: max(1, self.config.trust_region_elites)]
 
-            # Coarse train-only trust-region probes.
             for elite in numerical_elites:
                 assert elite.train is not None
                 if elite.train.objective <= baseline_train.objective:
@@ -604,8 +673,6 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                         )
                     )
 
-            # Then bisect the behavior boundary using train only. This is the key protection
-            # against discrete argmax plateaus: take the smallest edit that is measurably useful.
             for elite in numerical_elites:
                 candidates.extend(
                     self._minimum_effective_edit(
@@ -618,8 +685,6 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
                     )
                 )
 
-        # The search trajectory is frozen here. Held-out cases have not influenced generation,
-        # ranking, refinement, trust-region scaling or boundary selection.
         operation_limit = baseline_heldout.operations * self.config.max_operation_ratio
         for index, candidate in enumerate(candidates):
             candidate.heldout = self.evaluator.evaluate(candidate.genome, heldout_cases)
@@ -667,9 +732,6 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         for candidate in self._pareto_frontier(candidates):
             self.archive.add(evidence.cell, candidate)
 
-        # The promoted object is byte-for-byte the object that passed held-out evaluation.
-        # Durable compare-and-swap also proves that it was evaluated against the still-current
-        # baseline; a stale worker cannot overwrite a newer generation.
         promoted = False
         if gate_passed:
             promoted = HarnessGenomeStore.promote(
