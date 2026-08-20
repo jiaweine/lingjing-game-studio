@@ -7,5 +7,6 @@ runtime should depend only on the provider contract, never on engine details.
 """
 
 from .base import RuntimeProvider
+from .synthetic import SyntheticWorldForgeProvider
 
-__all__ = ["RuntimeProvider"]
+__all__ = ["RuntimeProvider", "SyntheticWorldForgeProvider"]
