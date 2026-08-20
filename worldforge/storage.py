@@ -13,6 +13,27 @@ class ObjectStorage:
     def put_file(self, key, source, content_type):
         return self.put_bytes(key, Path(source).read_bytes(), content_type)
 
+    def put_files_atomic(self, rows):
+        """Upload a small related object bundle with best-effort compensation.
+
+        Object stores do not provide a multi-object transaction. Track every object that
+        completed and delete it if a later upload fails so a partial video/keyframe
+        bundle does not leak orphaned objects.
+        """
+        uploaded = []
+        try:
+            for key, source, content_type in rows:
+                self.put_file(key, source, content_type)
+                uploaded.append(key)
+        except Exception:
+            for key in reversed(uploaded):
+                try:
+                    self.delete(key)
+                except Exception:
+                    pass
+            raise
+        return uploaded
+
     def local_path(self, key):
         return None
 
