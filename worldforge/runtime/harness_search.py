@@ -128,14 +128,11 @@ class GameHarnessMutator(HarnessMutator):
 
     def _sample_operator(self, genome: HarnessGenome, *, allow_recombine: bool) -> str:
         """Learned softmax exploitation with an independent uniform exploration mixture."""
-        items = sorted(
-            (
-                (name, value)
-                for name, value in genome.mutation_policy.operator_logits.items()
-                if allow_recombine or name != "recombine"
-            ),
-            key=lambda item: item[0],
-        )
+        items = [
+            (name, value)
+            for name, value in genome.mutation_policy.operator_logits.items()
+            if allow_recombine or name != "recombine"
+        ]
         names = [name for name, _ in items]
         exploration = max(0.0, min(1.0, genome.mutation_policy.exploration))
         if self.rng.random() < exploration:
@@ -155,20 +152,20 @@ class GameHarnessMutator(HarnessMutator):
             genome.utility,
         ]
         group = self.rng.choice(groups)
-        fields = sorted(
+        fields = [
             name
             for name in type(group).model_fields
             if isinstance(getattr(group, name), (int, float))
             and not isinstance(getattr(group, name), bool)
-        )
+        ]
         if not fields:
             if group is genome.features and genome.features.scales:
-                name = self.rng.choice(sorted(genome.features.scales))
+                name = self.rng.choice(list(genome.features.scales))
                 genome.features.scales[name] = self._positive_jitter(
                     genome.features.scales[name], genome.mutation_policy.sigma, sign
                 )
             elif group is genome.memory and genome.memory.feature_weights:
-                name = self.rng.choice(sorted(genome.memory.feature_weights))
+                name = self.rng.choice(list(genome.memory.feature_weights))
                 value = genome.memory.feature_weights[name]
                 genome.memory.feature_weights[name] = max(
                     0.0,
@@ -194,11 +191,7 @@ class GameHarnessMutator(HarnessMutator):
         sign: float,
     ) -> None:
         sigma = genome.mutation_policy.sigma
-        active_skills = [
-            genome.skills[skill_id]
-            for skill_id in sorted(genome.skills)
-            if genome.skills[skill_id].enabled
-        ]
+        active_skills = [gene for gene in genome.skills.values() if gene.enabled]
         if active_skills and self.rng.random() < .35:
             gate = self.rng.choice(active_skills).gate
         else:
@@ -217,17 +210,13 @@ class GameHarnessMutator(HarnessMutator):
         evidence: EvolutionEvidence,
         sign: float,
     ) -> None:
-        active = [
-            genome.skills[skill_id]
-            for skill_id in sorted(genome.skills)
-            if genome.skills[skill_id].enabled
-        ]
+        active = [gene for gene in genome.skills.values() if gene.enabled]
         if not active:
             return
         skill = self.rng.choice(active)
         sigma = genome.mutation_policy.sigma
         if skill.action_bias and self.rng.random() < .7:
-            action = self.rng.choice(sorted(skill.action_bias))
+            action = self.rng.choice(list(skill.action_bias))
             value = skill.action_bias[action]
             skill.action_bias[action] = value + sign * max(.1, abs(value)) * sigma
         else:
@@ -246,16 +235,16 @@ class GameHarnessMutator(HarnessMutator):
     ) -> None:
         gene = genome.memory
         sigma = genome.mutation_policy.sigma
-        overlap = sorted(
+        overlap = [
             feature
             for feature in evidence.feature_priorities
             if feature in gene.feature_weights
-        )
+        ]
         if overlap:
             weights = [evidence.feature_priorities[name] + .05 for name in overlap]
             feature = self.rng.choices(overlap, weights=weights, k=1)[0]
         else:
-            feature = self.rng.choice(sorted(gene.feature_weights))
+            feature = self.rng.choice(list(gene.feature_weights))
         value = gene.feature_weights[feature]
         gene.feature_weights[feature] = max(
             0.0, value + sign * max(.05, abs(value)) * sigma
@@ -272,7 +261,7 @@ class GameHarnessMutator(HarnessMutator):
             )
 
     def _sample_evidence_feature(self, evidence: EvolutionEvidence) -> str:
-        names = sorted(evidence.feature_priorities)
+        names = list(evidence.feature_priorities)
         weights = [max(.01, evidence.feature_priorities[name]) for name in names]
         return self.rng.choices(names, weights=weights, k=1)[0]
 
@@ -354,7 +343,7 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         if isinstance(left, (int, float)) and isinstance(right, (int, float)):
             return float(left) + (float(right) - float(left)) * alpha
         if isinstance(left, dict) and isinstance(right, dict):
-            keys = sorted(set(left) | set(right), key=str)
+            keys = set(left) | set(right)
             return {
                 key: HarnessEvolutionEngine._blend_value(
                     left.get(key, right.get(key)), right.get(key, left.get(key)), alpha
@@ -444,27 +433,7 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
             probes,
             key=lambda item: abs(float(item.operator.split(":")[1]) - high),
         )[:2]
-        selected: list[EvolutionCandidate] = []
-        for item in [best, *near]:
-            if not any(existing is item for existing in selected):
-                selected.append(item)
-        return selected
-
-    def _champion_rank(self, candidate: EvolutionCandidate) -> tuple:
-        assert candidate.train is not None and candidate.heldout is not None
-        stable = self._train_rank(candidate)
-        return (
-            round(candidate.lower_bound, 12),
-            round(candidate.heldout.objective, 12),
-            round(candidate.heldout.safety, 12),
-            round(candidate.heldout.quality, 12),
-            round(candidate.heldout.efficiency, 12),
-            round(stable[0], 12),
-            round(stable[1], 12),
-            -round(candidate.novelty, 12),
-            -candidate.genome.generation,
-            candidate.operator,
-        )
+        return list({item.genome.genome_id: item for item in [best, *near]}.values())
 
     def evolve(
         self,
@@ -473,7 +442,7 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         baseline: HarnessGenome | None = None,
     ) -> EvolutionResult:
         baseline = (baseline or HarnessGenomeStore.current()).model_copy(deep=True)
-        scenarios = sorted(scenario.scenario_id for scenario in list_scenarios())
+        scenarios = [scenario.scenario_id for scenario in list_scenarios()]
         train_cases = [
             (scenario_id, seed)
             for scenario_id in scenarios
@@ -487,10 +456,7 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
         baseline_train = self.evaluator.evaluate(baseline, train_cases)
         baseline_heldout = self.evaluator.evaluate(baseline, heldout_cases)
         baseline_signature = self._evaluation_signature(baseline_train)
-        archive_peers = sorted(
-            self.archive.peer_genomes(evidence.cell),
-            key=lambda genome: genome.genome_id,
-        )
+        archive_peers = self.archive.peer_genomes(evidence.cell)
 
         candidates: list[EvolutionCandidate] = []
         population = max(2, self.config.population)
@@ -637,7 +603,14 @@ class HarnessEvolutionEngine(BaseHarnessEvolutionEngine):
 
         eligible = [candidate for candidate in candidates if candidate.accepted]
         pool = self._pareto_frontier(eligible or candidates)
-        champion_eval = max(pool, key=self._champion_rank)
+        champion_eval = max(
+            pool,
+            key=lambda candidate: (
+                candidate.lower_bound,
+                candidate.heldout.objective if candidate.heldout else -1.0,
+                self._train_rank(candidate),
+            ),
+        )
         promoted = bool(eligible)
         selected = champion_eval.genome if promoted else baseline
 
