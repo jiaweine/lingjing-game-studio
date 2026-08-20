@@ -25,6 +25,7 @@ class TaskEventFanoutHub:
         self.subscribers: dict[str, set[asyncio.Queue]] = defaultdict(set)
         self._task: asyncio.Task | None = None
         self._cursor = 0
+        self._subscriber_event = asyncio.Event()
         self.poll_count = 0
 
     async def start(self) -> None:
@@ -46,6 +47,7 @@ class TaskEventFanoutHub:
     def subscribe(self, conversation_id: str) -> asyncio.Queue:
         queue = asyncio.Queue(maxsize=self.queue_size)
         self.subscribers[conversation_id].add(queue)
+        self._subscriber_event.set()
         return queue
 
     def unsubscribe(self, conversation_id: str, queue: asyncio.Queue) -> None:
@@ -79,8 +81,23 @@ class TaskEventFanoutHub:
             events.append(data)
         return events
 
+    async def _wait_for_subscriber(self) -> None:
+        # Durable replay in the WebSocket handler covers events created while there are
+        # no live clients. Skip the global DB polling loop entirely until a subscriber
+        # appears, and advance the live cursor to the latest durable event first.
+        self._cursor = await asyncio.to_thread(self._latest_id)
+        if self.subscribers:
+            return
+        self._subscriber_event.clear()
+        if self.subscribers:
+            return
+        await self._subscriber_event.wait()
+
     async def _run(self) -> None:
         while True:
+            if not self.subscribers:
+                await self._wait_for_subscriber()
+                continue
             self.poll_count += 1
             events = await asyncio.to_thread(self._fetch_after, self._cursor)
             if not events:
