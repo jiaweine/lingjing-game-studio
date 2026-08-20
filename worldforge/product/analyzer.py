@@ -158,7 +158,7 @@ class ProductAnalyzer:
             }[intent]
             await sink("progress", {
                 "step": "模拟复核",
-                "detail": "正在内部 WorldForge 场景中验证相似假设；该结果不代表已在用户真实游戏中复现",
+                "detail": "正在内部验证场景中检查相似假设；该结果不代表已在用户真实游戏中复现",
                 "percent": 58,
             })
             summary = await self.engine.run(
@@ -187,7 +187,7 @@ class ProductAnalyzer:
                 "type": "simulation",
                 "label": "内部模拟复核",
                 "title": (
-                    f"WorldForge 场景 {scenario} · {summary.steps} 步 · "
+                    f"内部模拟复核 · {summary.steps} 步 · "
                     f"{'命中相似异常路径' if summary.outcome not in {'victory', 'success'} else '模拟结果稳定'}"
                 ),
                 "provenance": "synthetic",
@@ -397,7 +397,7 @@ class ProductAnalyzer:
             return (
                 "### 结论\n当前观察更像是**高爆发阶段的资源衔接问题**，不是单一伤害数值失控；内部模拟仅支持该假设，尚未在用户真实游戏中复现。\n\n"
                 "### 证据\n1. 用户素材显示高风险阶段承伤和资源消耗同时抬升。\n"
-                "2. WorldForge 内部模拟命中了相似关键窗口，但它属于 synthetic evidence。\n\n"
+                "2. 内部模拟命中了相似关键窗口，但它属于 synthetic evidence。\n\n"
                 "### 建议\n优先在真实游戏构建中检查减伤覆盖、敌方爆发参数和技能冷却，并记录可重复输入序列。"
             )
         if intent == "balance":
