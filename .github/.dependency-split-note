@@ -1,1 +1,0 @@
-runtime requirements are intentionally production-only; CI test installs requirements-dev.txt
