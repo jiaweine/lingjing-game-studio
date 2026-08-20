@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import time
+import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from worldforge.api.manager import RunManager
@@ -225,3 +229,122 @@ def test_run_manager_bounds_websocket_subscribers(tmp_path):
     manager.unsubscribe("wf-test", first)
     assert manager.subscriber_count == 0
     assert "wf-test" not in manager.queues
+
+
+def test_run_report_uses_real_verification_coverage_and_failure_status(monkeypatch):
+    api_app = importlib.import_module("worldforge.api.app")
+    session_id = "wf-report-test"
+    events = [
+        RuntimeEvent(
+            session_id=session_id,
+            seq=1,
+            event_type="run.started",
+            payload={"scenario": {"scenario_id": "boss_burst"}, "policy": {"name": "test"}},
+            ts=1,
+            hash="h1",
+            prev_hash="",
+        ),
+        RuntimeEvent(
+            session_id=session_id,
+            seq=2,
+            event_type="action.executed",
+            payload={"verification": {"recommendation": "accept"}},
+            ts=2,
+            hash="h2",
+            prev_hash="h1",
+        ),
+        RuntimeEvent(
+            session_id=session_id,
+            seq=3,
+            event_type="action.executed",
+            payload={},
+            ts=3,
+            hash="h3",
+            prev_hash="h2",
+        ),
+        RuntimeEvent(
+            session_id=session_id,
+            seq=4,
+            event_type="run.failed",
+            payload={"error": "boom"},
+            ts=4,
+            hash="h4",
+            prev_hash="h3",
+        ),
+    ]
+
+    class _Events:
+        def list_events(self, value):
+            assert value == session_id
+            return events
+
+        def verify_chain(self, value):
+            return value == session_id
+
+    class _Policy:
+        def card_dict(self):
+            return {"name": "fallback"}
+
+    fake_manager = SimpleNamespace(
+        engine=SimpleNamespace(events=_Events(), policy_model=_Policy())
+    )
+    monkeypatch.setattr(api_app, "manager", fake_manager)
+    report = api_app._run_report(session_id)
+    assert report["status"] == "failed"
+    assert report["metrics"]["verifier_coverage"] == 0.5
+    assert report["metrics"]["verified_accept_rate"] == 1.0
+
+
+def test_viewer_cannot_trigger_expensive_runtime_compute():
+    api_app = importlib.import_module("worldforge.api.app")
+    owner_client = TestClient(api_app.app)
+    owner_email = f"stress-owner-{uuid.uuid4().hex[:10]}@example.com"
+    registration = owner_client.post(
+        "/api/auth/register",
+        json={
+            "email": owner_email,
+            "password": "strong-password-123",
+            "name": "Stress Owner",
+            "workspace_name": f"Stress {uuid.uuid4().hex[:6]}",
+        },
+    )
+    assert registration.status_code == 200
+
+    invite_response = owner_client.post(
+        "/api/workspace/invites",
+        json={"role": "member", "email": None},
+    )
+    assert invite_response.status_code == 200
+
+    viewer_client = TestClient(api_app.app)
+    viewer_email = f"stress-viewer-{uuid.uuid4().hex[:10]}@example.com"
+    viewer_registration = viewer_client.post(
+        "/api/auth/register",
+        json={
+            "email": viewer_email,
+            "password": "strong-password-456",
+            "name": "Stress Viewer",
+            "workspace_name": "unused",
+            "invite_token": invite_response.json()["token"],
+        },
+    )
+    assert viewer_registration.status_code == 200
+
+    members = owner_client.get("/api/workspace/members").json()
+    viewer = next(row for row in members if row["email"] == viewer_email)
+    assert owner_client.patch(
+        f"/api/workspace/members/{viewer['id']}",
+        json={"role": "viewer"},
+    ).status_code == 200
+
+    assert viewer_client.post(
+        "/api/runs",
+        json={"scenario_id": "boss_burst", "max_steps": 1},
+    ).status_code == 403
+    assert viewer_client.get(
+        "/api/selfplay/boss_burst?seeds=2"
+    ).status_code == 403
+    assert viewer_client.post(
+        "/api/benchmarks",
+        json={"seeds": 4},
+    ).status_code == 403
