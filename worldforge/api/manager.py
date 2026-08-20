@@ -4,8 +4,11 @@ import asyncio
 from collections import defaultdict
 from pathlib import Path
 
+from worldforge.envs import get_scenario
 from worldforge.models import RunConfig, RuntimeEvent
 from worldforge.runtime import WorldForgeEngine
+from worldforge.runtime.harness_genome import HarnessGenomeStore
+from worldforge.runtime.provenance import build_runtime_provenance
 
 
 class RunManager:
@@ -38,14 +41,27 @@ class RunManager:
 
         async def execute() -> None:
             try:
+                session_meta = {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                }
+                scenario = get_scenario(config.scenario_id)
+                session_meta["provenance"] = build_runtime_provenance(
+                    kernel=self.engine,
+                    policy=self.engine.policy_model,
+                    harness_genome=HarnessGenomeStore.current(),
+                    skill_bank=self.engine.skills,
+                    memory=self.engine.memory,
+                    verifier=self.engine.verifier,
+                    scenario=scenario.model_dump(),
+                    config=config.model_dump(),
+                    session_meta=session_meta,
+                )
                 self.summaries[session_id] = await self.engine.run(
                     config,
                     session_id=session_id,
                     sink=sink,
-                    session_meta={
-                        "workspace_id": workspace_id,
-                        "user_id": user_id,
-                    },
+                    session_meta=session_meta,
                 )
             except Exception as exc:
                 event = self.engine.events.append(
@@ -63,6 +79,7 @@ class RunManager:
         task = self.tasks.get(session_id)
         summary = self.summaries.get(session_id)
         events = self.engine.events.list_events(session_id)
+        session = self.engine.events.session_meta(session_id)
         if summary:
             status = "completed"
         elif task and task.cancelled():
@@ -88,6 +105,7 @@ class RunManager:
             "summary": summary.model_dump() if summary else None,
             "event_count": len(events),
             "last_event": events[-1].model_dump() if events else None,
+            "provenance": (session or {}).get("meta", {}).get("provenance"),
         }
 
     async def cancel(self, session_id):
