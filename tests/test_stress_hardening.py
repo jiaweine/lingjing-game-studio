@@ -199,10 +199,29 @@ def test_run_manager_reclaims_finished_tasks_and_bounds_summaries(tmp_path):
         assert len(manager.summaries) == 2
         assert session_ids[0] not in manager.summaries
         assert manager.status(session_ids[0])["status"] == "completed"
+        assert (await manager.cancel(session_ids[0]))["status"] == "completed"
 
         queue = manager.subscribe(session_ids[-1])
         assert session_ids[-1] in manager.queues
         manager.unsubscribe(session_ids[-1], queue)
         assert session_ids[-1] not in manager.queues
+        assert manager.subscriber_count == 0
 
     asyncio.run(exercise())
+
+
+def test_run_manager_bounds_websocket_subscribers(tmp_path):
+    manager = RunManager(
+        tmp_path,
+        max_subscribers_per_run=1,
+        max_subscribers_total=1,
+    )
+    first = manager.subscribe("wf-test")
+    assert manager.subscriber_count == 1
+    with pytest.raises(RuntimeError, match="subscribers"):
+        manager.subscribe("wf-test")
+    with pytest.raises(RuntimeError, match="subscribers"):
+        manager.subscribe("wf-other")
+    manager.unsubscribe("wf-test", first)
+    assert manager.subscriber_count == 0
+    assert "wf-test" not in manager.queues
