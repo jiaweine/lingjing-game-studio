@@ -117,8 +117,20 @@ def test_reproduction_service_preserves_build_action_and_assertion_provenance():
             "source_revision": "abc123",
             "seed": 29,
             "action_count": 2,
+            "action_trace": [
+                {"index": 0, "name": "move", "arguments": {"x": 2}},
+                {"index": 1, "name": "attack", "arguments": {"slot": 1}},
+            ],
             "assertion_count": 1,
             "assertions_passed": 1,
+            "assertion_results": [
+                {
+                    "assertion": "boss_hp < 50",
+                    "expected": True,
+                    "passed": True,
+                    "details": {"expected": True},
+                }
+            ],
             "checkpoint_id": "baseline-cp",
         }
 
@@ -132,6 +144,7 @@ def test_real_runtime_evidence_without_assertions_does_not_claim_verified_reprod
         )
         assert result.claim_status == "executed_not_verified"
         assert result.all_assertions_passed is False
+        assert result.evidence_context()["assertion_results"] == []
 
     asyncio.run(exercise())
 
@@ -142,7 +155,9 @@ def test_failed_assertion_does_not_claim_issue_was_reproduced():
             RecordingAdapter(verification_passed=False), _request()
         )
         assert result.claim_status == "not_reproduced"
-        assert result.evidence_context()["assertions_passed"] == 0
+        context = result.evidence_context()
+        assert context["assertions_passed"] == 0
+        assert context["assertion_results"][0]["passed"] is False
 
     asyncio.run(exercise())
 
