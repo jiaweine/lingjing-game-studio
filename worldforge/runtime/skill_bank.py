@@ -22,7 +22,6 @@ class SkillBank:
             skill.skill_id: skill.model_copy(deep=True)
             for skill in _load_seed_skills()
         }
-        self.history: list[Skill] = []
 
     @staticmethod
     def _features(
@@ -98,24 +97,6 @@ class SkillBank:
                 * evidence_reliability
             )
         return total
-
-    # Compatibility-only artifact operations. Product behavior is promoted through
-    # HarnessGenome, not by mutating these metadata records.
-    def propose_patch(self, skill_id: str, action: str, delta: float, reason: str) -> Skill:
-        before = self.skills[skill_id]
-        patched = before.model_copy(deep=True)
-        patched.parent_generation = before.generation
-        patched.generation += 1
-        patched.description = before.description + f" [legacy candidate: {reason}]"
-        patched.status = "candidate"
-        return patched
-
-    def accept(self, patched: Skill) -> None:
-        old = self.skills[patched.skill_id]
-        self.history.append(old.model_copy(deep=True))
-        patched.status = "active"
-        patched.evidence_count += 1
-        self.skills[patched.skill_id] = patched
 
     def snapshot(self) -> list[dict]:
         genome = HarnessGenomeStore.current()

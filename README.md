@@ -469,14 +469,14 @@ python scripts/harness_evolution_benchmark.py
 
 它从干净进程、bootstrap Genome 开始，对 4 个 BalanceLab 研发场景使用独立 train / held-out seeds。held-out **不参与候选生成**；只有最后 promotion credit 才能看到。
 
-当前 `sealed-heldout-game-harness-2026-08` 的可复现实验结果：
+当前 `sealed-heldout-game-harness-2026-08` 最终 CI 原始日志对应的可复现实验结果：
 
 | Metric | Result |
 |---|---:|
 | Candidate genomes | **36** |
-| Passed promotion gate | **4** |
+| Passed promotion gate | **6** |
 | Baseline generation | **1** |
-| Promoted generation | **3** |
+| Promoted generation | **2** |
 | Train objective gain | **+0.004712** |
 | Sealed held-out objective gain | **+0.000559** |
 | Paired-bootstrap lower bound | **0.000000** |
@@ -484,7 +484,7 @@ python scripts/harness_evolution_benchmark.py
 | Promoted held-out safety | **0.966518** |
 | Promoted held-out efficiency | **0.730917** |
 | Promoted held-out operations | **23.25** |
-| Winning lineage | **Memory mutation → elite refinement → trust-region minimum edit** |
+| Winning lineage | **Gate mutation → minimum-effective boundary at α = 0.6406** |
 
 这组数据的意义是**机制证明，不是通用 SOTA 宣称**。held-out 增益很小，真正重要的是：候选在看不到 held-out 的情况下改变 Harness，随后仍能通过独立 quality / safety / efficiency / bootstrap credit，并产生新的持久化 generation。
 
