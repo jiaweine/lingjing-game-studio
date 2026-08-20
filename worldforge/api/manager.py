@@ -106,7 +106,9 @@ class RunManager:
     async def cancel(self, session_id):
         task = self.tasks.get(session_id)
         if not task:
-            return {"session_id": session_id, "status": "unknown"}
+            # Finished tasks are intentionally reclaimed from memory. Fall back to the
+            # durable event state rather than regressing completed runs to "unknown".
+            return self.status(session_id)
         if task.done():
             return self.status(session_id)
         task.cancel()
