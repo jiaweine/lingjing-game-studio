@@ -9,8 +9,16 @@ from .game_execution import (
     VerificationResult,
 )
 from .mcp_adapter import MCPGameAdapter, ToolSpec
+from .reproduction import (
+    AssertionSpec,
+    GameReproductionService,
+    ObservationRecord,
+    ReproductionRequest,
+    ReproductionResult,
+)
 
 __all__ = [
+    "AssertionSpec",
     "EvidenceProvenance",
     "ExecutionAction",
     "ExecutionCheckpoint",
@@ -18,7 +26,11 @@ __all__ = [
     "GameBuildRef",
     "GameExecutionAdapter",
     "GameExecutionAdapterRegistry",
+    "GameReproductionService",
     "MCPGameAdapter",
+    "ObservationRecord",
+    "ReproductionRequest",
+    "ReproductionResult",
     "ToolSpec",
     "VerificationResult",
 ]
