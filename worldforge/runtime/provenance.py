@@ -8,7 +8,7 @@ import os
 from typing import Any, Mapping
 
 
-PROVENANCE_SCHEMA_VERSION = 1
+PROVENANCE_SCHEMA_VERSION = 2
 SOURCE_REVISION_ENV_VARS = (
     "WORLD_FORGE_SOURCE_REVISION",
     "GITHUB_SHA",
@@ -140,6 +140,7 @@ def memory_identity(memory: Any) -> dict[str, Any]:
 def build_runtime_provenance(
     *,
     kernel: Any,
+    runtime_wrapper: Any | None = None,
     policy: Any,
     harness_genome: Any,
     skill_bank: Any,
@@ -152,6 +153,10 @@ def build_runtime_provenance(
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a stable provenance envelope for one execution configuration.
+
+    `kernel` identifies the frozen canonical-execution implementation. A separate
+    `runtime_wrapper` identity records orchestration layers such as the self-evolving
+    Harness wrapper, so audit data never conflates the two architectural boundaries.
 
     Only explicitly version-like session metadata is retained. User identifiers,
     tokens, prompts, and arbitrary session fields must not leak into provenance.
@@ -169,6 +174,11 @@ def build_runtime_provenance(
             environ=environ,
         ),
         "kernel": component_identity(kernel),
+        "runtime_wrapper": (
+            component_identity(runtime_wrapper)
+            if runtime_wrapper is not None
+            else None
+        ),
         "policy": policy_identity(policy),
         "harness": harness_identity(harness_genome),
         "skill_bank": skill_bank_identity(skill_bank),
