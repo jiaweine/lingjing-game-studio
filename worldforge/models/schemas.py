@@ -124,7 +124,7 @@ class RuntimeEvent(BaseModel):
 class RunConfig(BaseModel):
     scenario_id: str = "boss_burst"
     seed: int = 7
-    max_steps: int = 18
+    max_steps: int = Field(default=18, ge=1, le=64)
     branch_width: int = Field(default=4, ge=1, le=8)
     rollout_horizon: int = Field(default=3, ge=1, le=6)
     rollouts_per_branch: int = Field(default=3, ge=1, le=8)
@@ -161,7 +161,7 @@ class ScenarioSpec(BaseModel):
 
 class BenchmarkRequest(BaseModel):
     seeds: int = Field(default=24, ge=4, le=200)
-    scenarios: list[str] | None = None
+    scenarios: list[str] | None = Field(default=None, max_length=16)
 
 
 class BenchmarkRow(BaseModel):
