@@ -20,7 +20,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text as sql_text
+from sqlalchemy import func, select, text as sql_text
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from worldforge.api.manager import RunManager
@@ -173,7 +173,10 @@ async def require_principal(
 ) -> Principal:
     principal = getattr(request.state, "principal", None)
     if principal is None:
-        principal = _decode_or_401(_extract_token(authorization, wf_session))
+        principal = await asyncio.to_thread(
+            _decode_or_401,
+            _extract_token(authorization, wf_session),
+        )
         request.state.principal = principal
     host = request.client.host if request.client else "unknown"
     rate_limiter.check(f"{principal.workspace_id}:{principal.user_id}:{host}")
@@ -198,11 +201,12 @@ async def auth_boundary(request: Request, call_next):
         and request.method != "OPTIONS"
     ):
         try:
-            request.state.principal = _decode_or_401(
+            request.state.principal = await asyncio.to_thread(
+                _decode_or_401,
                 _extract_token(
                     request.headers.get("authorization"),
                     request.cookies.get("wf_session"),
-                )
+                ),
             )
         except HTTPException as exc:
             return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
@@ -222,7 +226,7 @@ class ConversationCreate(BaseModel):
 class ChatRequest(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
     asset_ids: list[str] = Field(default_factory=list, max_length=50)
-    provider: str = "auto"
+    provider: str = Field(default="auto", max_length=64)
 
 
 class RegisterRequest(BaseModel):
@@ -387,6 +391,11 @@ def product_info():
             },
         ],
         "accepted": ["图片", "视频", "音频", "日志", "JSON/CSV", "配置文件", "文本"],
+        "context_limits": {
+            "max_assets": settings.max_context_assets,
+            "max_megabytes": settings.max_context_mb,
+            "history_messages": 8,
+        },
     }
 
 
@@ -479,41 +488,163 @@ def conversation_get(
 
 
 def _safe_filename(name):
-    value = Path(name or "upload.bin").name.replace("\x00", "")
+    value = (
+        Path(name or "upload.bin")
+        .name.replace("\x00", "")
+        .replace("\r", "")
+        .replace("\n", "")
+    )
     return value[:240] or "upload.bin"
 
 
-def _object_path(asset, key=None):
+def _object_path(asset, key=None, *, materialize_dir: Path | None = None):
     object_key = key or str(asset["path"])
     path = storage.local_path(object_key)
     if path is not None:
         return path
-    cache = DATA_DIR / "cache" / asset["workspace_id"] / asset["id"]
-    cache.mkdir(parents=True, exist_ok=True)
+    if materialize_dir is None:
+        raise RuntimeError("remote object materialization requires a job temp directory")
     suffix = Path(object_key).suffix
-    target = cache / (
+    target_dir = Path(materialize_dir) / str(asset["id"])
+    target = target_dir / (
         f"object{suffix}"
         if key is None
         else f"frame-{uuid.uuid5(uuid.NAMESPACE_URL, object_key).hex[:8]}{suffix}"
     )
     if not target.exists():
-        target.write_bytes(storage.get_bytes(object_key))
+        storage.materialize_to(object_key, target)
     return target
 
 
-def _materialize_assets(rows):
+def _materialize_assets(rows, materialize_dir: Path):
     out = []
     for row in rows:
         item = dict(row)
         meta = dict(item.get("meta", {}))
-        item["path"] = str(_object_path(item))
+        item["path"] = str(
+            _object_path(item, materialize_dir=materialize_dir)
+        )
         if meta.get("keyframes"):
             meta["keyframes"] = [
-                str(_object_path(item, key)) for key in meta["keyframes"]
+                str(
+                    _object_path(
+                        item,
+                        key,
+                        materialize_dir=materialize_dir,
+                    )
+                )
+                for key in meta["keyframes"]
             ]
         item["meta"] = meta
         out.append(item)
     return out
+
+
+def _select_context_assets(rows, selected_asset_ids):
+    unique_rows = {str(row["id"]): row for row in rows}
+    selected_ids = list(dict.fromkeys(str(value) for value in selected_asset_ids))
+    selected = [unique_rows[value] for value in selected_ids if value in unique_rows]
+    max_assets = settings.max_context_assets
+    max_bytes = settings.max_context_mb * 1024 * 1024
+
+    if len(selected) > max_assets:
+        raise HTTPException(
+            413,
+            f"本次选择素材不能超过 {max_assets} 份",
+        )
+    selected_bytes = sum(max(0, int(row.get("size") or 0)) for row in selected)
+    if selected_bytes > max_bytes:
+        raise HTTPException(
+            413,
+            f"本次选择素材总量不能超过 {settings.max_context_mb}MB",
+        )
+
+    chosen = list(selected)
+    chosen_ids = {str(row["id"]) for row in chosen}
+    used_bytes = selected_bytes
+    recent = sorted(
+        unique_rows.values(),
+        key=lambda row: (float(row.get("created_at") or 0), str(row["id"])),
+        reverse=True,
+    )
+    for row in recent:
+        row_id = str(row["id"])
+        if row_id in chosen_ids:
+            continue
+        if len(chosen) >= max_assets:
+            break
+        size = max(0, int(row.get("size") or 0))
+        if used_bytes + size > max_bytes:
+            continue
+        chosen.append(row)
+        chosen_ids.add(row_id)
+        used_bytes += size
+    return chosen
+
+
+def _load_job_context(conversation_id: str, workspace_id: str, requested_asset_ids):
+    requested = list(dict.fromkeys(str(value) for value in requested_asset_ids))
+    with product_store.engine.connect() as connection:
+        history_rows = connection.execute(
+            select(product_store.messages)
+            .where(product_store.messages.c.conversation_id == conversation_id)
+            .order_by(
+                product_store.messages.c.created_at.desc(),
+                product_store.messages.c.id.desc(),
+            )
+            .limit(8)
+        ).fetchall()
+        recent_asset_rows = connection.execute(
+            select(product_store.assets)
+            .where(
+                product_store.assets.c.workspace_id == workspace_id,
+                product_store.assets.c.conversation_id == conversation_id,
+            )
+            .order_by(
+                product_store.assets.c.created_at.desc(),
+                product_store.assets.c.id.desc(),
+            )
+            .limit(settings.max_context_assets)
+        ).fetchall()
+        selected_rows = (
+            connection.execute(
+                select(product_store.assets).where(
+                    product_store.assets.c.workspace_id == workspace_id,
+                    product_store.assets.c.id.in_(requested),
+                )
+            ).fetchall()
+            if requested
+            else []
+        )
+        total_conversation_assets = int(
+            connection.execute(
+                select(func.count())
+                .select_from(product_store.assets)
+                .where(
+                    product_store.assets.c.workspace_id == workspace_id,
+                    product_store.assets.c.conversation_id == conversation_id,
+                )
+            ).scalar_one()
+        )
+
+    history = [product_store._json_row(row) for row in reversed(history_rows)]
+    recent_assets = [
+        product_store._json_row(row, "meta") for row in recent_asset_rows
+    ]
+    selected_assets = [
+        product_store._json_row(row, "meta") for row in selected_rows
+    ]
+    by_id = {str(row["id"]): row for row in [*recent_assets, *selected_assets]}
+    valid_selected_ids = [value for value in requested if value in by_id]
+    chosen = _select_context_assets(list(by_id.values()), valid_selected_ids)
+    chosen_ids = [str(row["id"]) for row in chosen]
+    inherited_conversation_ids = {
+        str(row["id"])
+        for row in chosen
+        if row.get("conversation_id") == conversation_id
+    }
+    omitted = max(0, total_conversation_assets - len(inherited_conversation_ids))
+    return history, valid_selected_ids, chosen_ids, omitted
 
 
 @app.post("/api/assets")
@@ -525,8 +656,10 @@ async def asset_upload(
 ):
     if conversation_id:
         try:
-            conversation = product_store.get_conversation(
-                conversation_id, workspace_id=principal.workspace_id
+            conversation = await asyncio.to_thread(
+                product_store.get_conversation,
+                conversation_id,
+                workspace_id=principal.workspace_id,
             )
         except KeyError:
             raise HTTPException(404, "任务不存在")
@@ -561,9 +694,6 @@ async def asset_upload(
                     )
                 handle.write(chunk)
 
-        # Media probing and ffmpeg frame extraction are blocking subprocess / file
-        # operations. Keep them off the FastAPI event loop so one large upload cannot
-        # stall unrelated requests in the same worker.
         meta = await asyncio.to_thread(probe_media, tmp, mime)
         claimed_kind = (
             "image" if mime.startswith("image/")
@@ -599,7 +729,8 @@ async def asset_upload(
             meta["keyframes"] = frame_keys
 
     try:
-        row = product_store.add_asset(
+        row = await asyncio.to_thread(
+            product_store.add_asset,
             conversation_id,
             name=filename,
             mime=mime,
@@ -613,13 +744,14 @@ async def asset_upload(
     except Exception as exc:
         for key in [object_key, *frame_keys]:
             try:
-                storage.delete(key)
+                await asyncio.to_thread(storage.delete, key)
             except Exception:
                 logger.exception("failed to clean rejected asset upload", extra={"object_key": key})
         if isinstance(exc, ValueError):
             raise HTTPException(409, str(exc)) from exc
         raise
-    product_store.add_audit(
+    await asyncio.to_thread(
+        product_store.add_audit,
         request_id=request.state.request_id,
         action="asset.upload",
         workspace_id=principal.workspace_id,
@@ -684,8 +816,12 @@ def asset_file(
 
 
 async def _product_emit(conversation_id, workspace_id, type_, payload):
-    return product_store.add_event(
-        conversation_id, type_, payload, workspace_id=workspace_id
+    return await asyncio.to_thread(
+        product_store.add_event,
+        conversation_id,
+        type_,
+        payload,
+        workspace_id=workspace_id,
     )
 
 
@@ -699,11 +835,15 @@ async def _run_analysis_job(
     assets,
     job_id=None,
 ):
-    def ensure_active():
+    async def ensure_active():
         if not job_id:
             return
         try:
-            job = product_store.get_job(job_id, workspace_id=workspace_id)
+            job = await asyncio.to_thread(
+                product_store.get_job,
+                job_id,
+                workspace_id=workspace_id,
+            )
         except KeyError as exc:
             raise AnalysisCancelled from exc
         if job["status"] == "cancelled":
@@ -711,7 +851,7 @@ async def _run_analysis_job(
 
     try:
         async def sink(type_, payload):
-            ensure_active()
+            await ensure_active()
             event_payload = (
                 {**payload, "job_id": job_id} if job_id else payload
             )
@@ -719,28 +859,37 @@ async def _run_analysis_job(
                 conversation_id, workspace_id, type_, event_payload
             )
 
-        ensure_active()
-        prepared = _materialize_assets(assets)
-        quality_gate = product_store.feedback_gate(
-            conversation_id, workspace_id=workspace_id
+        await ensure_active()
+        quality_gate = await asyncio.to_thread(
+            product_store.feedback_gate,
+            conversation_id,
+            workspace_id=workspace_id,
         )
-        result = await product_analyzer.run(
-            text=text,
-            assets=prepared,
-            provider_key=provider_key,
-            sink=sink,
-            history=history,
-            human_feedback_gate=bool(quality_gate["approved"]),
-        )
+        with tempfile.TemporaryDirectory(prefix="lingjing-materialize-") as tmpdir:
+            prepared = await asyncio.to_thread(
+                _materialize_assets,
+                assets,
+                Path(tmpdir),
+            )
+            result = await product_analyzer.run(
+                text=text,
+                assets=prepared,
+                provider_key=provider_key,
+                sink=sink,
+                history=history,
+                human_feedback_gate=bool(quality_gate["approved"]),
+            )
         if job_id:
-            message = product_store.complete_job_answer(
+            message = await asyncio.to_thread(
+                product_store.complete_job_answer,
                 job_id,
                 workspace_id=workspace_id,
                 content=result["answer"],
                 payload=result,
             )
             return message is not None
-        message = product_store.add_message(
+        message = await asyncio.to_thread(
+            product_store.add_message,
             conversation_id,
             "assistant",
             result["answer"],
@@ -759,7 +908,12 @@ async def _run_analysis_job(
     except Exception as exc:
         if job_id:
             try:
-                if product_store.get_job(job_id, workspace_id=workspace_id)["status"] == "cancelled":
+                current = await asyncio.to_thread(
+                    product_store.get_job,
+                    job_id,
+                    workspace_id=workspace_id,
+                )
+                if current["status"] == "cancelled":
                     return False
             except KeyError:
                 return False
@@ -771,7 +925,12 @@ async def _run_analysis_job(
 
 
 async def _fail_product_job(job_id: str, error: str, *, max_attempts: int = 3):
-    failed = product_store.fail_job(job_id, error, max_attempts=max_attempts)
+    failed = await asyncio.to_thread(
+        product_store.fail_job,
+        job_id,
+        error,
+        max_attempts=max_attempts,
+    )
     if failed and failed["status"] == "failed":
         await _product_emit(
             failed["conversation_id"],
@@ -787,14 +946,24 @@ async def _schedule_product_job(job, background_tasks: BackgroundTasks, principa
         return
 
     async def work():
-        claimed = product_store.claim_job("api-inprocess", job_id=job["id"])
+        claimed = await asyncio.to_thread(
+            product_store.claim_job,
+            "api-inprocess",
+            job_id=job["id"],
+        )
         if not claimed:
             return
         payload = claimed["payload"]
         assets = []
         for asset_id in payload.get("asset_ids", []):
             try:
-                assets.append(product_store.get_asset(asset_id, workspace_id=claimed["workspace_id"]))
+                assets.append(
+                    await asyncio.to_thread(
+                        product_store.get_asset,
+                        asset_id,
+                        workspace_id=claimed["workspace_id"],
+                    )
+                )
             except KeyError:
                 continue
         try:
@@ -822,7 +991,11 @@ async def conversation_message(
     principal: Principal = Depends(require_editor),
 ):
     try:
-        conversation = product_store.get_conversation(conversation_id, workspace_id=principal.workspace_id)
+        conversation = await asyncio.to_thread(
+            product_store.get_conversation,
+            conversation_id,
+            workspace_id=principal.workspace_id,
+        )
     except KeyError:
         raise HTTPException(404, "任务不存在")
     if conversation.get("archived_at") is not None:
@@ -830,31 +1003,24 @@ async def conversation_message(
     if conversation["status"] == "waiting_approval":
         raise HTTPException(409, "删除确认处理中，不能继续执行")
 
-    history = product_store.list_messages(conversation_id, workspace_id=principal.workspace_id)
-    context_assets = product_store.list_assets(conversation_id, workspace_id=principal.workspace_id)
-    context_by_id = {asset["id"]: asset for asset in context_assets}
-    selected_asset_ids: list[str] = []
-    for asset_id in req.asset_ids:
-        asset = context_by_id.get(asset_id)
-        if asset is None:
-            try:
-                asset = product_store.get_asset(asset_id, workspace_id=principal.workspace_id)
-            except KeyError:
-                continue
-            context_assets.append(asset)
-            context_by_id[asset["id"]] = asset
-        if asset["id"] not in selected_asset_ids:
-            selected_asset_ids.append(asset["id"])
-
-    context_asset_ids = list(dict.fromkeys(asset["id"] for asset in context_assets))
+    history, selected_asset_ids, context_asset_ids, omitted_assets = (
+        await asyncio.to_thread(
+            _load_job_context,
+            conversation_id,
+            principal.workspace_id,
+            req.asset_ids,
+        )
+    )
     job_payload = {
         "text": req.content,
         "provider": req.provider,
         "history": history,
         "asset_ids": context_asset_ids,
+        "context_omitted_assets": omitted_assets,
     }
     try:
-        user_message, job = product_store.create_message_job(
+        user_message, job = await asyncio.to_thread(
+            product_store.create_message_job,
             workspace_id=principal.workspace_id,
             conversation_id=conversation_id,
             content=req.content,
@@ -867,20 +1033,51 @@ async def conversation_message(
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 
-    product_store.add_audit(
+    await asyncio.to_thread(
+        product_store.add_audit,
         request_id=request.state.request_id,
         action="message.create",
         workspace_id=principal.workspace_id,
         user_id=principal.user_id,
         resource_type="conversation",
         resource_id=conversation_id,
-        payload={"job_id": job["id"], "asset_count": len(context_asset_ids)},
+        payload={
+            "job_id": job["id"],
+            "asset_count": len(context_asset_ids),
+            "context_omitted_assets": omitted_assets,
+        },
     )
 
+    if omitted_assets:
+        await _product_emit(
+            conversation_id,
+            principal.workspace_id,
+            "notice",
+            {
+                "title": "历史素材已按上下文预算裁剪",
+                "detail": (
+                    f"本轮使用 {len(context_asset_ids)} 份素材，"
+                    f"另有 {omitted_assets} 份较早素材未自动带入；"
+                    "需要时可在后续任务中显式重新选择。"
+                ),
+                "job_id": job["id"],
+            },
+        )
+
     if settings.queue_mode == "external":
-        return {"status": "queued", "message": user_message, "job_id": job["id"]}
+        return {
+            "status": "queued",
+            "message": user_message,
+            "job_id": job["id"],
+            "context_omitted_assets": omitted_assets,
+        }
     await _schedule_product_job(job, background_tasks, principal)
-    return {"status": "accepted", "message": user_message, "job_id": job["id"]}
+    return {
+        "status": "accepted",
+        "message": user_message,
+        "job_id": job["id"],
+        "context_omitted_assets": omitted_assets,
+    }
 
 
 @app.get("/api/jobs/{job_id}")
@@ -903,13 +1100,19 @@ async def job_cancel(
     principal: Principal = Depends(require_editor),
 ):
     try:
-        job = product_store.get_job(job_id, workspace_id=principal.workspace_id)
+        job = await asyncio.to_thread(
+            product_store.get_job,
+            job_id,
+            workspace_id=principal.workspace_id,
+        )
     except KeyError:
         raise HTTPException(404, "任务不存在")
     if job["status"] in {"completed", "failed", "cancelled"}:
         return job
-    cancelled = product_store.cancel_job(
-        job_id, workspace_id=principal.workspace_id
+    cancelled = await asyncio.to_thread(
+        product_store.cancel_job,
+        job_id,
+        workspace_id=principal.workspace_id,
     )
     if cancelled["status"] == "cancelled":
         await _product_emit(
@@ -918,7 +1121,8 @@ async def job_cancel(
             "answer.cancelled",
             {"job_id": job_id},
         )
-        product_store.add_audit(
+        await asyncio.to_thread(
+            product_store.add_audit,
             request_id=request.state.request_id,
             action="job.cancel",
             workspace_id=principal.workspace_id,
@@ -947,13 +1151,15 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str):
         or websocket.query_params.get("access_token")
     )
     try:
-        principal = _decode_or_401(token)
+        principal = await asyncio.to_thread(_decode_or_401, token)
         host = websocket.client.host if websocket.client else "unknown"
         rate_limiter.check(
             f"ws:{principal.workspace_id}:{principal.user_id}:{host}"
         )
-        product_store.get_conversation(
-            conversation_id, workspace_id=principal.workspace_id
+        await asyncio.to_thread(
+            product_store.get_conversation,
+            conversation_id,
+            workspace_id=principal.workspace_id,
         )
     except HTTPException as exc:
         await websocket.close(code=4429 if exc.status_code == 429 else 4401)
@@ -962,8 +1168,6 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str):
         await websocket.close(code=4401)
         return
 
-    # Subscribe before replay. Events that arrive during replay may appear in both
-    # paths, so event-id deduplication below closes the replay/subscribe race.
     try:
         queue = task_event_hub.subscribe(conversation_id)
     except RuntimeError:
@@ -979,7 +1183,8 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str):
         return
     await websocket.accept()
     try:
-        replay = product_store.list_events(
+        replay = await asyncio.to_thread(
+            product_store.list_events,
             conversation_id,
             after_id=last_event_id,
             workspace_id=principal.workspace_id,
@@ -1089,7 +1294,6 @@ def runtime(principal: Principal = Depends(require_principal)):
         },
         "policy": manager.engine.policy_model.card_dict(),
     }
-
 
 
 @app.get("/api/diagnostics")
@@ -1440,12 +1644,12 @@ async def run_ws(websocket: WebSocket, session_id: str):
         or websocket.query_params.get("access_token")
     )
     try:
-        principal = _decode_or_401(token)
+        principal = await asyncio.to_thread(_decode_or_401, token)
         host = websocket.client.host if websocket.client else "unknown"
         rate_limiter.check(
             f"ws-run:{principal.workspace_id}:{principal.user_id}:{host}"
         )
-        _assert_run_access(session_id, principal)
+        await asyncio.to_thread(_assert_run_access, session_id, principal)
     except HTTPException as exc:
         await websocket.close(code=4429 if exc.status_code == 429 else 4401)
         return
@@ -1457,7 +1661,11 @@ async def run_ws(websocket: WebSocket, session_id: str):
         return
     await websocket.accept()
     try:
-        for event in manager.engine.events.list_events(session_id):
+        replay = await asyncio.to_thread(
+            manager.engine.events.list_events,
+            session_id,
+        )
+        for event in replay:
             await websocket.send_json(event.model_dump())
         while True:
             try:
