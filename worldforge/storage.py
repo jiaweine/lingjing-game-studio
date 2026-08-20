@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import quote
 
 
 class ObjectStorage:
@@ -17,6 +18,13 @@ class ObjectStorage:
 
     def get_bytes(self, key):
         raise NotImplementedError
+
+    def materialize_to(self, key, target):
+        """Write an object to a local path used by inference tooling."""
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.get_bytes(key))
+        return target
 
     def delete(self, key):
         raise NotImplementedError
@@ -58,6 +66,14 @@ class LocalObjectStorage(ObjectStorage):
 
     def get_bytes(self, key):
         return self.local_path(key).read_bytes()
+
+    def materialize_to(self, key, target):
+        import shutil
+
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.local_path(key), target)
+        return target
 
     def delete(self, key):
         path = self.local_path(key)
@@ -104,6 +120,14 @@ class S3ObjectStorage(ObjectStorage):
     def get_bytes(self, key):
         return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
 
+    def materialize_to(self, key, target):
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # boto3's managed download streams multipart/chunked data directly to disk,
+        # avoiding a whole-object bytes allocation for large video/audio evidence.
+        self.client.download_file(self.bucket, key, str(target))
+        return target
+
     def delete(self, key):
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
@@ -112,12 +136,15 @@ class S3ObjectStorage(ObjectStorage):
         return True
 
     def signed_url(self, key, *, filename, expires=300):
+        safe_filename = quote(str(filename), safe="")
         return self.client.generate_presigned_url(
             "get_object",
             Params={
                 "Bucket": self.bucket,
                 "Key": key,
-                "ResponseContentDisposition": f'attachment; filename="{filename}"',
+                "ResponseContentDisposition": (
+                    f"attachment; filename*=UTF-8''{safe_filename}"
+                ),
             },
             ExpiresIn=expires,
         )
