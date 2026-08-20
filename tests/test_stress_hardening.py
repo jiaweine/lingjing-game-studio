@@ -348,3 +348,118 @@ def test_viewer_cannot_trigger_expensive_runtime_compute():
         "/api/benchmarks",
         json={"seeds": 4},
     ).status_code == 403
+
+
+def test_external_worker_lease_requeues_then_fails_after_attempt_budget(tmp_path):
+    from worldforge.product.store import ConversationStore
+    from worldforge.worker import requeue_expired_jobs, renew_job_lease
+
+    store = ConversationStore(
+        tmp_path / "product.db",
+        tmp_path / "assets",
+        seed_dev_identity=False,
+    )
+    owner = store.create_user_workspace(
+        email=f"lease-{uuid.uuid4().hex[:10]}@example.com",
+        name="Lease Owner",
+        password_hash="hashed",
+        workspace_name="Lease Lab",
+    )
+    conversation = store.create_conversation(
+        "lease recovery",
+        workspace_id=owner["workspace_id"],
+        created_by=owner["user_id"],
+    )
+    job = store.enqueue_job(
+        workspace_id=owner["workspace_id"],
+        conversation_id=conversation["id"],
+        payload={"text": "recover", "asset_ids": []},
+    )
+
+    claimed = store.claim_job("worker-a", job_id=job["id"])
+    assert claimed and claimed["attempts"] == 1
+    assert renew_job_lease(store, job["id"], "wrong-worker", now=100.0) is False
+    assert renew_job_lease(store, job["id"], "worker-a", now=100.0) is True
+
+    first = requeue_expired_jobs(
+        store,
+        lease_seconds=30,
+        max_attempts=3,
+        now=200.0,
+    )
+    assert first == {"requeued": 1, "failed": 0}
+    recovered = store.get_job(job["id"], workspace_id=owner["workspace_id"])
+    assert recovered["status"] == "queued"
+    assert recovered["worker_id"] is None
+    assert recovered["claimed_at"] is None
+
+    claimed = store.claim_job("worker-b", job_id=job["id"])
+    assert claimed and claimed["attempts"] == 2
+    assert renew_job_lease(store, job["id"], "worker-b", now=100.0) is True
+    second = requeue_expired_jobs(
+        store,
+        lease_seconds=30,
+        max_attempts=3,
+        now=200.0,
+    )
+    assert second == {"requeued": 1, "failed": 0}
+
+    claimed = store.claim_job("worker-c", job_id=job["id"])
+    assert claimed and claimed["attempts"] == 3
+    assert renew_job_lease(store, job["id"], "worker-c", now=100.0) is True
+    final = requeue_expired_jobs(
+        store,
+        lease_seconds=30,
+        max_attempts=3,
+        now=200.0,
+    )
+    assert final == {"requeued": 0, "failed": 1}
+    failed = store.get_job(job["id"], workspace_id=owner["workspace_id"])
+    assert failed["status"] == "failed"
+    assert failed["worker_id"] is None
+    assert failed["claimed_at"] is None
+    assert failed["completed_at"] == 200.0
+    assert "lease expired" in failed["last_error"]
+    assert store.get_conversation(
+        conversation["id"], workspace_id=owner["workspace_id"]
+    )["status"] == "blocked"
+
+
+def test_external_reaper_never_steals_api_inprocess_job(tmp_path):
+    from worldforge.product.store import ConversationStore
+    from worldforge.worker import requeue_expired_jobs, renew_job_lease
+
+    store = ConversationStore(
+        tmp_path / "product.db",
+        tmp_path / "assets",
+        seed_dev_identity=False,
+    )
+    owner = store.create_user_workspace(
+        email=f"inprocess-{uuid.uuid4().hex[:10]}@example.com",
+        name="Inprocess Owner",
+        password_hash="hashed",
+        workspace_name="Inprocess Lab",
+    )
+    conversation = store.create_conversation(
+        "inprocess lease",
+        workspace_id=owner["workspace_id"],
+        created_by=owner["user_id"],
+    )
+    job = store.enqueue_job(
+        workspace_id=owner["workspace_id"],
+        conversation_id=conversation["id"],
+        payload={"text": "keep", "asset_ids": []},
+    )
+    assert store.claim_job("api-inprocess", job_id=job["id"])
+    assert renew_job_lease(store, job["id"], "api-inprocess", now=100.0)
+
+    result = requeue_expired_jobs(
+        store,
+        lease_seconds=30,
+        max_attempts=1,
+        now=10_000.0,
+    )
+    assert result == {"requeued": 0, "failed": 0}
+    current = store.get_job(job["id"], workspace_id=owner["workspace_id"])
+    assert current["status"] == "running"
+    assert current["worker_id"] == "api-inprocess"
