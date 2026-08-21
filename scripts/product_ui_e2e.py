@@ -42,12 +42,13 @@ const gate=()=>{
 };
 const answer=()=>{
   const S=window.__E2E,log=S.assets.find(a=>a.meta?.kind==='text');
-  return {id:'msg-answer',conversation_id:'cv-e2e',role:'assistant',content:'### 结论\n异常具备稳定复现条件，核心窗口集中在第二阶段进入后的防御资源真空期。\n\n### 关键发现\n1. 60 秒附近 shield 归零后，承伤在极短时间内连续抬升。\n2. 同条件再次核验时，异常路径可以重复出现。\n3. 当前证据更支持资源覆盖与技能时序叠加，而不是单一伤害参数失控。\n\n### 下一步\n优先核对减伤持续时间、Boss 技能冷却与资源恢复窗口，再用同一条件做修复后回归。',created_at:3,payload:{
-    evidence:[{id:'ev-log',type:'text',label:'战斗日志',title:'battle.log · 关键时间窗',asset_id:log?.id},{id:'ev-replay',type:'replay',label:'复核结果',title:'同条件复核 · 异常路径再次出现'}],
+  return {id:'msg-answer',conversation_id:'cv-e2e',role:'assistant',content:'### 演示分析（非真实游戏结论）\n\n当前观察提示第二阶段进入后可能存在防御资源真空期；内部模拟只支持这一假设，尚未在目标游戏 Build 中完成复现断言。\n\n### 关键发现\n1. 用户日志在 60 秒附近记录到 shield 归零与承伤连续抬升。\n2. 内部模拟命中了相似风险窗口，但它属于 synthetic evidence。\n3. 资源覆盖与技能时序叠加仍是待真实环境验证的触发条件。\n\n### 下一步\n锁定目标 Build、减伤持续时间、Boss 技能冷却与资源恢复窗口，记录同一输入序列后再做修复回归。',created_at:3,payload:{
+    analysis_mode:'demo',claim_status:'hypothesis_only',verification_status:'not_verified',
+    evidence:[{id:'ev-log',type:'text',label:'战斗日志',title:'battle.log · 关键时间窗',asset_id:log?.id,provenance:'observed',provenance_label:'用户提供 / 观察证据'},{id:'ev-sim',type:'simulation',label:'内部模拟复核',title:'相似风险窗口 · 待真实 Build 验证',provenance:'synthetic',provenance_label:'内部模拟 / 非真实游戏复现'}],
     deliverables:[
-      {type:'reproduction_card',title:'问题复现卡',summary:'把异常窗口固化成可交接的复现入口。',items:['使用当前素材作为复现基线','锁定异常阶段与资源窗口','修复后按同条件再次执行'],evidence_ids:['ev-log','ev-replay']},
-      {type:'regression_checklist',title:'回归检查清单',summary:'覆盖触发条件、邻近条件与修复后复核。',items:['原触发条件不再复现','相邻时间窗无新增异常','资源与伤害变化符合预期'],evidence_ids:['ev-log','ev-replay']},
-      {type:'evidence_pack',title:'证据包',summary:'保留本次判断使用的素材索引与主动复核结果。',items:['battle.log · 关键时间窗','同条件复核 · 异常路径再次出现'],evidence_ids:['ev-log','ev-replay']}
+      {type:'reproduction_card',title:'问题验证卡',summary:'把异常窗口固化成待真实环境复现的验证入口。',items:['使用当前素材作为观察基线','锁定异常阶段与资源窗口','在目标 Build 中按同条件复现'],evidence_ids:['ev-log','ev-sim']},
+      {type:'regression_checklist',title:'回归检查清单',summary:'覆盖真实触发条件、邻近条件与修复后复核。',items:['真实环境确认原触发条件','相邻时间窗无新增异常','资源与伤害变化符合预期'],evidence_ids:['ev-log','ev-sim']},
+      {type:'evidence_pack',title:'证据包',summary:'分开保留用户观察证据与内部模拟证据。',items:['battle.log · 关键时间窗','内部模拟 · 相似风险窗口'],evidence_ids:['ev-log','ev-sim']}
     ],
     suggestions:['把异常时间段单独展开','继续核对伤害配置','生成回归测试清单']
   }};
@@ -225,6 +226,7 @@ with sync_playwright() as playwright:
     shot("cover.png")
     report["checks"]["realtime_result"] = True
     report["checks"]["awaiting_human_review"] = page.locator("#taskState").inner_text() == "等待人工复核"
+    report["checks"]["trust_boundary"] = "演示分析 · 非真实游戏结论" in page.locator(".result-trust").inner_text()
     report["checks"]["evidence_panel"] = page.locator("#evidenceList .evidence-card").count() == 2
     report["checks"]["suggestions"] = page.locator("#suggestionList button").count() == 3
 
@@ -239,6 +241,7 @@ with sync_playwright() as playwright:
     # Structured result feedback and the human quality gate are real API-backed state.
     page.click('[data-feedback="correct"]')
     page.click('[data-evidence-useful]')
+    page.once("dialog", lambda dialog: dialog.accept("Build 2026.08.21，同输入序列核对日志与画面结果。"))
     page.click('[data-human-verify]')
     page.wait_for_function("document.querySelector('[data-feedback=\"correct\"]').classList.contains('active') && document.querySelector('[data-evidence-useful]').classList.contains('active') && document.querySelector('[data-human-verify]').classList.contains('active')")
     report["checks"]["result_feedback"] = True

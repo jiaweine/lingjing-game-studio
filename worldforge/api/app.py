@@ -4,7 +4,6 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 import mimetypes
-import statistics
 import tempfile
 import time
 import uuid
@@ -693,15 +692,27 @@ async def _run_analysis_job(
     history,
     assets,
     job_id=None,
+    lease_token=None,
 ):
+    if job_id and not lease_token:
+        raise ValueError("lease token is required for a durable analysis job")
+
     def ensure_active():
         if not job_id:
+            return
+        if lease_token:
+            if not product_store.lease_is_active(
+                job_id,
+                workspace_id=workspace_id,
+                lease_token=lease_token,
+            ):
+                raise AnalysisCancelled
             return
         try:
             job = product_store.get_job(job_id, workspace_id=workspace_id)
         except KeyError as exc:
             raise AnalysisCancelled from exc
-        if job["status"] == "cancelled":
+        if job["status"] != "running":
             raise AnalysisCancelled
 
     try:
@@ -733,6 +744,7 @@ async def _run_analysis_job(
                 workspace_id=workspace_id,
                 content=result["answer"],
                 payload=result,
+                lease_token=lease_token,
             )
             return message is not None
         message = product_store.add_message(
@@ -753,6 +765,12 @@ async def _run_analysis_job(
         return False
     except Exception as exc:
         if job_id:
+            if lease_token and not product_store.lease_is_active(
+                job_id,
+                workspace_id=workspace_id,
+                lease_token=lease_token,
+            ):
+                return False
             try:
                 if product_store.get_job(job_id, workspace_id=workspace_id)["status"] == "cancelled":
                     return False
@@ -765,8 +783,42 @@ async def _run_analysis_job(
         raise
 
 
-async def _fail_product_job(job_id: str, error: str, *, max_attempts: int = 3):
-    failed = product_store.fail_job(job_id, error, max_attempts=max_attempts)
+async def _maintain_product_job_lease(
+    job_id: str,
+    *,
+    worker_id: str,
+    lease_token: str,
+) -> None:
+    while True:
+        await asyncio.sleep(settings.job_heartbeat_seconds)
+        renewed = await asyncio.to_thread(
+            product_store.heartbeat_job,
+            job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            lease_seconds=settings.job_lease_seconds,
+        )
+        if not renewed:
+            logger.warning(
+                "analysis job lease lost",
+                extra={"job_id": job_id, "worker_id": worker_id},
+            )
+            return
+
+
+async def _fail_product_job(
+    job_id: str,
+    error: str,
+    *,
+    max_attempts: int = 3,
+    lease_token: str,
+):
+    failed = product_store.fail_job(
+        job_id,
+        error,
+        max_attempts=max_attempts,
+        lease_token=lease_token,
+    )
     if failed and failed["status"] == "failed":
         await _product_emit(
             failed["conversation_id"],
@@ -782,9 +834,22 @@ async def _schedule_product_job(job, background_tasks: BackgroundTasks, principa
         return
 
     async def work():
-        claimed = product_store.claim_job("api-inprocess", job_id=job["id"])
+        worker_id = "api-inprocess"
+        claimed = product_store.claim_job(
+            worker_id,
+            job_id=job["id"],
+            lease_seconds=settings.job_lease_seconds,
+        )
         if not claimed:
             return
+        lease_token = claimed["lease_token"]
+        heartbeat = asyncio.create_task(
+            _maintain_product_job_lease(
+                claimed["id"],
+                worker_id=worker_id,
+                lease_token=lease_token,
+            )
+        )
         payload = claimed["payload"]
         assets = []
         for asset_id in payload.get("asset_ids", []):
@@ -801,9 +866,21 @@ async def _schedule_product_job(job, background_tasks: BackgroundTasks, principa
                 history=list(payload.get("history", [])),
                 assets=assets,
                 job_id=claimed["id"],
+                lease_token=lease_token,
             )
         except Exception as exc:
-            await _fail_product_job(claimed["id"], repr(exc), max_attempts=1)
+            await _fail_product_job(
+                claimed["id"],
+                repr(exc),
+                max_attempts=1,
+                lease_token=lease_token,
+            )
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
 
     background_tasks.add_task(work)
 
@@ -1083,7 +1160,7 @@ def diagnostics(principal: Principal = Depends(require_principal)):
         "event_chain": True,
         "counterfactual_brancher": "counterfactual-brancher" in names,
         "state_verifier": "state-verifier" in names,
-        "regression_gated_evolution": "failure-evolver" in names,
+        "regression_gated_evolution": "harness-evolution" in names,
     }
     return {
         "ok": all(checks.values()),
@@ -1199,84 +1276,10 @@ def verify_run(
 
 
 def _run_report(session_id):
-    events = manager.engine.events.list_events(session_id)
-    if not events:
-        raise HTTPException(404, "未找到该运行会话")
-    by_type = {}
-    for event in events:
-        by_type.setdefault(event.event_type, []).append(event)
-
-    started = by_type.get("run.started", [None])[0]
-    completed = by_type.get("run.completed", [None])[-1]
-    decisions = by_type.get("decision.committed", [])
-    actions = by_type.get("action.executed", [])
-    branches = by_type.get("counterfactual.evaluated", [])
-    findings = by_type.get("qa.finding", [])
-    rollbacks = by_type.get("runtime.rollback", [])
-    replans = by_type.get("runtime.replan", [])
-    policy_events = by_type.get("policy.prior", [])
-    latencies = [
-        float(event.payload.get("latency_ms", 0))
-        for event in decisions
-        if event.payload.get("latency_ms") is not None
-    ]
-    confidences = [
-        float(event.payload.get("confidence", 0))
-        for event in decisions
-    ]
-    branch_count = sum(
-        len(event.payload.get("branches", [])) for event in branches
-    )
-    verified = sum(
-        1 for event in actions
-        if event.payload.get("verification", {}).get("recommendation")
-        in {"accept", "continue", "proceed"}
-    )
-    summary = completed.payload.get("summary") if completed else None
-    final_state = completed.payload.get("final_state") if completed else None
-    scenario = started.payload.get("scenario", {}) if started else {}
-    policy = (
-        started.payload.get("policy") if started else None
-    ) or manager.engine.policy_model.card_dict()
-    return {
-        "session_id": session_id,
-        "status": "completed" if completed else "running",
-        "scenario": scenario,
-        "policy": policy,
-        "summary": summary,
-        "final_state": final_state,
-        "metrics": {
-            "decision_count": len(decisions),
-            "action_count": len(actions),
-            "counterfactual_futures": branch_count,
-            "rollback_count": len(rollbacks),
-            "replan_count": len(replans),
-            "finding_count": len(findings),
-            "verifier_coverage": round(
-                len(actions) / max(1, len(actions)), 4
-            ),
-            "verified_accept_rate": round(
-                verified / max(1, len(actions)), 4
-            ),
-            "avg_decision_confidence": (
-                round(statistics.mean(confidences), 4)
-                if confidences else 0.0
-            ),
-            "avg_decision_latency_ms": (
-                round(statistics.mean(latencies), 2)
-                if latencies else 0.0
-            ),
-            "policy_decision_frames": len(policy_events),
-            "event_count": len(events),
-            "hash_chain_valid": manager.engine.events.verify_chain(session_id),
-        },
-        "findings": [event.payload for event in findings],
-        "evolution": [
-            event.payload for event in by_type.get("evolution.patch", [])
-        ] + [
-            event.payload for event in by_type.get("policy.optimization", [])
-        ],
-    }
+    try:
+        return manager.report(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "未找到该运行会话") from exc
 
 
 @app.get("/api/runs/{session_id}/report")

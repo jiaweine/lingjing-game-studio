@@ -1,0 +1,16 @@
+{
+  "accepted_candidates": 6,
+  "baseline_generation": 1,
+  "candidate_genomes": 52,
+  "evidence_source": "verified-runtime-event-trace",
+  "heldout_efficiency": 0.730917,
+  "heldout_operations": 23.25,
+  "heldout_quality": 0.686283,
+  "heldout_safety": 0.966518,
+  "paired_bootstrap_lcb": 0.0,
+  "promoted_generation": 4,
+  "protocol_id": "runtime-trace-sealed-heldout-game-harness-2026-08",
+  "sealed_heldout_gain": 0.044598,
+  "train_objective_gain": 0.004712,
+  "winning_operator": "boundary:0.2188:refine1:parameter_jitter"
+}

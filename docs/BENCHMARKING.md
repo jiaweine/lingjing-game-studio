@@ -17,7 +17,7 @@ benchmark 是工程验证，不是客户工作台营销榜单。没有 controlle
 python scripts/harness_evolution_benchmark.py
 ```
 
-协议 ID：`sealed-heldout-game-harness-2026-08`。
+协议 ID：`runtime-trace-sealed-heldout-game-harness-2026-08`。受版本控制的机器可校验摘要位于 `docs/benchmark-results.json`。
 
 当前固定实验设置：
 
@@ -42,23 +42,23 @@ Promotion 必须同时满足：
 ### 当前独立进程结果
 
 ```text
-candidate genomes                 36
-accepted candidates                4
+candidate genomes                 52
+accepted candidates                6
 baseline generation                1
-promoted generation                3
+promoted generation                4
 train objective gain         +0.004712
-sealed held-out gain         +0.000559
+sealed held-out gain         +0.044598
 paired-bootstrap LCB           0.000000
-held-out quality               0.612886
+held-out quality               0.686283
 held-out safety                0.966518
 held-out efficiency            0.730917
 held-out operations               23.25
-winning lineage     memory mutation
-                    → elite refinement
-                    → trust-region minimum edit
+winning lineage     parameter jitter
+                    → refinement
+                    → minimum boundary α=0.2188
 ```
 
-这组结果只证明：从干净进程、bootstrap Genome 出发，搜索器能够产生被 sealed judge 接受的下一代 Harness。增益很小，因此不能据此宣称通用 SOTA 或大幅性能领先。
+这组结果只证明：从干净进程、bootstrap Genome 出发，搜索器能够产生被 sealed judge 接受的下一代 Harness，不能据此宣称通用 SOTA 或跨项目性能领先。常规 benchmark 会校验 JSON 摘要；算法或协议有意变化时，先审查结果，再运行 `python scripts/harness_evolution_benchmark.py --update-snapshot` 并同步人类可读文档。
 
 ## 3. 为什么 held-out 必须 sealed
 
@@ -99,7 +99,8 @@ Finding 和 unsafe execution 分开。研发 Harness 发现漏洞应该获得诊
 - 完整 pytest；
 - JavaScript syntax；
 - Backend product E2E；
-- Browser product E2E；
+- Browser full-stack product E2E（真实 FastAPI / durable Job / WebSocket / quality gate）；
+- Browser gallery interaction E2E（隔离 transport，用于稳定视觉状态与截图）；
 - README repository consistency；
 - GitHub README 真实浏览器图片加载；
 - GitHub MathJax / MathML 公式渲染。

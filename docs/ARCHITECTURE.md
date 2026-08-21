@@ -52,7 +52,7 @@ Human Feedback / Audit / Product Events
 
 任务生命周期支持搜索、重命名、置顶、归档 / 恢复、负责人交接、深链接、真实停止、安全重试、永久删除审批和 latest-result human quality gate。
 
-任务接收时，user message、queued job 与 `message.accepted` 同事务提交；完成时，job completed、assistant answer 与 `answer.ready` 同事务提交。迟到的旧执行事件不能覆盖更新状态。
+任务接收时，user message、queued job 与 `message.accepted` 同事务提交；完成时，job completed、assistant answer 与 `answer.ready` 同事务提交。Worker 通过可续约 lease、heartbeat 与每次领取唯一的 fencing token 执行任务；过期 lease 自动回队列，旧 attempt 无法覆盖新 attempt 或停止后的终态。
 
 ## 3. 多模态任务上下文
 
@@ -185,7 +185,7 @@ Promotion 采用原子替换：被持久化的对象就是 held-out 评估过的
 python scripts/harness_evolution_benchmark.py
 ```
 
-协议 `sealed-heldout-game-harness-2026-08` 从 bootstrap Genome 启动，train seeds 为 11 / 23，held-out seeds 为 37 / 51。当前已验证的独立进程结果：36 个候选中 4 个通过门禁，generation 1 晋升到 generation 3；train objective gain `+0.004712`，sealed held-out gain `+0.000559`，paired-bootstrap lower bound `0.000000`。
+协议 `runtime-trace-sealed-heldout-game-harness-2026-08` 从真实 Runtime timeout 轨迹提取 WHERE × WHY evidence，并从 bootstrap Genome 启动；train seeds 为 11 / 23，held-out seeds 为 37 / 51。当前已验证的独立进程结果：52 个候选中 6 个通过门禁，generation 1 晋升到 generation 4；train objective gain `+0.004712`，sealed held-out gain `+0.044598`，paired-bootstrap lower bound `0.000000`。`docs/benchmark-results.json` 是 CI 对比的机器可校验摘要。
 
 这些数字证明 promotion mechanism 可工作，不代表跨项目通用 SOTA。
 
@@ -200,3 +200,21 @@ Runtime Event Store 保存环境状态、decision、Verifier、checkpoint、Harn
 `worldforge/providers/` 是服务端推理资源适配层。客户工作台不展示供应商或内部模型选择器。
 
 更换推理资源不会改变以下灵境职责：workspace authorization、task lifecycle、canonical state、Harness generation、Sandbox / Verifier、rollback / replan、approval、human quality gate 与 completion semantics。
+
+## 14. 证据与结论可信度边界
+
+用户上传内容标为 `observed`，内部 WorldForge 场景标为 `synthetic`，只有显式加载目标游戏
+Build 的 `GameExecutionAdapter` 才能产生 `reproduced` 证据。`reproduced` 只说明证据来自真实
+运行环境；报告问题是否复现仍要求 reproduction assertions 全部通过。
+
+无可用推理模型时，ProductAnalyzer 返回 `analysis_mode=demo`；即使有模型，当前分析链仍返回
+`claim_status=hypothesis_only` 与 `verification_status=not_verified`。内部场景和模型文本都不能把
+结论自动升级为真实游戏已验证。前端在结果和每条证据旁直接显示这一来源边界；人工将待验证
+假设标为已验证时，必须填写真实游戏 Build、验证条件与结果说明，服务端同样强制此约束。
+
+## 15. 生产持久化边界
+
+Product Control Plane 使用 PostgreSQL，资产使用 S3-compatible Object Storage。单机 Compose
+通过共享 `runtime_data` volume 让 API 与 Worker 读取同一 Runtime / Harness 文件事实源；多主机
+扩展时必须把该文件层替换为共享、带并发控制的持久化 Runtime Store，不能把本地容器文件系统
+当作分布式事实源。

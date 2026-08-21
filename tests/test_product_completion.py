@@ -60,6 +60,7 @@ def test_task_lifecycle_retry_guard_and_metrics(tmp_path):
         workspace_id=workspace_id,
         content="已验证",
         payload={"evidence": [], "deliverables": []},
+        lease_token=claimed_retry["lease_token"],
     )
     assert message
 
@@ -136,6 +137,52 @@ def test_feedback_gate_is_human_verified_and_vetoable(tmp_path):
     gate = store.feedback_gate(conversation["id"], workspace_id=owner["workspace_id"])
     assert gate["approved"] is False
     assert gate["incorrect"] == 1
+
+
+def test_hypothesis_verification_requires_real_environment_note(tmp_path):
+    store = ConversationStore(
+        tmp_path / "product.db", tmp_path / "assets", seed_dev_identity=False
+    )
+    owner = _store_owner(store)
+    conversation = store.create_conversation(
+        workspace_id=owner["workspace_id"],
+        created_by=owner["user_id"],
+    )
+    answer = store.add_message(
+        conversation["id"],
+        "assistant",
+        "演示假设",
+        {
+            "analysis_mode": "demo",
+            "claim_status": "hypothesis_only",
+            "verification_status": "not_verified",
+        },
+        workspace_id=owner["workspace_id"],
+    )
+
+    with pytest.raises(ValueError, match="真实环境验证说明"):
+        store.upsert_feedback(
+            workspace_id=owner["workspace_id"],
+            user_id=owner["user_id"],
+            message_id=answer["id"],
+            verdict="correct",
+            human_verified=True,
+        )
+
+    store.upsert_feedback(
+        workspace_id=owner["workspace_id"],
+        user_id=owner["user_id"],
+        message_id=answer["id"],
+        verdict="correct",
+        human_verified=True,
+        note="Build 2026.08.21，在 Boss 二阶段按同输入序列复现并核对日志。",
+    )
+    gate = store.feedback_gate(
+        conversation["id"], workspace_id=owner["workspace_id"]
+    )
+    assert gate["approved"] is True
+    assert gate["claim_status"] == "hypothesis_only"
+    assert gate["verification_basis"] == "human_attestation"
 
 
 def test_structured_deliverables_are_scene_specific():

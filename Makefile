@@ -17,7 +17,7 @@ train:
 test:
 	python -m pytest
 	node --check frontend/app.js
-	python -m compileall -q worldforge migrations scripts tests
+	python -m compileall -q worldforge domains migrations scripts tests
 
 benchmark:
 	python -m worldforge.cli benchmark --seeds 12

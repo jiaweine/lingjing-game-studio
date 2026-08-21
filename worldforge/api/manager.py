@@ -4,8 +4,25 @@ import asyncio
 from collections import defaultdict
 from pathlib import Path
 
+from worldforge.envs import get_scenario
 from worldforge.models import RunConfig, RuntimeEvent
 from worldforge.runtime import WorldForgeEngine
+from worldforge.runtime.engine import WorldForgeEngine as FrozenWorldForgeEngine
+from worldforge.runtime.harness_genome import HarnessGenomeStore
+from worldforge.runtime.provenance import build_runtime_provenance
+from worldforge.runtime.run_report import build_run_report
+
+
+def resolve_managed_run_config(config: RunConfig) -> RunConfig:
+    """Apply product-safe defaults without changing research/runtime defaults.
+
+    `RunConfig` intentionally keeps evolution enabled by default for direct runtime and
+    benchmark callers. Managed/API runs are more conservative: if a client omitted the
+    field entirely, evolution is disabled. An explicit true or false is always honored.
+    """
+    if "enable_evolution" in config.model_fields_set:
+        return config
+    return config.model_copy(update={"enable_evolution": False})
 
 
 class RunManager:
@@ -25,6 +42,7 @@ class RunManager:
         user_id: str | None = None,
     ) -> str:
         import uuid
+        config = resolve_managed_run_config(config)
         session_id = f"wf-{uuid.uuid4().hex[:10]}"
 
         async def sink(event: RuntimeEvent) -> None:
@@ -38,14 +56,31 @@ class RunManager:
 
         async def execute() -> None:
             try:
+                session_meta = {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "commit_shared_memory": bool(config.enable_evolution),
+                }
+                scenario = get_scenario(config.scenario_id)
+                harness_baseline = HarnessGenomeStore.snapshot()
+                session_meta["provenance"] = build_runtime_provenance(
+                    kernel=FrozenWorldForgeEngine,
+                    runtime_wrapper=self.engine,
+                    policy=self.engine.policy_model,
+                    harness_genome=harness_baseline,
+                    skill_bank=self.engine.skills,
+                    memory=self.engine.memory,
+                    verifier=self.engine.verifier,
+                    scenario=scenario.model_dump(),
+                    config=config.model_dump(),
+                    session_meta=session_meta,
+                )
                 self.summaries[session_id] = await self.engine.run(
                     config,
                     session_id=session_id,
                     sink=sink,
-                    session_meta={
-                        "workspace_id": workspace_id,
-                        "user_id": user_id,
-                    },
+                    session_meta=session_meta,
+                    _harness_baseline=harness_baseline,
                 )
             except Exception as exc:
                 event = self.engine.events.append(
@@ -63,6 +98,7 @@ class RunManager:
         task = self.tasks.get(session_id)
         summary = self.summaries.get(session_id)
         events = self.engine.events.list_events(session_id)
+        session = self.engine.events.session_meta(session_id)
         if summary:
             status = "completed"
         elif task and task.cancelled():
@@ -88,7 +124,17 @@ class RunManager:
             "summary": summary.model_dump() if summary else None,
             "event_count": len(events),
             "last_event": events[-1].model_dump() if events else None,
+            "provenance": (session or {}).get("meta", {}).get("provenance"),
         }
+
+    def report(self, session_id):
+        events = self.engine.events.list_events(session_id)
+        return build_run_report(
+            session_id,
+            events,
+            policy_fallback=self.engine.policy_model.card_dict(),
+            hash_chain_valid=lambda: self.engine.events.verify_chain(session_id),
+        )
 
     async def cancel(self, session_id):
         task = self.tasks.get(session_id)

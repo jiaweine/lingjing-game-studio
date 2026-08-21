@@ -16,7 +16,7 @@ def test_readme_math_uses_supported_github_syntax() -> None:
     assert r"\mathrm{LCB}_q" in text
     assert r"\mathrm{Promote}(G')" in text
     assert "Self-Evolving Game R&D Agent Harness Runtime" in text
-    assert "sealed-heldout-game-harness-2026-08" in text
+    assert "runtime-trace-sealed-heldout-game-harness-2026-08" in text
 
 
 def test_readme_does_not_present_bootstrap_constants_as_the_method() -> None:
