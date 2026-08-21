@@ -469,24 +469,24 @@ python scripts/harness_evolution_benchmark.py
 
 它从干净进程、bootstrap Genome 开始，对 4 个 BalanceLab 研发场景使用独立 train / held-out seeds。held-out **不参与候选生成**；只有最后 promotion credit 才能看到。
 
-当前 `sealed-heldout-game-harness-2026-08` 最终 CI 原始日志对应的可复现实验结果：
+当前 `runtime-trace-sealed-heldout-game-harness-2026-08` 最终 CI 原始日志对应的可复现实验结果；机器可校验摘要保存在 `docs/benchmark-results.json`：
 
 | Metric | Result |
 |---|---:|
-| Candidate genomes | **36** |
+| Candidate genomes | **52** |
 | Passed promotion gate | **6** |
 | Baseline generation | **1** |
-| Promoted generation | **2** |
+| Promoted generation | **4** |
 | Train objective gain | **+0.004712** |
-| Sealed held-out objective gain | **+0.000559** |
+| Sealed held-out objective gain | **+0.044598** |
 | Paired-bootstrap lower bound | **0.000000** |
-| Promoted held-out quality | **0.612886** |
+| Promoted held-out quality | **0.686283** |
 | Promoted held-out safety | **0.966518** |
 | Promoted held-out efficiency | **0.730917** |
 | Promoted held-out operations | **23.25** |
-| Winning lineage | **Gate mutation → minimum-effective boundary at α = 0.6406** |
+| Winning lineage | **Parameter jitter → refinement → minimum-effective boundary at α = 0.2188** |
 
-这组数据的意义是**机制证明，不是通用 SOTA 宣称**。held-out 增益很小，真正重要的是：候选在看不到 held-out 的情况下改变 Harness，随后仍能通过独立 quality / safety / efficiency / bootstrap credit，并产生新的持久化 generation。
+这组数据的意义是**机制证明，不是通用 SOTA 宣称**。真正重要的是：候选在看不到 held-out 的情况下改变 Harness，随后仍能通过独立 quality / safety / efficiency / bootstrap credit，并产生新的持久化 generation。benchmark 会把本次摘要和受版本控制的快照对比，避免 README 与真实运行结果再次漂移。
 
 场景覆盖 Boss 爆发窗口、经济陷阱、玻璃大炮极端 Build、奖励循环漏洞回归。`tests/test_harness_promotion.py` 还会在 pytest 内再跑一条 promotion regression，独立 benchmark 则防止测试进程全局状态造成假绿。
 
@@ -586,10 +586,10 @@ python scripts/harness_evolution_benchmark.py
 git clone https://github.com/jiaweine/lingjing-game-studio.git
 cd lingjing-game-studio
 pip install -r requirements.txt
-uvicorn worldforge.api.app:app --reload
+uvicorn worldforge.api.app:app --host 0.0.0.0 --port 8765 --reload
 ```
 
-打开 `http://127.0.0.1:8000`。
+打开 `http://127.0.0.1:8765`。
 
 开发、测试和完整 Harness 验证使用 development 依赖：
 
@@ -598,17 +598,26 @@ pip install -r requirements-dev.txt
 pytest -q
 python scripts/harness_evolution_benchmark.py
 python scripts/product_backend_e2e.py
+python scripts/product_fullstack_ui_e2e.py  # 需先安装 Playwright Chromium
 ```
 
-浏览器 E2E 与真实 README 图片加载由 GitHub Actions 运行。
+GitHub Actions 会安装 Chromium，运行真实 FastAPI / durable Job / WebSocket 的浏览器全栈 E2E；
+README 图库工作流另用隔离 transport 生成稳定视觉状态，并在 GitHub 页面验证真实图片加载。
 
 ## Runtime API
 
-- `POST /runs`：启动 WorldForge 任务；
-- `GET /runs/{id}`：查询状态；
-- `GET /runs/{id}/events`：读取持久事件链；
-- `GET /runs/{id}/stream`：SSE 订阅实时事件；
-- `POST /runs/{id}/cancel`：停止真实运行任务。
+- `GET /api/runs`：列出当前工作空间可见的运行任务；
+- `POST /api/runs`：启动 WorldForge 任务；
+- `GET /api/runs/{id}`：查询状态与运行来源；
+- `GET /api/runs/{id}/events`：读取持久事件链；
+- `WS /ws/runs/{id}`：订阅实时事件与心跳；
+- `POST /api/runs/{id}/cancel`：停止真实运行任务；
+- `GET /api/runs/{id}/verify`：校验事件哈希链；
+- `GET /api/runs/{id}/report`：读取结构化运行报告。
+
+HTTP API 使用当前会话 Cookie 或 Bearer Token；WebSocket 使用会话 Cookie，也支持
+`access_token` 查询参数。产品任务进度使用 `/ws/conversations/{id}`，断线后通过持久化
+`task_events` 和 `after_id` 游标恢复。
 
 ## Repository
 

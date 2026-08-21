@@ -9,6 +9,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: lingjing_test
+          POSTGRES_USER: lingjing
+          POSTGRES_PASSWORD: lingjing_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lingjing -d lingjing_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -48,9 +62,30 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Python compile check
-        run: python -m compileall -q worldforge migrations scripts tests
+        run: python -m compileall -q worldforge domains migrations scripts tests
       - name: Test suite
         run: pytest -q
+      - name: Migration round-trip smoke test
+        env:
+          DATABASE_URL: sqlite:////tmp/lingjing-migration-smoke.db
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+      - name: PostgreSQL job lease integration
+        env:
+          DATABASE_URL: postgresql+psycopg://lingjing:lingjing_test_password@127.0.0.1:5432/lingjing_test
+          WORLDFORGE_TEST_DATABASE_URL: postgresql+psycopg://lingjing:lingjing_test_password@127.0.0.1:5432/lingjing_test
+        run: |
+          alembic upgrade head
+          pytest -q tests/test_postgres_job_leases.py
+      - name: Production Compose contract
+        env:
+          POSTGRES_PASSWORD: compose_test_password
+          MINIO_ROOT_USER: lingjing
+          MINIO_ROOT_PASSWORD: compose_test_password
+          WORLDFORGE_JWT_SECRET: compose-test-secret-with-at-least-sixty-four-characters-0000000000
+        run: docker compose -f docker-compose.prod.yml config --quiet
       - name: Harness self-evolution benchmark
         run: python scripts/harness_evolution_benchmark.py
       - name: JavaScript syntax check
@@ -196,6 +231,8 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Browser product E2E
         run: python scripts/product_ui_e2e.py
+      - name: Browser full-stack product E2E
+        run: python scripts/product_fullstack_ui_e2e.py
       - name: README browser visibility
         env:
           GH_REPOSITORY: ${{ github.repository }}

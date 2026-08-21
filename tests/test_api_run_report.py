@@ -1,8 +1,10 @@
+import uuid
+
 from worldforge.api.app import _run_report, manager
 
 
 def test_api_run_report_uses_real_verifier_coverage(tmp_path):
-    session_id = "wf-report-coverage"
+    session_id = f"wf-report-coverage-{uuid.uuid4().hex}"
     store = manager.engine.events
     store.create_session(session_id, meta={})
     store.append(

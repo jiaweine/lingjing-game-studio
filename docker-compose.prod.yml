@@ -41,11 +41,14 @@ services:
       WORLDFORGE_ENV: production
       WORLDFORGE_AUTH_MODE: required
       WORLDFORGE_AUTO_CREATE_SCHEMA: "0"
+      WORLDFORGE_DATA: /app/outputs/runtime
       WORLDFORGE_JWT_SECRET: ${WORLDFORGE_JWT_SECRET:?set WORLDFORGE_JWT_SECRET}
       WORLDFORGE_SECURE_COOKIES: ${WORLDFORGE_SECURE_COOKIES:-0}
       WORLDFORGE_CORS_ORIGINS: ${WORLDFORGE_CORS_ORIGINS:-http://localhost:8765}
       WORLDFORGE_TRUSTED_HOSTS: ${WORLDFORGE_TRUSTED_HOSTS:-localhost,127.0.0.1}
       WORLDFORGE_QUEUE_MODE: external
+      WORLDFORGE_JOB_LEASE_SECONDS: ${WORLDFORGE_JOB_LEASE_SECONDS:-120}
+      WORLDFORGE_JOB_HEARTBEAT_SECONDS: ${WORLDFORGE_JOB_HEARTBEAT_SECONDS:-30}
       DATABASE_URL: postgresql+psycopg://lingjing:${POSTGRES_PASSWORD}@postgres:5432/lingjing
       WORLDFORGE_STORAGE_BACKEND: s3
       S3_BUCKET: lingjing-assets
@@ -67,6 +70,8 @@ services:
   api:
     build: .
     environment: *app-env
+    volumes:
+      - runtime_data:/app/outputs/runtime
     ports:
       - "8765:8765"
     depends_on:
@@ -78,6 +83,8 @@ services:
     build: .
     command: ["python", "-m", "worldforge.worker"]
     environment: *app-env
+    volumes:
+      - runtime_data:/app/outputs/runtime
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -86,3 +93,4 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  runtime_data:

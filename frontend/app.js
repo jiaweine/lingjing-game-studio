@@ -445,6 +445,7 @@ function renderMessage(message) {
           <b>执行结果</b>
           <time>${message.created_at ? fmtTime(message.created_at) : ""}</time>
         </div>
+        ${renderTrustBanner(payload)}
         <div class="msg-content">${md(message.content)}</div>
         <div class="answer-foot">
           <button class="answer-action" type="button" data-copy-result>复制结果</button>
@@ -457,6 +458,23 @@ function renderMessage(message) {
         </div>
       </div>
     </article>
+  `;
+}
+
+function renderTrustBanner(payload) {
+  if (!payload.analysis_mode && !payload.claim_status) return "";
+  const demo = payload.analysis_mode === "demo";
+  const verified = payload.claim_status === "verified";
+  const title = verified
+    ? "真实环境复现 · 断言已通过"
+    : (demo ? "演示分析 · 非真实游戏结论" : "模型辅助分析 · 待真实环境验证");
+  const detail = verified
+    ? "真实环境断言已通过"
+    : "当前仅支持假设，尚未在目标游戏 Build 中完成复现断言";
+  return `
+    <div class="result-trust ${verified ? "verified" : (demo ? "demo" : "pending")}">
+      <b>${esc(title)}</b><span>${esc(detail)}</span>
+    </div>
   `;
 }
 
@@ -549,7 +567,7 @@ function renderEvidence(rows = []) {
               <div>
                 <em>${esc(evidence.label || "证据")}</em>
                 <b>${esc(evidence.title || "")}</b>
-                <small>${kind === "replay" ? "同条件再次核验" : "已和当前结论关联"}</small>
+                <small>${esc(evidence.provenance_label || (kind === "replay" ? "同条件再次核验" : "已和当前结论关联"))}</small>
               </div>
             </div>
           </div>
@@ -1397,7 +1415,14 @@ function bindUI() {
     }
     if (event.target.closest("[data-human-verify]")) {
       const previous = state.feedback[messageId];
-      saveFeedback(messageId, {verdict: previous?.verdict || "correct", human_verified: !Boolean(previous?.human_verified)});
+      const humanVerified = !Boolean(previous?.human_verified);
+      let note = previous?.note || "";
+      const message = state.messages.find(item => item.id === messageId);
+      if (humanVerified && message?.payload?.claim_status === "hypothesis_only" && !note.trim()) {
+        note = window.prompt("请填写你在真实游戏 Build 中验证的版本、条件与结果：", "")?.trim() || "";
+        if (!note) { toast("待验证假设需要真实环境验证说明"); return; }
+      }
+      saveFeedback(messageId, {verdict: previous?.verdict || "correct", human_verified: humanVerified, note});
     }
   });
 

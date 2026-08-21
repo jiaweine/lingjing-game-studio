@@ -256,10 +256,28 @@ class ProductAnalyzer:
                     "detail": str(exc),
                 })
 
+        analysis_mode = "model_assisted" if generated else "demo"
+        if not generated:
+            await sink("notice", {
+                "title": "当前为演示分析",
+                "detail": (
+                    "本次未调用可用推理模型；输出用于展示分析流程和形成待验证假设，"
+                    "不能视为真实游戏结论。"
+                ),
+            })
+
         confidence = self._evidence_confidence(evidence, runtime_result)
         modality_counts = Counter(item.get("type", "file") for item in evidence)
         provenance_counts = Counter(
             item.get("provenance", "observed") for item in evidence
+        )
+        real_game_reproduced = bool(provenance_counts.get("reproduced"))
+        claim_status = "hypothesis_only"
+        verification_status = "not_verified"
+        answer = generated or (
+            "### 演示分析（非真实游戏结论）\n\n"
+            "本次未调用推理模型；以下内容是基于固定分析模板与内部模拟形成的待验证假设。\n\n"
+            + self._demo_answer(intent)
         )
         await sink("progress", {
             "step": "形成结论",
@@ -267,8 +285,11 @@ class ProductAnalyzer:
             "percent": 100,
         })
         return {
-            "answer": generated or self._demo_answer(intent),
+            "answer": answer,
             "intent": intent,
+            "analysis_mode": analysis_mode,
+            "claim_status": claim_status,
+            "verification_status": verification_status,
             "evidence": evidence,
             "deliverables": self._deliverables(intent, evidence, runtime_result),
             "runtime": runtime_result,
@@ -278,7 +299,14 @@ class ProductAnalyzer:
                 "evidence_confidence": confidence,
                 "modality_counts": dict(modality_counts),
                 "provenance_counts": dict(provenance_counts),
-                "real_game_reproduced": bool(provenance_counts.get("reproduced")),
+                "real_game_reproduced": real_game_reproduced,
+                "analysis_mode": analysis_mode,
+                "claim_status": claim_status,
+                "verification_status": verification_status,
+                "limitations": [
+                    "内部 WorldForge 场景是 synthetic evidence，不代表用户游戏 Build",
+                    "结论需要真实游戏执行适配器或人工复现证据后才能升级为 verified",
+                ],
             },
             "suggestions": self._suggestions(intent),
         }
@@ -395,27 +423,27 @@ class ProductAnalyzer:
     def _demo_answer(self, intent):
         if intent == "battle_review":
             return (
-                "### 结论\n当前观察更像是**高爆发阶段的资源衔接问题**，不是单一伤害数值失控；内部模拟仅支持该假设，尚未在用户真实游戏中复现。\n\n"
+                "### 待验证假设\n当前模板分析更倾向于**高爆发阶段的资源衔接问题**，而非单一伤害数值失控；内部模拟仅支持该假设，尚未在用户真实游戏中复现。\n\n"
                 "### 证据\n1. 用户素材显示高风险阶段承伤和资源消耗同时抬升。\n"
                 "2. 内部模拟命中了相似关键窗口，但它属于 synthetic evidence。\n\n"
                 "### 建议\n优先在真实游戏构建中检查减伤覆盖、敌方爆发参数和技能冷却，并记录可重复输入序列。"
             )
         if intent == "balance":
             return (
-                "### 结论\n当前数值存在高收益高波动组合；内部模拟用于发现风险边界，不等价于线上或目标 Build 的真实表现。\n\n"
+                "### 待验证假设\n当前数值可能存在高收益高波动组合；内部模拟用于发现风险边界，不等价于线上或目标 Build 的真实表现。\n\n"
                 "### 建议\n优先收窄极端波动，并用目标版本和分层玩家策略重新验证。"
             )
         if intent == "regression":
             return (
-                "### 结论\n当前证据提示存在可疑回归路径，内部模拟命中了相似异常，但**尚未证明目标游戏版本已稳定复现**。\n\n"
+                "### 待验证假设\n当前证据提示可能存在回归路径，内部模拟命中了相似异常，但**尚未证明目标游戏版本已稳定复现**。\n\n"
                 "### 建议\n锁定版本与配置差异，在真实 Build 中补可重复输入和自动回归用例。"
             )
         if intent == "npc":
             return (
-                "### 结论\n角色行为存在上下文切换不够平滑的问题。\n\n"
+                "### 待验证假设\n角色行为可能存在上下文切换不够平滑的问题。\n\n"
                 "### 建议\n优先验证冲突指令和连续多轮交互。"
             )
-        return "### 结论\n已完成当前素材整理与问题拆解。可以继续追加素材和追问，不需要重新描述背景。"
+        return "### 待验证假设\n已完成当前素材整理与问题拆解；尚未形成真实环境结论。可以继续追加素材和追问，不需要重新描述背景。"
 
     def _suggestions(self, intent):
         return {

@@ -20,12 +20,14 @@ from sqlalchemy import (
     create_engine,
     delete,
     insert,
+    inspect,
     or_,
     select,
+    text,
     update,
 )
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 DEMO_WORKSPACE_ID = "workspace-demo"
 DEMO_USER_ID = "user-demo"
@@ -66,6 +68,7 @@ class ConversationStore:
         self._define_tables()
         if auto_create_schema:
             self.metadata.create_all(self.engine)
+            self._upgrade_auto_created_job_schema()
         if seed_dev_identity:
             self.ensure_dev_identity()
 
@@ -170,10 +173,13 @@ class ConversationStore:
             Column("payload", Text, nullable=False),
             Column("attempts", Integer, nullable=False, default=0),
             Column("worker_id", String(96), nullable=True),
+            Column("lease_token", String(64), nullable=True),
             Column("last_error", Text, nullable=True),
             Column("created_at", Float, nullable=False),
             Column("available_at", Float, nullable=False),
             Column("claimed_at", Float, nullable=True),
+            Column("heartbeat_at", Float, nullable=True),
+            Column("lease_expires_at", Float, nullable=True, index=True),
             Column("completed_at", Float, nullable=True),
         )
         self.workspace_invites = Table(
@@ -232,6 +238,64 @@ class ConversationStore:
             Column("created_at", Float, nullable=False),
         )
 
+    def _upgrade_auto_created_job_schema(self) -> None:
+        """Add lease columns to legacy development databases created by create_all.
+
+        Production disables ``auto_create_schema`` and must use Alembic. This narrow
+        compatibility path keeps the documented zero-config development mode usable
+        because SQLAlchemy's create_all intentionally never alters an existing table.
+        """
+        schema = inspect(self.engine)
+        if not schema.has_table("analysis_jobs"):
+            return
+        columns = {
+            column["name"] for column in schema.get_columns("analysis_jobs")
+        }
+        additions = {
+            "lease_token": "VARCHAR(64)",
+            "heartbeat_at": "FLOAT",
+            "lease_expires_at": "FLOAT",
+        }
+        for name, column_type in additions.items():
+            if name in columns:
+                continue
+            try:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE analysis_jobs ADD COLUMN {name} {column_type}"
+                        )
+                    )
+            except SQLAlchemyError:
+                # A development reload process may have added the same column after
+                # our initial inspection. Only suppress that confirmed race.
+                refreshed = {
+                    column["name"]
+                    for column in inspect(self.engine).get_columns("analysis_jobs")
+                }
+                if name not in refreshed:
+                    raise
+
+        indexes = {
+            index["name"] for index in inspect(self.engine).get_indexes("analysis_jobs")
+        }
+        if "ix_analysis_jobs_lease_expires_at" not in indexes:
+            try:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "CREATE INDEX ix_analysis_jobs_lease_expires_at "
+                            "ON analysis_jobs (lease_expires_at)"
+                        )
+                    )
+            except SQLAlchemyError:
+                refreshed = {
+                    index["name"]
+                    for index in inspect(self.engine).get_indexes("analysis_jobs")
+                }
+                if "ix_analysis_jobs_lease_expires_at" not in refreshed:
+                    raise
+
     @staticmethod
     def _dict(row: Any) -> dict[str, Any]:
         return dict(row._mapping if hasattr(row, "_mapping") else row)
@@ -240,6 +304,15 @@ class ConversationStore:
     def _json_row(row: Any, field: str = "payload") -> dict[str, Any]:
         data = ConversationStore._dict(row)
         data[field] = json.loads(data.get(field) or "{}")
+        return data
+
+    @staticmethod
+    def _job_json_row(
+        row: Any, *, include_lease_token: bool = False
+    ) -> dict[str, Any]:
+        data = ConversationStore._json_row(row)
+        if not include_lease_token:
+            data.pop("lease_token", None)
         return data
 
     def ensure_dev_identity(self) -> None:
@@ -688,32 +761,151 @@ class ConversationStore:
             connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(status="active", updated_at=now))
         return self.get_job(job_id, workspace_id=workspace_id)
 
-    def get_job(self, job_id: str, *, workspace_id: str) -> dict[str, Any]:
+    def get_job(
+        self,
+        job_id: str,
+        *,
+        workspace_id: str,
+        include_lease_token: bool = False,
+    ) -> dict[str, Any]:
         with self.engine.connect() as connection:
             row = connection.execute(select(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id))).first()
         if not row:
             raise KeyError(job_id)
-        return self._json_row(row)
+        return self._job_json_row(row, include_lease_token=include_lease_token)
 
     def latest_job(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any] | None:
         with self.engine.connect() as connection:
             row = connection.execute(select(self.jobs).where(and_(self.jobs.c.conversation_id == conversation_id, self.jobs.c.workspace_id == workspace_id)).order_by(self.jobs.c.created_at.desc()).limit(1)).first()
-        return self._json_row(row) if row else None
+        return self._job_json_row(row) if row else None
 
-    def claim_job(self, worker_id: str, job_id: str | None = None) -> dict[str, Any] | None:
-        now = time.time()
+    def _requeue_expired_jobs(self, connection: Any, now: float) -> int:
+        result = connection.execute(
+            update(self.jobs)
+            .where(
+                and_(
+                    self.jobs.c.status == "running",
+                    self.jobs.c.lease_expires_at.is_not(None),
+                    self.jobs.c.lease_expires_at <= now,
+                )
+            )
+            .values(
+                status="queued",
+                worker_id=None,
+                lease_token=None,
+                claimed_at=None,
+                heartbeat_at=None,
+                lease_expires_at=None,
+                available_at=now,
+                last_error="worker lease expired; queued for retry",
+            )
+        )
+        return int(result.rowcount or 0)
+
+    def requeue_expired_jobs(self, *, now: float | None = None) -> int:
         with self.engine.begin() as connection:
-            statement = select(self.jobs).where(and_(self.jobs.c.status == "queued", self.jobs.c.available_at <= now))
+            return self._requeue_expired_jobs(
+                connection, time.time() if now is None else now
+            )
+
+    def claim_job(
+        self,
+        worker_id: str,
+        job_id: str | None = None,
+        *,
+        lease_seconds: int = 120,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        claimed_at = time.time() if now is None else now
+        lease_token = uuid.uuid4().hex
+        lease_seconds = max(1, int(lease_seconds))
+        with self.engine.begin() as connection:
+            self._requeue_expired_jobs(connection, claimed_at)
+            statement = select(self.jobs).where(and_(self.jobs.c.status == "queued", self.jobs.c.available_at <= claimed_at))
             if job_id:
                 statement = statement.where(self.jobs.c.id == job_id)
             row = connection.execute(statement.order_by(self.jobs.c.created_at).limit(1)).first()
             if not row:
                 return None
-            job = self._json_row(row)
-            result = connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job["id"], self.jobs.c.status == "queued")).values(status="running", worker_id=worker_id, claimed_at=now, attempts=int(job.get("attempts") or 0) + 1))
+            job = self._job_json_row(row, include_lease_token=True)
+            result = connection.execute(
+                update(self.jobs)
+                .where(
+                    and_(
+                        self.jobs.c.id == job["id"],
+                        self.jobs.c.status == "queued",
+                    )
+                )
+                .values(
+                    status="running",
+                    worker_id=worker_id,
+                    lease_token=lease_token,
+                    claimed_at=claimed_at,
+                    heartbeat_at=claimed_at,
+                    lease_expires_at=claimed_at + lease_seconds,
+                    attempts=int(job.get("attempts") or 0) + 1,
+                )
+            )
             if result.rowcount != 1:
                 return None
-        return self.get_job(job["id"], workspace_id=job["workspace_id"])
+        return self.get_job(
+            job["id"],
+            workspace_id=job["workspace_id"],
+            include_lease_token=True,
+        )
+
+    def heartbeat_job(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        lease_seconds: int = 120,
+        now: float | None = None,
+    ) -> bool:
+        heartbeat_at = time.time() if now is None else now
+        lease_seconds = max(1, int(lease_seconds))
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                update(self.jobs)
+                .where(
+                    and_(
+                        self.jobs.c.id == job_id,
+                        self.jobs.c.status == "running",
+                        self.jobs.c.worker_id == worker_id,
+                        self.jobs.c.lease_token == lease_token,
+                        self.jobs.c.lease_expires_at > heartbeat_at,
+                    )
+                )
+                .values(
+                    heartbeat_at=heartbeat_at,
+                    lease_expires_at=heartbeat_at + lease_seconds,
+                )
+            )
+        return result.rowcount == 1
+
+    def lease_is_active(
+        self,
+        job_id: str,
+        *,
+        workspace_id: str,
+        lease_token: str,
+        now: float | None = None,
+    ) -> bool:
+        check_at = time.time() if now is None else now
+        with self.engine.connect() as connection:
+            row = connection.execute(
+                select(self.jobs.c.id).where(
+                    and_(
+                        self.jobs.c.id == job_id,
+                        self.jobs.c.workspace_id == workspace_id,
+                        self.jobs.c.status == "running",
+                        self.jobs.c.lease_token == lease_token,
+                        self.jobs.c.lease_expires_at > check_at,
+                    )
+                )
+            ).first()
+        return row is not None
 
     def cancel_job(self, job_id: str, *, workspace_id: str) -> dict[str, Any]:
         now = time.time()
@@ -721,7 +913,23 @@ class ConversationStore:
             row = connection.execute(select(self.jobs.c.conversation_id).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id))).first()
             if not row:
                 raise KeyError(job_id)
-            result = connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id, self.jobs.c.status.in_(("queued", "running")))).values(status="cancelled", completed_at=now))
+            result = connection.execute(
+                update(self.jobs)
+                .where(
+                    and_(
+                        self.jobs.c.id == job_id,
+                        self.jobs.c.workspace_id == workspace_id,
+                        self.jobs.c.status.in_(("queued", "running")),
+                    )
+                )
+                .values(
+                    status="cancelled",
+                    lease_token=None,
+                    heartbeat_at=None,
+                    lease_expires_at=None,
+                    completed_at=now,
+                )
+            )
             if result.rowcount:
                 connection.execute(update(self.conversations).where(self.conversations.c.id == row[0]).values(status="stopped", updated_at=now))
         return self.get_job(job_id, workspace_id=workspace_id)
@@ -735,14 +943,44 @@ class ConversationStore:
             raise ValueError("只能重新执行当前任务最新一次失败或已停止的执行")
         return self.enqueue_job(workspace_id=workspace_id, conversation_id=source["conversation_id"], payload=source["payload"])
 
-    def complete_job_answer(self, job_id: str, *, workspace_id: str, content: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def complete_job_answer(
+        self,
+        job_id: str,
+        *,
+        workspace_id: str,
+        content: str,
+        payload: dict[str, Any],
+        lease_token: str,
+    ) -> dict[str, Any] | None:
+        if not lease_token:
+            raise ValueError("lease token is required to complete a job")
         now, message_id = time.time(), _id("msg")
+        conditions = [
+            self.jobs.c.id == job_id,
+            self.jobs.c.workspace_id == workspace_id,
+            self.jobs.c.status == "running",
+            self.jobs.c.lease_token == lease_token,
+            self.jobs.c.lease_expires_at > now,
+        ]
         with self.engine.begin() as connection:
-            job = connection.execute(select(self.jobs.c.conversation_id).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id, self.jobs.c.status == "running"))).first()
+            job = connection.execute(
+                select(self.jobs.c.conversation_id).where(and_(*conditions))
+            ).first()
             if not job:
                 return None
             conversation_id = job[0]
-            result = connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.workspace_id == workspace_id, self.jobs.c.status == "running")).values(status="completed", completed_at=now, last_error=None))
+            result = connection.execute(
+                update(self.jobs)
+                .where(and_(*conditions))
+                .values(
+                    status="completed",
+                    lease_token=None,
+                    heartbeat_at=None,
+                    lease_expires_at=None,
+                    completed_at=now,
+                    last_error=None,
+                )
+            )
             if result.rowcount != 1:
                 return None
             message = {"id": message_id, "conversation_id": conversation_id, "role": "assistant", "content": content, "payload": payload, "created_at": now}
@@ -752,19 +990,67 @@ class ConversationStore:
             connection.execute(insert(self.task_events).values(workspace_id=workspace_id, conversation_id=conversation_id, type="answer.ready", payload=json.dumps(event_payload, ensure_ascii=False), created_at=now))
         return message
 
-    def fail_job(self, job_id: str, error: str, max_attempts: int = 3) -> dict[str, Any] | None:
+    def fail_job(
+        self,
+        job_id: str,
+        error: str,
+        max_attempts: int = 3,
+        *,
+        lease_token: str,
+    ) -> dict[str, Any] | None:
+        if not lease_token:
+            raise ValueError("lease token is required to fail a job")
         now = time.time()
         with self.engine.begin() as connection:
             row = connection.execute(select(self.jobs).where(self.jobs.c.id == job_id)).first()
             if not row:
                 return None
-            job = self._json_row(row)
+            job = self._job_json_row(row, include_lease_token=True)
             if job["status"] in {"completed", "cancelled", "failed"}:
+                job.pop("lease_token", None)
                 return job
+            if (
+                job["status"] != "running"
+                or job.get("lease_token") != lease_token
+                or float(job.get("lease_expires_at") or 0) <= now
+            ):
+                job.pop("lease_token", None)
+                return job
+            conditions = [
+                self.jobs.c.id == job_id,
+                self.jobs.c.status == "running",
+                self.jobs.c.lease_token == lease_token,
+                self.jobs.c.lease_expires_at > now,
+            ]
             if int(job.get("attempts") or 0) < max_attempts:
-                connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.status == "running")).values(status="queued", worker_id=None, claimed_at=None, last_error=error[:8000], available_at=now + min(30, 2 ** max(0, int(job.get("attempts") or 1) - 1))))
+                connection.execute(
+                    update(self.jobs)
+                    .where(and_(*conditions))
+                    .values(
+                        status="queued",
+                        worker_id=None,
+                        lease_token=None,
+                        claimed_at=None,
+                        heartbeat_at=None,
+                        lease_expires_at=None,
+                        last_error=error[:8000],
+                        available_at=now
+                        + min(30, 2 ** max(0, int(job.get("attempts") or 1) - 1)),
+                    )
+                )
             else:
-                result = connection.execute(update(self.jobs).where(and_(self.jobs.c.id == job_id, self.jobs.c.status == "running")).values(status="failed", last_error=error[:8000], completed_at=now))
+                result = connection.execute(
+                    update(self.jobs)
+                    .where(and_(*conditions))
+                    .values(
+                        status="failed",
+                        lease_token=None,
+                        heartbeat_at=None,
+                        lease_expires_at=None,
+                        last_error=error[:8000],
+                        completed_at=now,
+                    )
+                )
                 if result.rowcount:
                     connection.execute(update(self.conversations).where(self.conversations.c.id == job["conversation_id"]).values(status="blocked", updated_at=now))
         return self.get_job(job_id, workspace_id=job["workspace_id"])
@@ -927,6 +1213,13 @@ class ConversationStore:
         message = self.get_message(message_id, workspace_id=workspace_id)
         if message["role"] != "assistant":
             raise ValueError("只能评价任务交付结果")
+        claim_status = str(message.get("payload", {}).get("claim_status", ""))
+        if (
+            human_verified
+            and claim_status == "hypothesis_only"
+            and not note.strip()
+        ):
+            raise ValueError("待验证假设需要填写真实环境验证说明")
         now = time.time()
         values = {"verdict": verdict, "evidence_useful": None if evidence_useful is None else int(evidence_useful), "human_verified": int(human_verified), "note": note.strip()[:2000], "updated_at": now}
         with self.engine.begin() as connection:
@@ -958,23 +1251,38 @@ class ConversationStore:
     def feedback_gate(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any]:
         self.get_conversation(conversation_id, workspace_id=workspace_id)
         with self.engine.connect() as connection:
-            latest = connection.execute(select(self.messages.c.id).where(and_(self.messages.c.conversation_id == conversation_id, self.messages.c.role == "assistant")).order_by(self.messages.c.created_at.desc(), self.messages.c.id.desc()).limit(1)).first()
+            latest = connection.execute(select(self.messages.c.id, self.messages.c.payload).where(and_(self.messages.c.conversation_id == conversation_id, self.messages.c.role == "assistant")).order_by(self.messages.c.created_at.desc(), self.messages.c.id.desc()).limit(1)).first()
             if not latest:
                 return {"approved": False, "message_id": None, "task_status": "active", "human_verified": 0, "correct": 0, "incorrect": 0, "feedback_count": 0, "reason": "尚无可人工复核的交付结果"}
             message_id = latest[0]
+            message_payload = json.loads(latest[1] or "{}")
             rows = [self._dict(row) for row in connection.execute(select(self.result_feedback).where(and_(self.result_feedback.c.workspace_id == workspace_id, self.result_feedback.c.conversation_id == conversation_id, self.result_feedback.c.message_id == message_id)).order_by(self.result_feedback.c.updated_at.desc())).fetchall()]
         verified_correct = [row for row in rows if row.get("human_verified") and row.get("verdict") == "correct"]
         incorrect = [row for row in rows if row.get("verdict") == "incorrect"]
         correct = [row for row in rows if row.get("verdict") == "correct"]
         approved = bool(verified_correct) and not incorrect
         task_status = "verified" if approved else ("blocked" if incorrect else "review")
-        if approved:
+        claim_status = str(message_payload.get("claim_status", ""))
+        if approved and claim_status == "hypothesis_only":
+            reason = "最新待验证假设已由人工填写真实环境验证说明，且无错误反馈"
+        elif approved:
             reason = "最新交付已人工确认正确，且无错误反馈"
         elif incorrect:
             reason = "最新交付存在错误反馈，需要修正后重新验证"
         else:
             reason = "最新交付需要人工确认正确后才能通过质量门"
-        return {"approved": approved, "message_id": message_id, "task_status": task_status, "human_verified": len(verified_correct), "correct": len(correct), "incorrect": len(incorrect), "feedback_count": len(rows), "reason": reason}
+        return {
+            "approved": approved,
+            "message_id": message_id,
+            "task_status": task_status,
+            "human_verified": len(verified_correct),
+            "correct": len(correct),
+            "incorrect": len(incorrect),
+            "feedback_count": len(rows),
+            "claim_status": claim_status or None,
+            "verification_basis": "human_attestation" if approved else None,
+            "reason": reason,
+        }
 
     def record_product_event(self, *, workspace_id: str, user_id: str, name: str, conversation_id: str | None = None, payload: dict[str, Any] | None = None) -> None:
         if conversation_id:

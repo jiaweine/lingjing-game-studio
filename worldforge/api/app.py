@@ -692,15 +692,27 @@ async def _run_analysis_job(
     history,
     assets,
     job_id=None,
+    lease_token=None,
 ):
+    if job_id and not lease_token:
+        raise ValueError("lease token is required for a durable analysis job")
+
     def ensure_active():
         if not job_id:
+            return
+        if lease_token:
+            if not product_store.lease_is_active(
+                job_id,
+                workspace_id=workspace_id,
+                lease_token=lease_token,
+            ):
+                raise AnalysisCancelled
             return
         try:
             job = product_store.get_job(job_id, workspace_id=workspace_id)
         except KeyError as exc:
             raise AnalysisCancelled from exc
-        if job["status"] == "cancelled":
+        if job["status"] != "running":
             raise AnalysisCancelled
 
     try:
@@ -732,6 +744,7 @@ async def _run_analysis_job(
                 workspace_id=workspace_id,
                 content=result["answer"],
                 payload=result,
+                lease_token=lease_token,
             )
             return message is not None
         message = product_store.add_message(
@@ -752,6 +765,12 @@ async def _run_analysis_job(
         return False
     except Exception as exc:
         if job_id:
+            if lease_token and not product_store.lease_is_active(
+                job_id,
+                workspace_id=workspace_id,
+                lease_token=lease_token,
+            ):
+                return False
             try:
                 if product_store.get_job(job_id, workspace_id=workspace_id)["status"] == "cancelled":
                     return False
@@ -764,8 +783,42 @@ async def _run_analysis_job(
         raise
 
 
-async def _fail_product_job(job_id: str, error: str, *, max_attempts: int = 3):
-    failed = product_store.fail_job(job_id, error, max_attempts=max_attempts)
+async def _maintain_product_job_lease(
+    job_id: str,
+    *,
+    worker_id: str,
+    lease_token: str,
+) -> None:
+    while True:
+        await asyncio.sleep(settings.job_heartbeat_seconds)
+        renewed = await asyncio.to_thread(
+            product_store.heartbeat_job,
+            job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            lease_seconds=settings.job_lease_seconds,
+        )
+        if not renewed:
+            logger.warning(
+                "analysis job lease lost",
+                extra={"job_id": job_id, "worker_id": worker_id},
+            )
+            return
+
+
+async def _fail_product_job(
+    job_id: str,
+    error: str,
+    *,
+    max_attempts: int = 3,
+    lease_token: str,
+):
+    failed = product_store.fail_job(
+        job_id,
+        error,
+        max_attempts=max_attempts,
+        lease_token=lease_token,
+    )
     if failed and failed["status"] == "failed":
         await _product_emit(
             failed["conversation_id"],
@@ -781,9 +834,22 @@ async def _schedule_product_job(job, background_tasks: BackgroundTasks, principa
         return
 
     async def work():
-        claimed = product_store.claim_job("api-inprocess", job_id=job["id"])
+        worker_id = "api-inprocess"
+        claimed = product_store.claim_job(
+            worker_id,
+            job_id=job["id"],
+            lease_seconds=settings.job_lease_seconds,
+        )
         if not claimed:
             return
+        lease_token = claimed["lease_token"]
+        heartbeat = asyncio.create_task(
+            _maintain_product_job_lease(
+                claimed["id"],
+                worker_id=worker_id,
+                lease_token=lease_token,
+            )
+        )
         payload = claimed["payload"]
         assets = []
         for asset_id in payload.get("asset_ids", []):
@@ -800,9 +866,21 @@ async def _schedule_product_job(job, background_tasks: BackgroundTasks, principa
                 history=list(payload.get("history", [])),
                 assets=assets,
                 job_id=claimed["id"],
+                lease_token=lease_token,
             )
         except Exception as exc:
-            await _fail_product_job(claimed["id"], repr(exc), max_attempts=1)
+            await _fail_product_job(
+                claimed["id"],
+                repr(exc),
+                max_attempts=1,
+                lease_token=lease_token,
+            )
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
 
     background_tasks.add_task(work)
 

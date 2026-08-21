@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 from collections import Counter
 import json
@@ -20,6 +21,7 @@ from worldforge.runtime import (
 )
 
 BENCHMARK_PROTOCOL = "runtime-trace-sealed-heldout-game-harness-2026-08"
+BENCHMARK_SNAPSHOT = ROOT / "docs" / "benchmark-results.json"
 
 
 def _evolution_config() -> GameEvolutionConfig:
@@ -155,7 +157,52 @@ def run_benchmark() -> dict:
     return asyncio.run(_run_benchmark_async())
 
 
+def _snapshot_summary(payload: dict) -> dict:
+    promoted = payload["promoted_evaluation"]
+    return {
+        "protocol_id": payload["protocol"]["id"],
+        "evidence_source": payload["protocol"]["evidence_source"],
+        "candidate_genomes": payload["candidate_count"],
+        "accepted_candidates": payload["accepted_candidate_count"],
+        "baseline_generation": payload["baseline"]["generation"],
+        "promoted_generation": payload["durable_generation"],
+        "train_objective_gain": payload["train_gain"],
+        "sealed_heldout_gain": payload["heldout_gain"],
+        "paired_bootstrap_lcb": payload["lower_bound"],
+        "heldout_quality": promoted["heldout"]["quality"],
+        "heldout_safety": promoted["heldout"]["safety"],
+        "heldout_efficiency": promoted["heldout"]["efficiency"],
+        "heldout_operations": promoted["heldout"]["operations"],
+        "winning_operator": promoted["operator"],
+    }
+
+
+def _check_or_update_snapshot(payload: dict, *, update_snapshot: bool) -> None:
+    actual = _snapshot_summary(payload)
+    if update_snapshot:
+        BENCHMARK_SNAPSHOT.write_text(
+            json.dumps(actual, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return
+    expected = json.loads(BENCHMARK_SNAPSHOT.read_text(encoding="utf-8"))
+    if actual != expected:
+        raise RuntimeError(
+            "Harness benchmark result drifted from docs/benchmark-results.json; "
+            "review the protocol change, then run "
+            "`python scripts/harness_evolution_benchmark.py --update-snapshot` "
+            "and update the human-readable documentation."
+        )
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--update-snapshot",
+        action="store_true",
+        help="write the reviewed compact benchmark summary used by documentation",
+    )
+    args = parser.parse_args()
     payload = run_benchmark()
     print("HARNESS-EVOLUTION-BENCHMARK")
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
@@ -167,6 +214,7 @@ def main() -> None:
         raise SystemExit("Harness promotion gate failed: no accepted candidate is auditable.")
     if payload["protocol"]["hand_authored_evolution_evidence"]:
         raise SystemExit("Harness benchmark must derive mutation pressure from Runtime evidence.")
+    _check_or_update_snapshot(payload, update_snapshot=args.update_snapshot)
 
 
 if __name__ == "__main__":

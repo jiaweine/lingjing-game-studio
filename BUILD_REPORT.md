@@ -45,25 +45,25 @@ verified trace
 python scripts/harness_evolution_benchmark.py
 ```
 
-协议：`sealed-heldout-game-harness-2026-08`。
+协议：`runtime-trace-sealed-heldout-game-harness-2026-08`。机器可校验摘要：`docs/benchmark-results.json`。
 
 已验证的干净进程结果：
 
 ```text
-Candidate genomes                  36
-Passed promotion gate               4
+Candidate genomes                  52
+Passed promotion gate               6
 Baseline generation                 1
-Promoted generation                 3
+Promoted generation                 4
 Train objective gain          +0.004712
-Sealed held-out gain          +0.000559
+Sealed held-out gain          +0.044598
 Paired-bootstrap LCB            0.000000
-Held-out quality                0.612886
+Held-out quality                0.686283
 Held-out safety                 0.966518
 Held-out efficiency             0.730917
 Held-out operations                23.25
-Winning lineage      Memory mutation
-                     → elite refinement
-                     → minimum effective edit
+Winning lineage      Parameter jitter
+                     → refinement
+                     → minimum boundary α=0.2188
 ```
 
 这些数字是 self-evolution mechanism proof，不是跨产品 SOTA 宣称。README 明确保留这个边界。
@@ -73,10 +73,11 @@ Winning lineage      Memory mutation
 - 工作空间身份与多租户数据隔离；
 - 注册、登录、工作空间切换、邀请、角色与成员管理；
 - 任务搜索、重命名、置顶、归档/恢复、负责人交接与深链接；
-- Durable Job、真实停止、失败/停止后的安全重试与刷新恢复；
+- Durable Job、可续约 lease / heartbeat、崩溃自动回队列、fencing token 防陈旧写入、真实停止与安全重试；
 - 图片、视频、音频、日志、配置、文本/文档等多模态素材；
 - 后续追问继承当前任务已有素材上下文；
 - 结构化复现卡、回归清单、风险清单、验证方案和 evidence pack；
+- observed / synthetic / reproduced 来源分层，演示输出与真实复现结论显式隔离；
 - 结果反馈与人工质量门；
 - 永久删除持久化审批与任务锁定；
 - 产品事件与闭环指标；
@@ -87,7 +88,9 @@ Winning lineage      Memory mutation
 
 任务接收阶段将用户消息、queued Job 与 `message.accepted` 同事务提交。任务完成阶段将 Job 完成状态、assistant 交付与 `answer.ready` 同事务提交。
 
-停止、重试和永久删除审批都使用持久化状态作为事实源；迟到的旧失败/成功事件不能覆盖更新状态。永久删除在对象存储清理成功后，将审批校验、数据库删除与删除审计置于同一数据库事务。
+停止、重试和永久删除审批都使用持久化状态作为事实源；Job 每次领取生成唯一 fencing token，Worker 以 heartbeat 续约，过期后自动回队列，迟到的旧失败/成功事件不能覆盖新 attempt 或更新状态。永久删除在对象存储清理成功后，将审批校验、数据库删除与删除审计置于同一数据库事务。
+
+用户素材、内部模拟和真实游戏适配器输出分别标为 observed、synthetic 与 reproduced。无模型回退明确标记为 demo / hypothesis_only；模型生成也不会绕过真实环境复现断言而升级为 verified。人工验证待验证假设时必须填写真实 Build、条件与结果说明，前端与服务端均执行该门禁。
 
 Harness promotion 同样是持久化原子替换：只有被 sealed held-out 评估过的同一个 Genome 才能成为 active generation。
 
@@ -98,10 +101,14 @@ Harness promotion 同样是持久化原子替换：只有被 sealed held-out 评
 ```text
 Python compile                              PASS required
 Full pytest                                 PASS required
+Alembic upgrade/downgrade round trip         PASS required
+PostgreSQL multi-worker lease integration    PASS required
+Production Compose contract                  PASS required
 Standalone Harness self-evolution benchmark PASS required
 JavaScript syntax                           PASS required
 Backend product E2E                         PASS required
-Browser product E2E                         PASS required
+Browser full-stack API/Job/WebSocket E2E    PASS required
+Browser gallery interaction E2E             PASS required on gallery refresh
 README repository consistency               PASS required
 README real image loading                    9 / 9 required
 README display math → MathML                18 / 18 required
@@ -127,13 +134,14 @@ README MathJax macro / parse errors          0 required
 
 ## 部署边界
 
-仓库提供应用级认证、权限、审计、健康检查、数据库迁移、对象存储和 Worker 拓扑，但没有把以下真实生产平台职责伪装成已经完成：
+仓库提供应用级认证、权限、审计、健康检查、数据库迁移、对象存储、带租约的 Worker 拓扑和单机 Compose 共享 Runtime volume，但没有把以下真实生产平台职责伪装成已经完成：
 
 - TLS / ingress / WAF / DDoS；
 - centralized rate limiting；
 - metrics / tracing / error reporting；
 - secret management；
 - PostgreSQL backup / PITR；
+- 多主机共享 Runtime / Harness Store；
 - object-storage lifecycle / encryption / versioning；
 - malware scanning；
 - enterprise SSO / MFA / email verification；

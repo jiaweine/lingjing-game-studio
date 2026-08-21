@@ -23,6 +23,7 @@ Tests:
 ```bash
 make test
 python scripts/product_backend_e2e.py
+python scripts/product_fullstack_ui_e2e.py
 python scripts/product_ui_e2e.py
 ```
 
@@ -46,8 +47,14 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up --build
 - PostgreSQL `DATABASE_URL`
 - `WORLDFORGE_STORAGE_BACKEND=s3`
 - `WORLDFORGE_QUEUE_MODE=external`
+- `WORLDFORGE_JOB_LEASE_SECONDS=120`
+- `WORLDFORGE_JOB_HEARTBEAT_SECONDS=30`（必须短于 lease）
 - HTTPS 下 `WORLDFORGE_SECURE_COOKIES=1`
 - exact CORS origins and trusted hosts
+
+Compose 将 `/app/outputs/runtime` 作为 `runtime_data` 同时挂载给 API 与 Worker，保证单机
+Compose 中 Runtime 事件、Harness generation 与报告使用同一事实源。多主机部署不能依赖
+本地/单机 volume，必须换成所有实例可访问的持久化 Runtime Store。
 
 ## Database migrations
 
@@ -56,6 +63,8 @@ alembic upgrade head
 ```
 
 Do migrations as a deployment step before API/Worker rollout. Do not use runtime `create_all` in production.
+Development `auto_create_schema` contains only a narrow compatibility upgrade for lease columns on legacy
+create-all databases; it is not a replacement for Alembic and is disabled in production.
 
 ## Worker
 
@@ -63,7 +72,10 @@ Do migrations as a deployment step before API/Worker rollout. Do not use runtime
 python -m worldforge.worker
 ```
 
-Worker claims durable analysis jobs, materializes task assets from object storage, runs ProductAnalyzer / Runtime / inference-resource calls, writes `task_events`, then commits terminal job state and result artifacts.
+Worker 使用带 fencing token 的可续约 lease 领取 durable analysis job，处理期间按 heartbeat
+续约；进程崩溃或失联后，过期任务会自动重新入队。旧 Worker 恢复后无法提交或失败一个已被
+新 Worker 领取的 attempt。随后 Worker 从对象存储物化素材，执行 ProductAnalyzer / Runtime /
+推理资源调用，写入 `task_events`，并以事务提交终态和结果。
 
 ## Operations
 
@@ -80,8 +92,8 @@ Worker claims durable analysis jobs, materializes task assets from object storag
 
 1. **DB unavailable** — readiness returns 503; stop accepting new traffic until PostgreSQL is healthy.
 2. **Object storage unavailable** — readiness returns 503; uploads/downloads and worker asset access will fail.
-3. **Inference resource unavailable** — the product keeps deterministic local/demo analysis where applicable and emits a notice; inspect server-side inference configuration and upstream health.
-4. **Worker backlog** — inspect durable job statuses and scale workers; do not scale API as a substitute for worker capacity.
+3. **Inference resource unavailable** — the product keeps deterministic local/demo analysis where applicable, marks it as `analysis_mode=demo` / `claim_status=hypothesis_only`, and emits a notice; inspect server-side inference configuration and upstream health.
+4. **Worker backlog** — inspect durable job status, `attempts`, `heartbeat_at`, `lease_expires_at` and `last_error`. Expired leases are reclaimed on the next claim; scale workers only after distinguishing backlog from dependency failures.
 5. **Stuck delete approval** — verify object storage and database errors first; do not consume or bypass the persisted approval manually. Retry the governed delete after the underlying dependency is healthy.
 6. **Suspected cross-tenant access** — rotate credentials, preserve audit logs, inspect Workspace-scoped resource access, and treat as a security incident.
 
