@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -11,8 +12,9 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,9 +115,7 @@ def run() -> dict:
 
                 page.on("console", record_console_error)
                 page.goto(base_url, wait_until="networkidle")
-                page.wait_for_function(
-                    "document.querySelector('#authModal').hidden === true"
-                )
+                page.locator("#authModal").wait_for(state="hidden")
                 report["checks"]["real_dev_session"] = True
 
                 page.fill(
@@ -146,26 +146,26 @@ def run() -> dict:
                     ),
                 )
                 page.click("[data-human-verify]")
-                page.wait_for_function(
-                    "document.querySelector('[data-human-verify]').classList.contains('active')"
+                expect(page.locator("[data-human-verify]")).to_have_class(
+                    re.compile(r"\bactive\b")
                 )
                 page.click('[data-panel="team"]')
-                page.wait_for_function(
-                    "document.querySelector('#qualityGate').textContent.includes('人工质量门已通过')"
-                )
+                expect(page.locator("#qualityGate")).to_contain_text("人工质量门已通过")
                 report["checks"]["human_verification_requires_note"] = True
 
-                conversation_id = page.evaluate(
-                    "new URL(location.href).searchParams.get('conversation')"
+                conversation_id = parse_qs(urlparse(page.url).query)["conversation"][0]
+                conversation_response = page.context.request.get(
+                    f"{base_url}/api/conversations/{conversation_id}",
+                    fail_on_status_code=True,
                 )
-                server_state = page.evaluate(
-                    """async conversationId => {
-                      const conversation = await fetch(`/api/conversations/${conversationId}`).then(r => r.json());
-                      const gate = await fetch(`/api/quality-gate?conversation_id=${encodeURIComponent(conversationId)}`).then(r => r.json());
-                      return {conversation, gate};
-                    }""",
-                    conversation_id,
+                gate_response = page.context.request.get(
+                    f"{base_url}/api/quality-gate?conversation_id={conversation_id}",
+                    fail_on_status_code=True,
                 )
+                server_state = {
+                    "conversation": conversation_response.json(),
+                    "gate": gate_response.json(),
+                }
                 job = server_state["conversation"]["job"]
                 result_payload = server_state["conversation"]["messages"][-1]["payload"]
                 report["checks"]["lease_token_not_exposed"] = (
