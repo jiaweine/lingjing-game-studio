@@ -100,8 +100,6 @@ class MemoryGene(BaseModel):
 
 class PlannerGene(BaseModel):
     skill_weight: float
-    skill_base_factor: float
-    skill_success_factor: float
     memory_weight: float
     memory_scale: float
     policy_weight: float
