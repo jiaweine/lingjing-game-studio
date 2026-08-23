@@ -43,8 +43,6 @@
   },
   "planner": {
     "skill_weight": 1.0,
-    "skill_base_factor": 0.7,
-    "skill_success_factor": 0.5,
     "memory_weight": 2.2,
     "memory_scale": 10.0,
     "policy_weight": 1.65,
@@ -95,25 +93,25 @@
     "survival_guard": {
       "gate": {"weights": {"hp_missing": 1.7, "threat": 1.3}, "threshold": 0.9, "temperature": 0.3},
       "action_bias": {"defend": 2.4, "heal": 4.2, "scout": 0.8},
-      "reliability": 1.0,
+      "reliability": 1.08,
       "enabled": true
     },
     "burst_window": {
       "gate": {"weights": {"finish_window": 1.8, "energy": 1.1}, "threshold": 1.15, "temperature": 0.3},
       "action_bias": {"heavy_attack": 4.0, "cast": 3.4, "attack": 1.2},
-      "reliability": 1.0,
+      "reliability": 1.105,
       "enabled": true
     },
     "information_first": {
       "gate": {"weights": {"uncertainty": 2.0, "observed": -2.0}, "threshold": 0.55, "temperature": 0.25},
       "action_bias": {"scout": 4.2, "defend": 0.8},
-      "reliability": 1.0,
+      "reliability": 1.045,
       "enabled": true
     },
     "economy_guard": {
       "gate": {"weights": {"tag:economy": 1.4, "tag:exploit-test": 2.0}, "threshold": 0.75, "temperature": 0.25},
       "action_bias": {"farm": 0.4, "buy_armor": 1.7, "buy_blade": 1.0, "attack": 0.7},
-      "reliability": 1.0,
+      "reliability": 1.01,
       "enabled": true
     }
   },

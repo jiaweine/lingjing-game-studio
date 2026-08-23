@@ -99,6 +99,31 @@ def test_skill_behavior_is_part_of_evolvable_genome():
     assert {key: value.model_dump() for key, value in child.skills.items()} != before
 
 
+def test_skill_catalog_metadata_cannot_change_executable_bias():
+    HarnessGenomeStore.configure(None)
+    genome = HarnessGenomeStore.current().model_copy(deep=True)
+    state = WorldState()
+    goal = GoalState(primary="test")
+    bank = SkillBank()
+    actions = ["attack", "defend", "scout", "heavy_attack"]
+
+    with HarnessGenomeStore.use(genome):
+        before = {
+            action: bank.bias(state, action, uncertainty=.8, goal=goal)
+            for action in actions
+        }
+        for skill in bank.skills.values():
+            skill.status = "retired"
+            skill.success_rate = 0.0
+            skill.action_bias = {action: 999.0 for action in actions}
+        after = {
+            action: bank.bias(state, action, uncertainty=.8, goal=goal)
+            for action in actions
+        }
+
+    assert after == before
+
+
 def test_memory_retrieval_policy_is_evolvable():
     HarnessGenomeStore.configure(None)
     baseline = HarnessGenomeStore.current().model_copy(deep=True)
