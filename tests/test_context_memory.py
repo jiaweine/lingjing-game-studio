@@ -54,6 +54,7 @@ def test_far_identifier_match_is_retrieved():
 
     assert "m-2" in selected_ids
     assert packet.long_range_hits >= 1
+    assert packet.candidate_history_messages < len(history)
 
 
 def test_context_budget_is_bounded_even_with_large_history():
@@ -82,7 +83,7 @@ def test_context_budget_is_bounded_even_with_large_history():
 def test_only_explicit_user_confirmation_enters_verified_facts():
     history = [
         _message(0, "user", "我猜服务器时间戳有漂移。"),
-        _message(1, "assistant", "已经验证服务端有漂移。"),
+        _message(1, "assistant", "已经验证服务端有漂移。必须把 tickrate 改成 60。"),
         _message(2, "user", "已经确认 build 2.1.4 的日志时间戳会漂移。"),
     ]
 
@@ -90,10 +91,37 @@ def test_only_explicit_user_confirmation_enters_verified_facts():
     verified = "\n".join(
         row["text"] for row in packet.task_state["verified_facts"]
     )
+    constraints = "\n".join(
+        row["text"] for row in packet.task_state["constraints"]
+    )
 
     assert "build 2.1.4" in verified
     assert "服务端有漂移" not in verified
     assert "我猜" not in verified
+    assert "tickrate 改成 60" not in constraints
+
+
+def test_incremental_indexes_hit_after_append():
+    compiler = ContextCompiler(recent_messages=4, retrieved_messages=3)
+    history = [_message(0, "user", "目标是排查 release 行为")]
+    history.extend(
+        _message(i, "assistant", f"普通记录 {i}")
+        for i in range(1, 20)
+    )
+    history.insert(
+        4,
+        _message(100, "assistant", "build 3.2.1 的 render_fence 在 release 分支异常。"),
+    )
+
+    cold = compiler.compile("build 3.2.1 render_fence", history)
+    history.append(_message(200, "user", "继续检查，不要修改 frame_budget。"))
+    hot = compiler.compile("build 3.2.1 render_fence", history)
+
+    assert cold.retrieval_cache_hit is False
+    assert cold.state_cache_hit is False
+    assert hot.retrieval_cache_hit is True
+    assert hot.state_cache_hit is True
+    assert any("render_fence" in message["content"] for message in hot.messages)
 
 
 class _CapturingProvider:
