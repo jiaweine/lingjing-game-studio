@@ -9,12 +9,22 @@ import httpx
 
 from .base import BaseProvider, ProviderError, ProviderInfo
 
+_MAX_INLINE_MEDIA_BYTES = 24 * 1024 * 1024
+
 
 def _data_url(path: str | Path, mime: str | None = None) -> str:
     source = Path(path)
     media_type = mime or mimetypes.guess_type(source.name)[0] or "application/octet-stream"
     encoded = base64.b64encode(source.read_bytes()).decode()
     return f"data:{media_type};base64,{encoded}"
+
+
+def _inlineable(asset: dict[str, Any]) -> bool:
+    try:
+        path = Path(str(asset.get("path", "")))
+        return path.is_file() and path.stat().st_size <= _MAX_INLINE_MEDIA_BYTES
+    except OSError:
+        return False
 
 
 class OpenAICompatProvider(BaseProvider):
@@ -66,16 +76,21 @@ class OpenAICompatProvider(BaseProvider):
         assets = assets or []
         images = [
             asset for asset in assets
-            if str(asset.get("mime", "")).startswith("image/")
+            if str(asset.get("mime", "")).startswith("image/") and _inlineable(asset)
         ]
         audio = [
             asset for asset in assets
-            if str(asset.get("mime", "")).startswith("audio/")
+            if str(asset.get("mime", "")).startswith("audio/") and _inlineable(asset)
+        ]
+        videos = [
+            asset for asset in assets
+            if str(asset.get("mime", "")).startswith("video/") and _inlineable(asset)
         ]
 
         if out and out[-1].get("role") == "user" and (
             (images and self.info.multimodal)
             or (audio and self.info.supports_audio)
+            or (videos and self.info.supports_video)
         ):
             content: list[dict[str, Any]] = [
                 {"type": "text", "text": str(out[-1].get("content", ""))}
@@ -87,6 +102,17 @@ class OpenAICompatProvider(BaseProvider):
                         "image_url": {
                             "url": _data_url(asset["path"], asset.get("mime"))
                         },
+                    })
+            if self.info.supports_video:
+                # Qwen3-VL/OpenAI-compatible endpoints accept video_url, including data
+                # URLs. Keep the cap small because base64 expands payloads by ~33%.
+                for asset in videos[:2]:
+                    content.append({
+                        "type": "video_url",
+                        "video_url": {
+                            "url": _data_url(asset["path"], asset.get("mime"))
+                        },
+                        "fps": 1,
                     })
             if self.info.supports_audio:
                 for asset in audio[:3]:
