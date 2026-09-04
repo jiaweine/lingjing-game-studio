@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
+from typing import Iterator
 
 
 @dataclass(frozen=True)
@@ -18,33 +19,33 @@ def _fingerprint(text: str) -> str:
     return f"sha256:{digest}"
 
 
-def iter_text_chunks(
+def stream_text_chunks(
     path: str | Path,
     *,
     chunk_chars: int = 8000,
     overlap_chars: int = 800,
-    max_chunks: int = 4096,
-) -> list[TextChunk]:
-    """Read a complete text/log/config file into bounded overlapping semantic units.
+    max_chunks: int = 20000,
+) -> Iterator[TextChunk]:
+    """Stream a complete text/log/config file as bounded overlapping semantic units.
 
-    The reader is streaming: peak Python text memory is roughly one chunk plus overlap, not
-    the entire file. ``start``/``end`` are exact character offsets in the decoded stream and
-    are provenance locators only; the raw file remains authoritative.
+    Peak Python text memory is roughly one chunk plus overlap. ``start``/``end`` are exact
+    character offsets in the decoded stream and are provenance locators only; the raw file
+    remains authoritative.
     """
     source = Path(path)
     if not source.is_file():
-        return []
+        return
     chunk_chars = max(1000, int(chunk_chars))
     overlap_chars = max(0, min(int(overlap_chars), chunk_chars // 2))
     max_chunks = max(1, int(max_chunks))
 
-    rows: list[TextChunk] = []
     buffer = ""
     buffer_start = 0
     eof = False
+    emitted = 0
 
     with source.open("r", encoding="utf-8", errors="ignore") as handle:
-        while len(rows) < max_chunks:
+        while emitted < max_chunks:
             while len(buffer) < chunk_chars and not eof:
                 piece = handle.read(chunk_chars - len(buffer))
                 if piece:
@@ -71,15 +72,12 @@ def iter_text_chunks(
             raw_text = buffer[:cut]
             stripped = raw_text.strip()
             if stripped:
-                # The semantic text is trimmed for embedding, but provenance points to the
-                # complete raw window so a verifier can reopen the exact source range.
-                rows.append(
-                    TextChunk(
-                        start=buffer_start,
-                        end=buffer_start + cut,
-                        text=stripped,
-                        fingerprint=_fingerprint(stripped),
-                    )
+                emitted += 1
+                yield TextChunk(
+                    start=buffer_start,
+                    end=buffer_start + cut,
+                    text=stripped,
+                    fingerprint=_fingerprint(stripped),
                 )
 
             if final_chunk:
@@ -89,4 +87,20 @@ def iter_text_chunks(
             buffer = buffer[advance:]
             buffer_start += advance
 
-    return rows
+
+def iter_text_chunks(
+    path: str | Path,
+    *,
+    chunk_chars: int = 8000,
+    overlap_chars: int = 800,
+    max_chunks: int = 20000,
+) -> list[TextChunk]:
+    """Convenience materialization for tests/small files; workers use stream_text_chunks."""
+    return list(
+        stream_text_chunks(
+            path,
+            chunk_chars=chunk_chars,
+            overlap_chars=overlap_chars,
+            max_chunks=max_chunks,
+        )
+    )
