@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 from fastapi import FastAPI, HTTPException
 
+from .text_chunks import TextChunk, stream_text_chunks
 from .video_segments import materialize_video_segment, merge_windows, segment_windows
 from .worker_wemm import ScoreItem, ScoreRequest, WeMMRuntime
 
@@ -15,12 +16,12 @@ app = FastAPI(title="Lingjing Hierarchical WeMM Worker", version="0.1.0")
 
 
 class HierarchicalWeMMRuntime(WeMMRuntime):
-    """WeMM worker with VideoARM-style coarse-to-fine segment navigation.
+    """WeMM worker with hierarchical video and full-file text retrieval.
 
-    Short videos/images use the normal embedding path. A long video is first represented by
-    a bounded set of coarse clips; only the best coarse regions are expanded into fine clips.
-    Segment files and embeddings are cached. The returned start/end interval is a locator,
-    not authoritative evidence: WorldForge re-opens the raw video for exact/dense frames.
+    Long video: bounded coarse clips -> top regions -> fine clips.
+    Text/log/config: streaming complete-file chunks -> persistent vectors -> top semantic
+    chunk. Returned intervals/character ranges are locators; WorldForge reopens the raw
+    source for final evidence rather than trusting the embedding index as truth.
     """
 
     def __init__(self) -> None:
@@ -41,6 +42,21 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         self.max_fine_windows = max(
             4, int(os.getenv("WEMM_VIDEO_MAX_FINE_WINDOWS", "24"))
         )
+        self.text_chunk_chars = max(
+            1000, int(os.getenv("WEMM_TEXT_CHUNK_CHARS", "8000"))
+        )
+        self.text_overlap_chars = max(
+            0, int(os.getenv("WEMM_TEXT_OVERLAP_CHARS", "800"))
+        )
+        self.text_max_chunks = max(
+            32, int(os.getenv("WEMM_TEXT_MAX_CHUNKS", "20000"))
+        )
+        self.text_excerpt_chars = max(
+            400, int(os.getenv("WEMM_TEXT_EXCERPT_CHARS", "2800"))
+        )
+        self.text_index_batch = max(
+            1, int(os.getenv("WEMM_TEXT_INDEX_BATCH", "32"))
+        )
 
     @property
     def backend_name(self) -> str:
@@ -55,6 +71,10 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
     ) -> list[tuple[float, float, np.ndarray]]:
         cached_rows: list[tuple[float, float, np.ndarray]] = []
         missing: list[tuple[float, float, str, tuple[int, int], str]] = []
+        try:
+            source_fp = self._fingerprint_string(self._fingerprint(item.path))
+        except OSError:
+            source_fp = "unknown"
 
         for start, end in windows:
             clip = materialize_video_segment(
@@ -70,9 +90,18 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             except OSError:
                 continue
             cache_key = f"video-segment:{level}:{item.key}:{start:.3f}:{end:.3f}"
-            vector = self.asset_cache.get(cache_key, fingerprint)
+            vector = self._get_cached_vector(cache_key, fingerprint)
             if vector is not None:
                 cached_rows.append((start, end, vector))
+                self.vector_store.put_unit(
+                    cache_key=cache_key,
+                    backend=self.backend_name,
+                    source_key=item.key,
+                    source_fingerprint=source_fp,
+                    modality="video",
+                    start=start,
+                    end=end,
+                )
             else:
                 missing.append((start, end, clip, fingerprint, cache_key))
 
@@ -82,7 +111,16 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             for (start, end, _clip, fingerprint, cache_key), vector in zip(
                 missing, encoded, strict=True
             ):
-                self.asset_cache.put(cache_key, fingerprint, vector)
+                self._put_cached_vector(cache_key, fingerprint, vector)
+                self.vector_store.put_unit(
+                    cache_key=cache_key,
+                    backend=self.backend_name,
+                    source_key=item.key,
+                    source_fingerprint=source_fp,
+                    modality="video",
+                    start=start,
+                    end=end,
+                )
                 cached_rows.append((start, end, vector))
 
         cached_rows.sort(key=lambda row: row[0])
@@ -152,11 +190,137 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             ),
         }
 
+    def _index_text_batch(
+        self,
+        item: ScoreItem,
+        source_fp: str,
+        batch: list[TextChunk],
+    ) -> None:
+        missing: list[tuple[TextChunk, tuple[int, int], str]] = []
+        for chunk in batch:
+            fingerprint = self._text_fingerprint(chunk.text)
+            cache_key = f"text-chunk:{item.key}:{chunk.start}:{chunk.end}"
+            vector = self._get_cached_vector(cache_key, fingerprint)
+            if vector is None:
+                missing.append((chunk, fingerprint, cache_key))
+            else:
+                self.vector_store.put_unit(
+                    cache_key=cache_key,
+                    backend=self.backend_name,
+                    source_key=item.key,
+                    source_fingerprint=source_fp,
+                    modality="text",
+                    char_start=chunk.start,
+                    char_end=chunk.end,
+                    excerpt=chunk.text[: self.text_excerpt_chars],
+                )
+
+        if missing:
+            encoded = self._encode([chunk.text for chunk, _fp, _key in missing])
+            for (chunk, fingerprint, cache_key), vector in zip(
+                missing, encoded, strict=True
+            ):
+                self._put_cached_vector(cache_key, fingerprint, vector)
+                self.vector_store.put_unit(
+                    cache_key=cache_key,
+                    backend=self.backend_name,
+                    source_key=item.key,
+                    source_fingerprint=source_fp,
+                    modality="text",
+                    char_start=chunk.start,
+                    char_end=chunk.end,
+                    excerpt=chunk.text[: self.text_excerpt_chars],
+                )
+
+    def _ensure_text_index(
+        self,
+        item: ScoreItem,
+        source_fp: str,
+    ) -> list[dict[str, Any]]:
+        config = (
+            f"{self.text_chunk_chars}:{self.text_overlap_chars}:{self.text_max_chunks}"
+        )
+        complete_key = (
+            f"complete:{self.backend_name}:text:{item.key}:{source_fp}:{config}"
+        )
+        expected_raw = self.vector_store.get_meta(complete_key)
+        rows = self.vector_store.list_source_vectors(
+            source_key=item.key,
+            source_fingerprint=source_fp,
+            backend=self.backend_name,
+            modality="text",
+        )
+        try:
+            expected = int(expected_raw) if expected_raw is not None else -1
+        except ValueError:
+            expected = -1
+        if expected >= 0 and len(rows) == expected:
+            return rows
+
+        batch: list[TextChunk] = []
+        count = 0
+        for chunk in stream_text_chunks(
+            item.path,
+            chunk_chars=self.text_chunk_chars,
+            overlap_chars=self.text_overlap_chars,
+            max_chunks=self.text_max_chunks,
+        ):
+            batch.append(chunk)
+            count += 1
+            if len(batch) >= self.text_index_batch:
+                self._index_text_batch(item, source_fp, batch)
+                batch = []
+        if batch:
+            self._index_text_batch(item, source_fp, batch)
+        self.vector_store.set_meta(complete_key, str(count))
+        return self.vector_store.list_source_vectors(
+            source_key=item.key,
+            source_fingerprint=source_fp,
+            backend=self.backend_name,
+            modality="text",
+        )
+
+    def _score_text_file(
+        self,
+        item: ScoreItem,
+        query_vector: np.ndarray,
+    ) -> dict[str, Any] | None:
+        path = Path(item.path)
+        if not path.is_file():
+            return None
+        try:
+            source_fp = self._fingerprint_string(self._fingerprint(item.path))
+        except OSError:
+            return None
+        rows = self._ensure_text_index(item, source_fp)
+        if not rows:
+            return None
+
+        matrix = np.vstack([row["vector"] for row in rows])
+        scores = matrix @ query_vector
+        best_index = int(np.argmax(scores))
+        best = rows[best_index]
+        score = float(scores[best_index])
+        char_start = int(best.get("char_start") or 0)
+        char_end = int(best.get("char_end") or char_start)
+        return {
+            "key": item.key,
+            "score": round(max(-1.0, min(1.0, score)), 7),
+            "modality": "text",
+            "char_start": char_start,
+            "char_end": char_end,
+            "text_excerpt": str(best.get("excerpt") or "")[: self.text_excerpt_chars],
+            "evidence_ref": f"asset:{item.key}:chars:{char_start}-{char_end}",
+        }
+
     def _score_sync(self, request: ScoreRequest) -> dict[str, Any]:
         long_videos: list[ScoreItem] = []
+        text_files: list[ScoreItem] = []
         direct_items: list[ScoreItem] = []
         for item in request.items:
-            if (
+            if item.modality == "text_file" and Path(item.path).is_file():
+                text_files.append(item)
+            elif (
                 item.modality == "video"
                 and float(item.duration or 0.0) >= self.segment_threshold
                 and Path(item.path).is_file()
@@ -174,13 +338,19 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             row = self._score_long_video(item, query_vector)
             if row:
                 scores.append(row)
+        for item in text_files:
+            row = self._score_text_file(item, query_vector)
+            if row:
+                scores.append(row)
         scores.sort(key=lambda row: float(row.get("score", 0.0)), reverse=True)
         return {
             "backend": self.backend_name,
             "dimension": self.dimension,
             "scores": scores,
-            "cache_entries": len(self.asset_cache),
+            "memory_cache_entries": len(self.asset_cache),
+            "persistent_cache_entries": self.vector_store.count(),
             "hierarchical_videos": len(long_videos),
+            "semantic_text_files": len(text_files),
         }
 
 
@@ -195,10 +365,12 @@ async def healthz() -> dict[str, Any]:
         "device": RUNTIME.device,
         "dimension": RUNTIME.dimension,
         "model_loaded": RUNTIME._model is not None,
-        "asset_cache_entries": len(RUNTIME.asset_cache),
+        "memory_cache_entries": len(RUNTIME.asset_cache),
+        "persistent_cache_entries": RUNTIME.vector_store.count(),
         "segment_threshold": RUNTIME.segment_threshold,
         "coarse_seconds": RUNTIME.coarse_seconds,
         "fine_seconds": RUNTIME.fine_seconds,
+        "text_chunk_chars": RUNTIME.text_chunk_chars,
     }
 
 
