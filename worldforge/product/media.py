@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 
@@ -87,10 +89,39 @@ def probe_media(path, mime):
     return meta
 
 
-def extract_video_frames(path, out_dir, count=3):
+def _frame_signature(path: Path) -> np.ndarray:
+    """Tiny grayscale signature for cheap scene-change scoring."""
+    with Image.open(path) as image:
+        gray = image.convert("L").resize((64, 36))
+        return np.asarray(gray, dtype=np.float32) / 255.0
+
+
+def _uniform_indices(total: int, count: int) -> list[int]:
+    if total <= 0 or count <= 0:
+        return []
+    if count >= total:
+        return list(range(total))
+    if count == 1:
+        return [total // 2]
+    return sorted({
+        round((total - 1) * index / (count - 1))
+        for index in range(count)
+    })
+
+
+def extract_video_keyframes(path, out_dir, count=3):
+    """Extract timestamped scene-aware keyframes without adding heavy CV deps.
+
+    A single low-resolution ffmpeg pass samples the full temporal extent, then numpy/PIL
+    score visual change. We preserve boundary/midpoint coverage and spend remaining slots
+    on the strongest scene transitions. Final 960px frames are extracted only for selected
+    timestamps, so upload-time cost remains bounded even for long clips.
+    """
     path = Path(path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    probe_dir = out_dir / ".probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
     try:
         media = probe_media(path, "video/mp4")
         if media.get("kind") != "video":
@@ -99,23 +130,76 @@ def extract_video_frames(path, out_dir, count=3):
         if duration <= 0:
             return []
 
-        # Long clips need more than three frames to avoid blind temporal gaps.
-        adaptive_count = min(10, max(int(count), 3 + int(duration // 18)))
-        timestamps = [
-            duration * (index + 1) / (adaptive_count + 1)
-            for index in range(adaptive_count)
-        ]
+        target_count = min(12, max(int(count), 3 + int(duration // 18)))
+        # 3x oversampling is enough to surface transitions while keeping one-pass decode
+        # cheap. Clamp it so multi-hour videos still have bounded preprocessing cost.
+        probe_count = min(36, max(12, target_count * 3))
+        fps = max(0.01, probe_count / duration)
+        probe_pattern = probe_dir / "probe_%03d.jpg"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i", str(path),
+                "-vf", f"fps={fps:.8f},scale=160:-2",
+                "-frames:v", str(probe_count),
+                "-q:v", "5",
+                str(probe_pattern),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=45,
+            check=False,
+        )
+        probes = sorted(probe_dir.glob("probe_*.jpg"))
+        if not probes:
+            return []
+
+        signatures = [_frame_signature(frame) for frame in probes]
+        transition_scores = [0.0]
+        for index in range(1, len(signatures)):
+            transition_scores.append(
+                float(np.mean(np.abs(signatures[index] - signatures[index - 1])))
+            )
+
+        # Boundary + midpoint coverage prevents purely motion-driven sampling from losing
+        # slow but semantically important setup/result states.
+        selected = set(_uniform_indices(len(probes), min(3, target_count)))
+        ranked_transitions = sorted(
+            range(1, len(probes)),
+            key=lambda index: transition_scores[index],
+            reverse=True,
+        )
+        for index in ranked_transitions:
+            if len(selected) >= target_count:
+                break
+            # Avoid spending several slots on adjacent frames from one abrupt cut.
+            if any(abs(index - existing) <= 1 for existing in selected):
+                continue
+            selected.add(index)
+        for index in _uniform_indices(len(probes), target_count):
+            if len(selected) >= target_count:
+                break
+            selected.add(index)
+
         rows = []
-        for index, timestamp in enumerate(timestamps, start=1):
-            dest = out_dir / f"frame_{index}.jpg"
+        for output_index, probe_index in enumerate(sorted(selected), start=1):
+            # fps extraction yields approximately one frame per interval. Using the center
+            # of that interval is a stable timestamp estimate and is persisted explicitly.
+            timestamp = min(
+                duration,
+                max(0.0, (probe_index + 0.5) / max(1, len(probes)) * duration),
+            )
+            dest = out_dir / f"frame_{output_index}.jpg"
             subprocess.run(
                 [
                     "ffmpeg",
                     "-y",
-                    "-ss", str(timestamp),
+                    "-ss", f"{timestamp:.3f}",
                     "-i", str(path),
                     "-frames:v", "1",
                     "-vf", "scale='min(960,iw)':-2",
+                    "-q:v", "3",
                     str(dest),
                 ],
                 stdout=subprocess.DEVNULL,
@@ -124,7 +208,30 @@ def extract_video_frames(path, out_dir, count=3):
                 check=False,
             )
             if dest.exists() and dest.stat().st_size:
-                rows.append(str(dest))
+                rows.append({
+                    "path": str(dest),
+                    "timestamp": round(timestamp, 3),
+                    "scene_score": round(transition_scores[probe_index], 6),
+                })
         return rows
     except Exception:
         return []
+    finally:
+        for frame in probe_dir.glob("probe_*.jpg") if probe_dir.exists() else []:
+            try:
+                frame.unlink()
+            except OSError:
+                pass
+        try:
+            probe_dir.rmdir()
+        except OSError:
+            pass
+
+
+def extract_video_frames(path, out_dir, count=3):
+    """Backward-compatible path-only facade for callers/tests that need legacy output."""
+    return [
+        row["path"]
+        for row in extract_video_keyframes(path, out_dir, count)
+        if row.get("path")
+    ]
