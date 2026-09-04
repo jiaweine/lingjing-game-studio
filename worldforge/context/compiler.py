@@ -26,9 +26,7 @@ _VERIFIED_MARKERS = (
     "已经确认", "已确认", "确认过", "已经验证", "已验证", "验证通过",
     "confirmed", "verified", "validated",
 )
-_QUESTION_MARKERS = (
-    "待确认", "待验证", "需要确认", "需要验证", "还要确认", "还要验证"
-)
+_QUESTION_MARKERS = ("待确认", "待验证", "需要确认", "需要验证", "还要确认", "还要验证")
 
 
 def _normalize(text: str) -> str:
@@ -43,21 +41,16 @@ def _sentences(text: str) -> list[str]:
     text = re.sub(r"\s+", " ", str(text or "")).strip()
     if not text:
         return []
-    return [
-        part.strip()
-        for part in _SENTENCE_SPLIT_RE.split(text)
-        if part.strip()
-    ][:40]
+    parts = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text) if part.strip()]
+    return parts[:40]
 
 
 def _tokens(text: str) -> Counter[str]:
     normalized = _normalize(text)
-    out: Counter[str] = Counter(
-        token.lower() for token in _ASCII_TOKEN_RE.findall(normalized)
-    )
+    out: Counter[str] = Counter(token.lower() for token in _ASCII_TOKEN_RE.findall(normalized))
     cjk = _CJK_RE.findall(normalized)
     out.update(cjk)
-    out.update("".join(cjk[index:index + 2]) for index in range(len(cjk) - 1))
+    out.update("".join(cjk[i:i + 2]) for i in range(len(cjk) - 1))
     return out
 
 
@@ -66,10 +59,7 @@ def _identifier_tokens(text: str) -> set[str]:
     identifiers.update(
         token.lower()
         for token in _ASCII_TOKEN_RE.findall(text)
-        if any(ch.isdigit() for ch in token)
-        or "_" in token
-        or "/" in token
-        or "." in token
+        if any(ch.isdigit() for ch in token) or "_" in token or "/" in token or "." in token
     )
     return identifiers
 
@@ -109,10 +99,9 @@ class ContextPacket:
         return "\n".join(lines)
 
     def intent_text(self) -> str:
-        selected = "\n".join(
-            str(message.get("content", "")) for message in self.messages
-        )
-        return f"{self.render_task_state()}\n{selected}"
+        state_text = self.render_task_state()
+        selected = "\n".join(str(message.get("content", "")) for message in self.messages)
+        return f"{state_text}\n{selected}"
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -129,8 +118,7 @@ class ContextCompiler:
 
     Raw messages remain the durable source of truth. This compiler derives a bounded
     task-state snapshot and retrieves high-value historical turns on each request.
-    It deliberately avoids additional model calls on the hot path, so long-horizon
-    continuity does not multiply provider latency or token cost.
+    It deliberately avoids additional model calls on the hot path.
     """
 
     def __init__(
@@ -148,22 +136,14 @@ class ContextCompiler:
         self.per_message_chars = max(600, per_message_chars)
         self.state_items_per_kind = max(2, state_items_per_kind)
 
-    def compile(
-        self,
-        query: str,
-        history: list[dict[str, Any]] | None,
-    ) -> ContextPacket:
+    def compile(self, query: str, history: list[dict[str, Any]] | None) -> ContextPacket:
         rows = list(history or [])
         state = self._task_state(rows)
         if not rows:
             return ContextPacket([], state, 0, 0, 0, 0)
 
         first_user = next(
-            (
-                index
-                for index, message in enumerate(rows)
-                if message.get("role") == "user"
-            ),
+            (index for index, message in enumerate(rows) if message.get("role") == "user"),
             None,
         )
         recent_start = max(0, len(rows) - self.recent_messages)
@@ -192,8 +172,7 @@ class ContextCompiler:
 
         candidates.sort(reverse=True)
         retrieved = [
-            index
-            for score, index in candidates[: self.retrieved_messages]
+            index for score, index in candidates[: self.retrieved_messages]
             if score > 0.18
         ]
 
@@ -201,18 +180,13 @@ class ContextCompiler:
         if first_user is not None:
             priorities[first_user] = 100.0
         for index in range(recent_start, len(rows)):
-            priorities[index] = max(
-                priorities.get(index, 0.0),
-                80.0 + index / max(1, len(rows)),
-            )
+            priorities[index] = max(priorities.get(index, 0.0), 80.0 + index / max(1, len(rows)))
         for rank, index in enumerate(retrieved):
             priorities[index] = max(priorities.get(index, 0.0), 60.0 - rank)
 
         chosen: list[int] = []
         used = 0
-        for index, _priority in sorted(
-            priorities.items(), key=lambda item: (-item[1], item[0])
-        ):
+        for index, _priority in sorted(priorities.items(), key=lambda item: (-item[1], item[0])):
             message = rows[index]
             if message.get("role") not in {"user", "assistant"}:
                 continue
@@ -234,9 +208,7 @@ class ContextCompiler:
                 {
                     "id": _source_id(message, index),
                     "role": message.get("role"),
-                    "content": str(message.get("content", "") or "")[
-                        : self.per_message_chars
-                    ],
+                    "content": str(message.get("content", "") or "")[: self.per_message_chars],
                     "_context_index": index,
                 }
             )
@@ -244,8 +216,7 @@ class ContextCompiler:
         long_range = sum(
             1
             for index in chosen
-            if index < recent_start
-            and (first_user is None or index != first_user)
+            if index < recent_start and (first_user is None or index != first_user)
         )
         return ContextPacket(
             messages=selected,
@@ -265,45 +236,18 @@ class ContextCompiler:
         role: str,
         age: int,
     ) -> float:
-        doc_tokens = _tokens(content)
+        content_lower = _normalize(content)
         if query_tokens:
-            overlap = sum(
-                min(count, doc_tokens.get(token, 0))
-                for token, count in query_tokens.items()
-            )
-            lexical = overlap / max(1, sum(query_tokens.values()))
+            lexical = sum(1 for token in query_tokens if token in content_lower) / max(1, len(query_tokens))
         else:
             lexical = 0.0
-        content_lower = content.lower()
-        identifier_hits = sum(
-            1 for token in query_ids if token in content_lower
-        )
-        identifier_score = (
-            min(1.0, identifier_hits / max(1, len(query_ids)))
-            if query_ids
-            else 0.0
-        )
+        identifier_hits = sum(1 for token in query_ids if token in content_lower)
+        identifier_score = min(1.0, identifier_hits / max(1, len(query_ids))) if query_ids else 0.0
         recency = math.exp(-max(0, age) / 36.0)
-        marker = (
-            1.0
-            if self._has_any(
-                content_lower,
-                _CONSTRAINT_MARKERS + _DECISION_MARKERS + _VERIFIED_MARKERS,
-            )
-            else 0.0
-        )
-        return (
-            0.62 * lexical
-            + 0.22 * identifier_score
-            + 0.06 * recency
-            + 0.06 * marker
-            + 0.04 * (1.0 if role == "user" else 0.0)
-        )
+        marker = 1.0 if self._has_any(content_lower, _CONSTRAINT_MARKERS + _DECISION_MARKERS + _VERIFIED_MARKERS) else 0.0
+        return 0.62 * lexical + 0.22 * identifier_score + 0.06 * recency + 0.06 * marker + 0.04 * (1.0 if role == "user" else 0.0)
 
-    def _task_state(
-        self,
-        history: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+    def _task_state(self, history: list[dict[str, Any]]) -> dict[str, Any]:
         goal = None
         buckets: dict[str, list[dict[str, str]]] = {
             "constraints": [],
@@ -321,43 +265,26 @@ class ContextCompiler:
             content = str(message.get("content", "") or "")
             source = _source_id(message, index)
             if goal is None and role == "user" and content.strip():
-                goal = {
-                    "text": content.strip()[:1200],
-                    "source": source,
-                }
+                goal = {"text": content.strip()[:1200], "source": source}
 
             for sentence in _sentences(content[:12000]):
                 normalized = _normalize(sentence)
                 if not normalized:
                     continue
                 if self._has_any(normalized, _CONSTRAINT_MARKERS):
-                    self._append_unique(
-                        buckets, seen, "constraints", sentence, source
-                    )
+                    self._append_unique(buckets, seen, "constraints", sentence, source)
                 if self._has_any(normalized, _DECISION_MARKERS):
-                    self._append_unique(
-                        buckets, seen, "decisions", sentence, source
-                    )
-                if role == "user" and self._has_any(
-                    normalized, _VERIFIED_MARKERS
-                ):
-                    self._append_unique(
-                        buckets, seen, "verified_facts", sentence, source
-                    )
+                    self._append_unique(buckets, seen, "decisions", sentence, source)
+                if role == "user" and self._has_any(normalized, _VERIFIED_MARKERS):
+                    self._append_unique(buckets, seen, "verified_facts", sentence, source)
                 if (
                     sentence.rstrip().endswith(("?", "？"))
                     or self._has_any(normalized, _QUESTION_MARKERS)
                 ):
-                    self._append_unique(
-                        buckets, seen, "open_questions", sentence, source
-                    )
+                    self._append_unique(buckets, seen, "open_questions", sentence, source)
                 for match in _VERSION_RE.finditer(sentence):
                     self._append_unique(
-                        buckets,
-                        seen,
-                        "version_refs",
-                        match.group(0),
-                        source,
+                        buckets, seen, "version_refs", match.group(0), source
                     )
 
         return {"goal": goal, **buckets}
