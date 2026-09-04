@@ -20,9 +20,6 @@ _AUDIO_MARKERS = (
     "音频", "声音", "语音", "台词", "说话", "声效", "音效", "音乐", "听到",
     "audio", "sound", "voice", "speech", "music",
 )
-# Do not use a bare substring such as "s" for temporal detection: identifiers like
-# shield_race + build 1.4.7 would otherwise become false temporal queries. This expression
-# only recognizes an actual duration/timestamp form.
 _TIME_EXPRESSION_RE = re.compile(
     r"(?ix)(?:"
     r"(?<!\d)\d{1,4}:\d{2}(?:\.\d+)?(?!\d)"
@@ -77,6 +74,9 @@ class WorkerScore:
     modality: str
     start: float | None = None
     end: float | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+    text_excerpt: str | None = None
     evidence_ref: str | None = None
 
 
@@ -138,6 +138,9 @@ class WorkerClient:
                         modality=str(raw.get("modality") or "unknown"),
                         start=(float(raw["start"]) if raw.get("start") is not None else None),
                         end=(float(raw["end"]) if raw.get("end") is not None else None),
+                        char_start=(int(raw["char_start"]) if raw.get("char_start") is not None else None),
+                        char_end=(int(raw["char_end"]) if raw.get("char_end") is not None else None),
+                        text_excerpt=(str(raw.get("text_excerpt"))[:4000] if raw.get("text_excerpt") else None),
                         evidence_ref=(str(raw.get("evidence_ref")) if raw.get("evidence_ref") else None),
                     )
                 )
@@ -167,59 +170,43 @@ def _kind(asset: AssetDescriptor) -> str:
         return "video"
     if asset.mime.startswith("audio/"):
         return "audio"
-    if asset.mime.startswith("text/"):
+    if asset.mime.startswith("text/") or asset.mime in {"application/json", "application/xml"}:
         return "text"
     return kind or "file"
 
 
 def _lexical_score(query_tokens: set[str], asset: AssetDescriptor) -> float:
     searchable = " ".join(
-        [
-            asset.name,
-            asset.mime,
-            str(asset.meta.get("build", "")),
-            str(asset.meta.get("branch", "")),
-            str(asset.meta.get("commit", "")),
-        ]
+        [asset.name, asset.mime, str(asset.meta.get("build", "")), str(asset.meta.get("branch", "")), str(asset.meta.get("commit", ""))]
     )
     doc_tokens = _tokens(searchable)
     if not query_tokens:
         return 0.0
     overlap = len(query_tokens & doc_tokens) / len(query_tokens)
-    exact_identifiers = [
-        token for token in query_tokens
-        if any(ch.isdigit() for ch in token) or "_" in token or "." in token
-    ]
+    exact_identifiers = [token for token in query_tokens if any(ch.isdigit() for ch in token) or "_" in token or "." in token]
     lowered = searchable.lower()
     exact = sum(1 for token in exact_identifiers if token in lowered)
     return min(1.0, overlap * 0.75 + min(0.25, exact * 0.08))
 
 
 def _worker_items(assets: list[AssetDescriptor], *, audio_query: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    visual: list[dict[str, Any]] = []
+    semantic: list[dict[str, Any]] = []
     audio: list[dict[str, Any]] = []
     for asset in assets:
         kind = _kind(asset)
-        base = {
-            "key": asset.id,
-            "path": asset.path,
-            "mime": asset.mime,
-            "name": asset.name,
-            "duration": asset.meta.get("duration"),
-        }
+        base = {"key": asset.id, "path": asset.path, "mime": asset.mime, "name": asset.name, "duration": asset.meta.get("duration")}
         if kind in {"image", "video"}:
-            visual.append({**base, "modality": kind})
-        # LCO is intentionally specialist-routed. We do not spend 7B-model GPU time on
-        # audio/video acoustics unless the query actually asks about sound/speech/music.
+            semantic.append({**base, "modality": kind})
+        elif kind == "text":
+            semantic.append({**base, "modality": "text_file"})
         if audio_query and kind == "audio":
             audio.append({**base, "modality": "audio"})
         elif audio_query and kind == "video" and asset.meta.get("has_audio"):
             audio.append({**base, "modality": "video_with_audio"})
-    return visual, audio
+    return semantic, audio
 
 
 def _sanitize_result(result: WorkerResult, items: list[dict[str, Any]]) -> WorkerResult:
-    """Enforce dispatch scope at the coordinator boundary, even for buggy workers."""
     allowed = {str(item.get("key", "")) for item in items}
     if not allowed:
         return WorkerResult(result.backend, [], result.latency_ms, result.error or "not_dispatched")
@@ -239,11 +226,7 @@ def _normalize_backend(rows: list[WorkerScore]) -> dict[str, float]:
 
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
-    return {
-        "ok": True,
-        "visual_worker": VISUAL_WORKER.enabled,
-        "audio_worker": AUDIO_WORKER.enabled,
-    }
+    return {"ok": True, "visual_worker": VISUAL_WORKER.enabled, "audio_worker": AUDIO_WORKER.enabled}
 
 
 @app.post("/v1/rank")
@@ -252,77 +235,49 @@ async def rank(request: RankRequest) -> dict[str, Any]:
     query_tokens = _tokens(request.query)
     wants_audio = _audio_query(request.query)
     wants_time = _temporal_query(request.query)
-    visual_items, audio_items = _worker_items(request.assets, audio_query=wants_audio)
+    semantic_items, audio_items = _worker_items(request.assets, audio_query=wants_audio)
 
-    visual_task = VISUAL_WORKER.score(
-        query=request.query,
-        items=visual_items,
-        backend_hint="wemm",
-    )
-    audio_task = AUDIO_WORKER.score(
-        query=request.query,
-        items=audio_items,
-        backend_hint="lco",
-    )
-    visual_result, audio_result = await asyncio.gather(visual_task, audio_task)
-    visual_result = _sanitize_result(visual_result, visual_items)
+    semantic_task = VISUAL_WORKER.score(query=request.query, items=semantic_items, backend_hint="wemm")
+    audio_task = AUDIO_WORKER.score(query=request.query, items=audio_items, backend_hint="lco")
+    semantic_result, audio_result = await asyncio.gather(semantic_task, audio_task)
+    semantic_result = _sanitize_result(semantic_result, semantic_items)
     audio_result = _sanitize_result(audio_result, audio_items)
 
-    visual_norm = _normalize_backend(visual_result.scores)
+    semantic_norm = _normalize_backend(semantic_result.scores)
     audio_norm = _normalize_backend(audio_result.scores)
-    visual_raw = {row.asset_id: row for row in visual_result.scores}
+    semantic_raw = {row.asset_id: row for row in semantic_result.scores}
     audio_raw = {row.asset_id: row for row in audio_result.scores}
 
     hits: list[dict[str, Any]] = []
     for asset in request.assets:
         lexical = _lexical_score(query_tokens, asset)
-        visual = visual_norm.get(asset.id, 0.0)
+        semantic = semantic_norm.get(asset.id, 0.0)
         audio = audio_norm.get(asset.id, 0.0)
         kind = _kind(asset)
-
-        # Recall union, not model monopoly. Exact identifiers/metadata still matter; WeMM
-        # owns visual semantic recall; LCO owns acoustic recall only on audio-intent turns.
-        score = max(
-            lexical * 0.55,
-            visual * 0.88 + lexical * 0.12,
-            audio * 0.90 + lexical * 0.10,
-        )
+        score = max(lexical * 0.55, semantic * 0.88 + lexical * 0.12, audio * 0.90 + lexical * 0.10)
         if wants_time and kind in {"video", "audio"}:
             score += 0.04
         score = min(1.0, score)
-
-        if score <= 0.0 and not (visual or audio):
+        if score <= 0.0 and not (semantic or audio):
             continue
 
-        # Preserve the localization produced by the strongest semantic specialist instead
-        # of blindly preferring visual metadata on sound-intent turns.
-        semantic_sources = [
-            (visual, visual_raw.get(asset.id)),
-            (audio, audio_raw.get(asset.id)),
-        ]
+        semantic_sources = [(semantic, semantic_raw.get(asset.id)), (audio, audio_raw.get(asset.id))]
         semantic_sources.sort(key=lambda pair: pair[0], reverse=True)
         source = next((row for value, row in semantic_sources if value > 0 and row is not None), None)
-
-        hit = {
-            "asset_id": asset.id,
-            "score": round(score, 6),
-            "modality": kind,
-        }
+        hit: dict[str, Any] = {"asset_id": asset.id, "score": round(score, 6), "modality": kind}
         if source is not None:
-            if source.start is not None:
-                hit["start"] = source.start
-            if source.end is not None:
-                hit["end"] = source.end
+            for field in ("start", "end", "char_start", "char_end"):
+                value = getattr(source, field)
+                if value is not None:
+                    hit[field] = value
+            if source.text_excerpt:
+                hit["text_excerpt"] = source.text_excerpt
             if source.evidence_ref:
                 hit["evidence_ref"] = source.evidence_ref
         hits.append(hit)
 
     hits.sort(key=lambda row: row["score"], reverse=True)
-    active_backends = [
-        result.backend
-        for result in (visual_result, audio_result)
-        if result.scores and not result.error
-    ]
+    active_backends = [result.backend for result in (semantic_result, audio_result) if result.scores and not result.error]
     backend = "+".join(active_backends) if active_backends else "lexical-fallback"
     elapsed = (time.perf_counter() - started) * 1000.0
     return {
@@ -330,9 +285,9 @@ async def rank(request: RankRequest) -> dict[str, Any]:
         "latency_ms": round(elapsed, 3),
         "hits": hits[: request.top_k],
         "debug": {
-            "visual_latency_ms": round(visual_result.latency_ms, 3),
+            "visual_latency_ms": round(semantic_result.latency_ms, 3),
             "audio_latency_ms": round(audio_result.latency_ms, 3),
-            "visual_error": visual_result.error,
+            "visual_error": semantic_result.error,
             "audio_error": audio_result.error,
             "audio_query": wants_audio,
             "temporal_query": wants_time,
