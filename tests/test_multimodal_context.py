@@ -5,6 +5,7 @@ import pytest
 from worldforge.context import MultimodalContextCompiler
 from worldforge.context.media_derivatives import augment_model_assets, query_needs_audio
 from worldforge.product import ProductAnalyzer
+import worldforge.product.media as product_media
 
 
 def _asset(index: int, *, kind: str, name: str, path: str, mime: str, **meta):
@@ -156,6 +157,51 @@ def test_small_selected_video_is_preserved_as_raw_provider_evidence(tmp_path):
 
     assert any(item.get("mime") == "video/mp4" for item in model_assets)
     assert any(item.get("mime") == "image/jpeg" for item in model_assets)
+
+
+def test_long_video_scene_memory_is_built_once_and_reused(monkeypatch, tmp_path):
+    video = tmp_path / "long-run.mp4"
+    video.write_bytes(b"video-source")
+    calls = {"count": 0}
+
+    def fake_extract(_source, out_dir, _count):
+        calls["count"] += 1
+        rows = []
+        for index, timestamp in enumerate((12.0, 51.0), start=1):
+            path = out_dir / f"frame_{index}.jpg"
+            path.write_bytes(f"frame-{index}".encode())
+            rows.append(
+                {"path": str(path), "timestamp": timestamp, "scene_score": 0.4 + index / 10}
+            )
+        return rows
+
+    monkeypatch.setattr(product_media, "extract_video_keyframes", fake_extract)
+    asset = _asset(
+        1,
+        kind="video",
+        name="long-run.mp4",
+        path=str(video),
+        mime="video/mp4",
+        duration=120.0,
+    )
+    asset["meta"]["_context"] = {
+        "kind": "video",
+        "selected": True,
+        "rank": 1,
+        "time_hints": [],
+        "needs_audio": False,
+    }
+
+    first = augment_model_assets(
+        [asset], [], raw_media_max_bytes=1, scene_frame_budget=2
+    )
+    second = augment_model_assets(
+        [asset], [], raw_media_max_bytes=1, scene_frame_budget=2
+    )
+
+    assert calls["count"] == 1
+    assert len([row for row in first if row.get("meta", {}).get("derived") == "scene_memory_frame"]) == 2
+    assert len([row for row in second if row.get("meta", {}).get("derived") == "scene_memory_frame"]) == 2
 
 
 def test_audio_intent_detection_covers_game_sound_questions():
