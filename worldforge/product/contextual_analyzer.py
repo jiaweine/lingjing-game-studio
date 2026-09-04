@@ -45,9 +45,6 @@ class ProductAnalyzer(BaseProductAnalyzer):
             image_budget=9,
             audio_budget=3,
         )
-        # Disabled by default. When configured, heavy image/video/audio embedding models
-        # live outside the API process; failures/latency automatically fall back to the
-        # dependency-free deterministic compiler above.
         self.semantic_retriever = MultimodalRetrievalClient()
 
     async def run(
@@ -71,11 +68,11 @@ class ProductAnalyzer(BaseProductAnalyzer):
         )
         apply_retrieval_hits(multimodal_packet.assets, semantic_result)
 
-        # Segment-aware retrievers may return a precise [start, end] interval. Do not treat
-        # this derived interval as truth; use it only to ask the original media for denser
-        # evidence. The verifier/model still sees frames/audio extracted from the source.
         semantic_ranges: dict[str, list[tuple[float, float]]] = {}
+        semantic_text_hits = 0
         for hit in semantic_result.hits:
+            if hit.text_excerpt:
+                semantic_text_hits += 1
             if hit.start is None or hit.end is None or hit.end <= hit.start:
                 continue
             semantic_ranges.setdefault(hit.asset_id, []).append((hit.start, hit.end))
@@ -123,8 +120,6 @@ class ProductAnalyzer(BaseProductAnalyzer):
         context.update(packet.stats())
         context.update(multimodal_packet.stats())
         context.update(semantic_result.stats())
-        # Preserve the public meaning of history_messages/task_assets: durable totals,
-        # while exposing the much smaller model-facing selections separately.
         context["history_messages"] = len(raw_history)
         context["task_assets"] = len(raw_assets)
         context["compiled_history_messages"] = len(compiled_history)
@@ -135,6 +130,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
             if (asset.get("meta", {}) or {}).get("_context", {}).get("selected")
         ]
         context["semantic_segment_hits"] = sum(len(rows) for rows in semantic_ranges.values())
+        context["semantic_text_chunk_hits"] = semantic_text_hits
         result["context"] = context
         return result
 
@@ -151,9 +147,6 @@ class ProductAnalyzer(BaseProductAnalyzer):
             scene_frame_budget=6,
             audio_budget=3,
         )
-        # Explicit time ranges or semantic segment hits are a stronger signal than static
-        # upload-time sampling. Dense interval frames are generated lazily and cached,
-        # then inserted after exact timestamp evidence while preserving the image budget.
         return merge_temporal_evidence(
             rows,
             enriched,
@@ -162,5 +155,32 @@ class ProductAnalyzer(BaseProductAnalyzer):
         )
 
     def _asset_context(self, assets):
-        """Prompt-facing all-asset manifest plus deep excerpts for selected evidence."""
-        return self.multimodal_compiler.render_manifest(list(assets or []))
+        """Deterministic manifest plus optional semantic locators from full raw assets."""
+        rows = list(assets or [])
+        manifest = self.multimodal_compiler.render_manifest(rows)
+        semantic_lines: list[str] = []
+        for index, asset in enumerate(rows, start=1):
+            context = (asset.get("meta", {}) or {}).get("_context", {}) or {}
+            excerpt = str(context.get("semantic_excerpt", "") or "").strip()
+            if not excerpt:
+                continue
+            char_start = context.get("semantic_char_start")
+            char_end = context.get("semantic_char_end")
+            locator = (
+                f" chars={char_start}-{char_end}"
+                if char_start is not None and char_end is not None
+                else ""
+            )
+            ref = str(context.get("semantic_evidence_ref", "") or "")
+            semantic_lines.append(
+                f"A{index} 语义检索定位{locator}"
+                + (f" ref={ref}" if ref else "")
+                + f":\n{excerpt[:4000]}"
+            )
+        if not semantic_lines:
+            return manifest
+        return (
+            manifest
+            + "\n\n【语义检索定位证据；仅用于定位，结论仍需以原始素材/Verifier 为准】\n"
+            + "\n".join(semantic_lines)
+        )
