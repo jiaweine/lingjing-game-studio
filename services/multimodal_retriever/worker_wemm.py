@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 from threading import RLock
@@ -11,6 +12,8 @@ from typing import Any
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+from .vector_store import PersistentVectorStore
 
 app = FastAPI(title="Lingjing WeMM Embedding Worker", version="0.1.0")
 
@@ -70,6 +73,15 @@ class WeMMRuntime:
         self.dimension = int(os.getenv("WEMM_DIMENSION", "256"))
         self.batch_size = max(1, int(os.getenv("WEMM_BATCH_SIZE", "4")))
         self.asset_cache = LRUVectorCache(int(os.getenv("WEMM_ASSET_CACHE", "8192")))
+        cache_root = Path(
+            os.getenv("LINGJING_RETRIEVER_CACHE_DIR", "outputs/retrieval-cache")
+        )
+        self.vector_store = PersistentVectorStore(
+            os.getenv("WEMM_VECTOR_CACHE_DB", str(cache_root / "wemm-vectors.sqlite3"))
+        )
+        self.persistent_max_rows = max(
+            1000, int(os.getenv("WEMM_VECTOR_CACHE_MAX_ROWS", "200000"))
+        )
         self.query_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self.query_cache_limit = max(16, int(os.getenv("WEMM_QUERY_CACHE", "512")))
         self._query_lock = RLock()
@@ -117,6 +129,47 @@ class WeMMRuntime:
         return int(stat.st_size), int(stat.st_mtime_ns)
 
     @staticmethod
+    def _text_fingerprint(text: str) -> tuple[int, int]:
+        data = text.encode("utf-8", errors="ignore")
+        digest = hashlib.sha256(data).digest()
+        return len(data), int.from_bytes(digest[:8], "big", signed=False)
+
+    @staticmethod
+    def _fingerprint_string(fingerprint: tuple[int, int]) -> str:
+        return f"{int(fingerprint[0])}:{int(fingerprint[1])}"
+
+    def _get_cached_vector(
+        self,
+        cache_key: str,
+        fingerprint: tuple[int, int],
+    ) -> np.ndarray | None:
+        cached = self.asset_cache.get(cache_key, fingerprint)
+        if cached is not None:
+            return cached
+        cached = self.vector_store.get(
+            cache_key,
+            self._fingerprint_string(fingerprint),
+            self.backend_name,
+        )
+        if cached is not None:
+            self.asset_cache.put(cache_key, fingerprint, cached)
+        return cached
+
+    def _put_cached_vector(
+        self,
+        cache_key: str,
+        fingerprint: tuple[int, int],
+        vector: np.ndarray,
+    ) -> None:
+        self.asset_cache.put(cache_key, fingerprint, vector)
+        self.vector_store.put(
+            cache_key,
+            self._fingerprint_string(fingerprint),
+            self.backend_name,
+            vector,
+        )
+
+    @staticmethod
     def _sample(item: ScoreItem) -> object:
         if item.modality == "image":
             return {"image": item.path}
@@ -148,7 +201,15 @@ class WeMMRuntime:
             if cached is not None:
                 self.query_cache.move_to_end(normalized)
                 return cached
-        vector = self._encode([normalized])[0]
+
+        fingerprint = self._text_fingerprint(normalized)
+        key_hash = hashlib.sha256(normalized.encode("utf-8", errors="ignore")).hexdigest()
+        persistent_key = f"query:{key_hash}"
+        vector = self._get_cached_vector(persistent_key, fingerprint)
+        if vector is None:
+            vector = self._encode([normalized])[0]
+            self._put_cached_vector(persistent_key, fingerprint, vector)
+
         with self._query_lock:
             self.query_cache[normalized] = vector
             self.query_cache.move_to_end(normalized)
@@ -160,7 +221,7 @@ class WeMMRuntime:
         query_vector = self._query_vector(request.query)
         valid: list[tuple[ScoreItem, tuple[int, int]]] = []
         vectors: dict[str, np.ndarray] = {}
-        uncached: list[tuple[ScoreItem, tuple[int, int]]] = []
+        uncached: list[tuple[ScoreItem, tuple[int, int], str]] = []
 
         for item in request.items:
             if item.modality not in {"image", "video", "text"}:
@@ -175,21 +236,21 @@ class WeMMRuntime:
                     continue
             else:
                 text_value = item.name or item.path
-                fingerprint = (len(text_value.encode("utf-8")), hash(text_value))
+                fingerprint = self._text_fingerprint(text_value)
             valid.append((item, fingerprint))
             cache_key = f"{item.modality}:{item.key}"
-            cached = self.asset_cache.get(cache_key, fingerprint)
+            cached = self._get_cached_vector(cache_key, fingerprint)
             if cached is not None:
                 vectors[item.key] = cached
             else:
-                uncached.append((item, fingerprint))
+                uncached.append((item, fingerprint, cache_key))
 
         if uncached:
-            samples = [self._sample(item) for item, _fingerprint in uncached]
+            samples = [self._sample(item) for item, _fingerprint, _key in uncached]
             encoded = self._encode(samples)
-            for (item, fingerprint), vector in zip(uncached, encoded, strict=True):
+            for (item, fingerprint, cache_key), vector in zip(uncached, encoded, strict=True):
                 vectors[item.key] = vector
-                self.asset_cache.put(f"{item.modality}:{item.key}", fingerprint, vector)
+                self._put_cached_vector(cache_key, fingerprint, vector)
 
         scores = []
         for item, _fingerprint in valid:
@@ -206,11 +267,15 @@ class WeMMRuntime:
                 }
             )
         scores.sort(key=lambda row: row["score"], reverse=True)
+        # Pruning is cheap compared with model work and keeps a bounded derived disk cache.
+        if self.vector_store.count() > self.persistent_max_rows:
+            self.vector_store.prune(max_rows=self.persistent_max_rows)
         return {
             "backend": self.backend_name,
             "dimension": self.dimension,
             "scores": scores,
-            "cache_entries": len(self.asset_cache),
+            "memory_cache_entries": len(self.asset_cache),
+            "persistent_cache_entries": self.vector_store.count(),
         }
 
     async def score(self, request: ScoreRequest) -> dict[str, Any]:
@@ -229,7 +294,8 @@ async def healthz() -> dict[str, Any]:
         "device": RUNTIME.device,
         "dimension": RUNTIME.dimension,
         "model_loaded": RUNTIME._model is not None,
-        "asset_cache_entries": len(RUNTIME.asset_cache),
+        "memory_cache_entries": len(RUNTIME.asset_cache),
+        "persistent_cache_entries": RUNTIME.vector_store.count(),
     }
 
 
