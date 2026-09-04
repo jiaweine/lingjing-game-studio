@@ -2,17 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from worldforge.context import ContextCompiler
+from worldforge.context import ContextCompiler, MultimodalContextCompiler
 
 from .analyzer import ProductAnalyzer as BaseProductAnalyzer
 
 
 class ProductAnalyzer(BaseProductAnalyzer):
-    """Product analyzer with bounded long-horizon context compilation.
+    """Product analyzer with bounded long-horizon and multimodal context compilation.
 
     The original analyzer remains untouched. This adapter compiles the complete durable
-    conversation into a small context packet before delegating to the existing analysis
-    pipeline, which keeps the experiment reversible and makes A/B comparison trivial.
+    conversation and every task asset into small, provenance-preserving packets before
+    delegating to the existing analysis pipeline. Raw messages/assets remain authoritative;
+    the compiled state is disposable and fully rebuildable.
     """
 
     def __init__(self, engine, providers):
@@ -23,6 +24,20 @@ class ProductAnalyzer(BaseProductAnalyzer):
             message_char_budget=9000,
             per_message_chars=2400,
             state_items_per_kind=8,
+        )
+        self.multimodal_compiler = MultimodalContextCompiler(
+            selected_asset_budget=14,
+            per_kind_budget={
+                "text": 7,
+                "image": 6,
+                "video": 4,
+                "audio": 3,
+                "file": 2,
+            },
+            text_excerpt_chars=5200,
+            frames_per_video=3,
+            image_budget=9,
+            audio_budget=3,
         )
 
     async def run(
@@ -36,7 +51,10 @@ class ProductAnalyzer(BaseProductAnalyzer):
         human_feedback_gate=False,
     ):
         raw_history: list[dict[str, Any]] = list(history or [])
+        raw_assets: list[dict[str, Any]] = list(assets or [])
+
         packet = self.context_compiler.compile(str(text), raw_history)
+        multimodal_packet = self.multimodal_compiler.compile(str(text), raw_assets)
 
         compiled_history = [dict(message) for message in packet.messages]
         if raw_history:
@@ -53,7 +71,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
 
         result = await super().run(
             text=text,
-            assets=assets,
+            assets=multimodal_packet.assets,
             provider_key=provider_key,
             sink=sink,
             history=compiled_history,
@@ -62,10 +80,25 @@ class ProductAnalyzer(BaseProductAnalyzer):
 
         context = dict(result.get("context") or {})
         context.update(packet.stats())
-        # Preserve the public meaning of history_messages: total durable messages,
-        # while exposing the much smaller model-facing selection separately.
+        context.update(multimodal_packet.stats())
+        # Preserve the public meaning of history_messages/task_assets: durable totals,
+        # while exposing the much smaller model-facing selections separately.
         context["history_messages"] = len(raw_history)
+        context["task_assets"] = len(raw_assets)
         context["compiled_history_messages"] = len(compiled_history)
         context["task_state"] = packet.task_state
+        context["multimodal_selected_asset_ids"] = [
+            str(asset.get("id"))
+            for asset in multimodal_packet.assets
+            if (asset.get("meta", {}) or {}).get("_context", {}).get("selected")
+        ]
         result["context"] = context
         return result
+
+    def _model_assets(self, assets):
+        """Provider-facing multimodal evidence under strict image/audio budgets."""
+        return self.multimodal_compiler.model_assets(list(assets or []))
+
+    def _asset_context(self, assets):
+        """Prompt-facing all-asset manifest plus deep excerpts for selected evidence."""
+        return self.multimodal_compiler.render_manifest(list(assets or []))
