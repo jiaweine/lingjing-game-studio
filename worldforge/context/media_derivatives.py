@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -91,6 +92,112 @@ def _video_frame(asset: dict[str, Any], timestamp: float) -> dict[str, Any] | No
     }
 
 
+def _scene_frames(
+    asset: dict[str, Any],
+    *,
+    count: int = 6,
+) -> list[dict[str, Any]]:
+    """Return cached scene-aware frames for long videos.
+
+    The expensive low-resolution full-video scan runs at most once per source
+    size/mtime/count tuple. Frames are disposable derived evidence, so cache loss only
+    causes a rebuild and never affects authoritative project data.
+    """
+    source = Path(str(asset.get("path", "") or ""))
+    cache = _cache_dir(asset)
+    if cache is None or not source.is_file():
+        return []
+    scene_dir = cache / f"scene-v1-{max(3, int(count))}"
+    manifest_path = scene_dir / "manifest.json"
+    try:
+        stat = source.stat()
+        fingerprint = {
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+            "count": max(3, int(count)),
+        }
+        if manifest_path.is_file():
+            cached = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if cached.get("source") == fingerprint:
+                rows = []
+                for row in cached.get("frames", []):
+                    frame_path = scene_dir / str(row.get("file", ""))
+                    if frame_path.is_file() and frame_path.stat().st_size:
+                        timestamp = float(row.get("timestamp", 0) or 0)
+                        rows.append(
+                            {
+                                "id": f"{asset.get('id', 'video')}:scene:{int(timestamp * 1000)}",
+                                "name": f"{asset.get('name', '录像')} · 场景记忆帧 @{timestamp:.2f}s",
+                                "mime": "image/jpeg",
+                                "path": str(frame_path),
+                                "meta": {
+                                    "kind": "image",
+                                    "source_kind": "video",
+                                    "source_asset_id": asset.get("id"),
+                                    "source_name": asset.get("name"),
+                                    "timestamp": timestamp,
+                                    "scene_score": float(row.get("scene_score", 0) or 0),
+                                    "derived": "scene_memory_frame",
+                                },
+                            }
+                        )
+                if rows:
+                    return rows
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+
+    try:
+        scene_dir.mkdir(parents=True, exist_ok=True)
+        # Runtime import avoids coupling product package initialization to context modules.
+        from worldforge.product.media import extract_video_keyframes
+
+        extracted = extract_video_keyframes(source, scene_dir, max(3, int(count)))
+        frames: list[dict[str, Any]] = []
+        serialized: list[dict[str, Any]] = []
+        for row in extracted:
+            path = Path(str(row.get("path", "")))
+            if not path.is_file() or not path.stat().st_size:
+                continue
+            timestamp = float(row.get("timestamp", 0) or 0)
+            scene_score = float(row.get("scene_score", 0) or 0)
+            frames.append(
+                {
+                    "id": f"{asset.get('id', 'video')}:scene:{int(timestamp * 1000)}",
+                    "name": f"{asset.get('name', '录像')} · 场景记忆帧 @{timestamp:.2f}s",
+                    "mime": "image/jpeg",
+                    "path": str(path),
+                    "meta": {
+                        "kind": "image",
+                        "source_kind": "video",
+                        "source_asset_id": asset.get("id"),
+                        "source_name": asset.get("name"),
+                        "timestamp": round(timestamp, 3),
+                        "scene_score": round(scene_score, 6),
+                        "derived": "scene_memory_frame",
+                    },
+                }
+            )
+            serialized.append(
+                {
+                    "file": path.name,
+                    "timestamp": round(timestamp, 3),
+                    "scene_score": round(scene_score, 6),
+                }
+            )
+        if frames:
+            manifest_path.write_text(
+                json.dumps(
+                    {"source": fingerprint, "frames": serialized},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+        return frames
+    except (OSError, ValueError, TypeError):
+        return []
+
+
 def _audio_clip(
     asset: dict[str, Any],
     center: float,
@@ -161,14 +268,15 @@ def augment_model_assets(
     raw_media_max_bytes: int = 16 * 1024 * 1024,
     raw_video_budget: int = 2,
     exact_frame_budget: int = 4,
+    scene_frame_budget: int = 6,
     audio_budget: int = 3,
 ) -> list[dict[str, Any]]:
-    """Add raw/temporal evidence without letting large media dominate inference.
+    """Add raw/temporal/multi-scale evidence without letting media dominate inference.
 
     `base_assets` contains the context compiler's selected images/keyframes/audio. We add
     raw short videos for providers that can consume them, exact frames for timestamped
-    questions, and short 16 kHz audio windows for oversized audio or audio questions over
-    video. The raw originals are never modified; all derivatives are disposable caches.
+    questions, cached scene-aware frames for long/oversized videos, and short 16 kHz audio
+    windows for oversized audio or audio questions over video. Originals are never modified.
     """
     selected = [
         asset for asset in assets
@@ -180,6 +288,7 @@ def augment_model_assets(
     preferred: list[dict[str, Any]] = []
     raw_videos = 0
     exact_frames = 0
+    scene_frames = 0
     audio_count = 0
 
     for asset in selected:
@@ -191,8 +300,6 @@ def augment_model_assets(
         duration = float(meta.get("duration", 0) or 0)
 
         if kind == "video":
-            # Exact temporal anchors have the highest information density for questions
-            # such as "37 秒发生了什么" and avoid trusting approximate upload keyframes.
             for hint in time_hints:
                 if exact_frames >= exact_frame_budget:
                     break
@@ -202,9 +309,22 @@ def augment_model_assets(
                     exact_frames += 1
 
             size = _file_size(asset.get("path"))
-            if 0 < size <= raw_media_max_bytes and raw_videos < raw_video_budget:
+            can_inline_raw = 0 < size <= raw_media_max_bytes and raw_videos < raw_video_budget
+            if can_inline_raw:
                 preferred.append(asset)
                 raw_videos += 1
+
+            if (
+                scene_frames < scene_frame_budget
+                and not time_hints
+                and (not can_inline_raw or duration >= 45.0)
+            ):
+                remaining = scene_frame_budget - scene_frames
+                for frame in _scene_frames(asset, count=min(remaining, 6)):
+                    if scene_frames >= scene_frame_budget:
+                        break
+                    preferred.append(frame)
+                    scene_frames += 1
 
             if needs_audio and meta.get("has_audio") and audio_count < audio_budget:
                 centers = time_hints or ([duration / 2.0] if duration > 0 else [0.0])
@@ -231,9 +351,6 @@ def augment_model_assets(
                         preferred.append(clip)
                         audio_count += 1
 
-    # Base visual evidence fills in broad coverage after high-density exact/raw evidence.
-    # Remove oversized raw audio from the base pack because compatible providers may route
-    # to it but later refuse/skip the payload.
     safe_base: list[dict[str, Any]] = []
     for asset in base_assets:
         mime = str(asset.get("mime", ""))
