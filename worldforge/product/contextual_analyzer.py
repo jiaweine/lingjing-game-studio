@@ -4,6 +4,10 @@ from typing import Any
 
 from worldforge.context import ContextCompiler, MultimodalContextCompiler
 from worldforge.context.media_derivatives import augment_model_assets, query_needs_audio
+from worldforge.context.retrieval_sidecar import (
+    MultimodalRetrievalClient,
+    apply_retrieval_hits,
+)
 
 from .analyzer import ProductAnalyzer as BaseProductAnalyzer
 
@@ -40,6 +44,10 @@ class ProductAnalyzer(BaseProductAnalyzer):
             image_budget=9,
             audio_budget=3,
         )
+        # Disabled by default. When configured, heavy image/video/audio embedding models
+        # live outside the API process; failures/latency automatically fall back to the
+        # dependency-free deterministic compiler above.
+        self.semantic_retriever = MultimodalRetrievalClient()
 
     async def run(
         self,
@@ -56,6 +64,12 @@ class ProductAnalyzer(BaseProductAnalyzer):
 
         packet = self.context_compiler.compile(str(text), raw_history)
         multimodal_packet = self.multimodal_compiler.compile(str(text), raw_assets)
+
+        semantic_result = await self.semantic_retriever.rank(
+            str(text), multimodal_packet.assets
+        )
+        apply_retrieval_hits(multimodal_packet.assets, semantic_result)
+
         audio_query = query_needs_audio(str(text))
         for asset in multimodal_packet.assets:
             meta = asset.get("meta", {}) or {}
@@ -90,6 +104,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
         context = dict(result.get("context") or {})
         context.update(packet.stats())
         context.update(multimodal_packet.stats())
+        context.update(semantic_result.stats())
         # Preserve the public meaning of history_messages/task_assets: durable totals,
         # while exposing the much smaller model-facing selections separately.
         context["history_messages"] = len(raw_history)
@@ -114,6 +129,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
             raw_media_max_bytes=16 * 1024 * 1024,
             raw_video_budget=2,
             exact_frame_budget=4,
+            scene_frame_budget=6,
             audio_budget=3,
         )
 
