@@ -28,8 +28,8 @@ def iter_text_chunks(
     """Read a complete text/log/config file into bounded overlapping semantic units.
 
     The reader is streaming: peak Python text memory is roughly one chunk plus overlap, not
-    the entire file. Offsets are character offsets in the UTF-8-decoded stream and are used
-    only as provenance locators; the original file remains authoritative.
+    the entire file. ``start``/``end`` are exact character offsets in the decoded stream and
+    are provenance locators only; the raw file remains authoritative.
     """
     source = Path(path)
     if not source.is_file():
@@ -39,49 +39,54 @@ def iter_text_chunks(
     max_chunks = max(1, int(max_chunks))
 
     rows: list[TextChunk] = []
-    carry = ""
-    consumed = 0
+    buffer = ""
+    buffer_start = 0
+    eof = False
+
     with source.open("r", encoding="utf-8", errors="ignore") as handle:
         while len(rows) < max_chunks:
-            need = max(1, chunk_chars - len(carry))
-            piece = handle.read(need)
-            if not piece and not carry:
-                break
-            block = carry + piece
-            if not block:
+            while len(buffer) < chunk_chars and not eof:
+                piece = handle.read(chunk_chars - len(buffer))
+                if piece:
+                    buffer += piece
+                else:
+                    eof = True
+
+            if not buffer:
                 break
 
-            # Prefer a natural line boundary near the end of a full block. This improves
-            # log/config semantic coherence without allowing pathological long lines to
-            # create unbounded chunks.
-            cut = len(block)
-            if piece and len(block) >= chunk_chars:
+            if eof and len(buffer) <= chunk_chars:
+                cut = len(buffer)
+                final_chunk = True
+            else:
+                cut = min(chunk_chars, len(buffer))
+                final_chunk = False
+                # Prefer a line boundary near the end without dropping the already-read
+                # remainder after that newline.
                 floor = max(chunk_chars // 2, chunk_chars - 1200)
-                newline = block.rfind("\n", floor)
+                newline = buffer.rfind("\n", floor, cut)
                 if newline > 0:
                     cut = newline + 1
-            text = block[:cut]
-            start = max(0, consumed - len(carry))
-            end = start + len(text)
-            stripped = text.strip()
+
+            raw_text = buffer[:cut]
+            stripped = raw_text.strip()
             if stripped:
+                # The semantic text is trimmed for embedding, but provenance points to the
+                # complete raw window so a verifier can reopen the exact source range.
                 rows.append(
                     TextChunk(
-                        start=start,
-                        end=end,
+                        start=buffer_start,
+                        end=buffer_start + cut,
                         text=stripped,
                         fingerprint=_fingerprint(stripped),
                     )
                 )
 
-            if not piece and cut >= len(block):
+            if final_chunk:
                 break
-            tail_source = block[:cut]
-            carry = tail_source[-overlap_chars:] if overlap_chars else ""
-            # Any bytes after a natural-boundary cut have already been read from the file;
-            # preserve them after the overlap so they are not skipped.
-            remainder = block[cut:]
-            carry += remainder
-            consumed = end
+
+            advance = max(1, cut - overlap_chars)
+            buffer = buffer[advance:]
+            buffer_start += advance
 
     return rows
