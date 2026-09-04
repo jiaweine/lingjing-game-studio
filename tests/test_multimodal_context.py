@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from worldforge.context import MultimodalContextCompiler
+from worldforge.context.media_derivatives import augment_model_assets, query_needs_audio
 from worldforge.product import ProductAnalyzer
 
 
@@ -123,6 +124,41 @@ def test_every_asset_remains_in_manifest_while_model_payload_is_bounded():
     assert packet.total_assets == len(assets)
     assert sum(1 for item in model_assets if str(item.get("mime", "")).startswith("image/")) <= 9
     assert sum(1 for item in model_assets if str(item.get("mime", "")).startswith("audio/")) <= 3
+
+
+def test_small_selected_video_is_preserved_as_raw_provider_evidence(tmp_path):
+    video = tmp_path / "boss-run.mp4"
+    video.write_bytes(b"small-video-fixture")
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"frame-fixture")
+    compiler = MultimodalContextCompiler(frames_per_video=1)
+    packet = compiler.compile(
+        "分析这段录像",
+        [
+            _asset(
+                1,
+                kind="video",
+                name="boss-run.mp4",
+                path=str(video),
+                mime="video/mp4",
+                duration=12.0,
+                keyframes=[str(frame)],
+            )
+        ],
+    )
+    packet.assets[0]["meta"]["_context"]["needs_audio"] = False
+    model_assets = augment_model_assets(
+        packet.assets,
+        compiler.model_assets(packet.assets),
+    )
+
+    assert any(item.get("mime") == "video/mp4" for item in model_assets)
+    assert any(item.get("mime") == "image/jpeg" for item in model_assets)
+
+
+def test_audio_intent_detection_covers_game_sound_questions():
+    assert query_needs_audio("听一下 37 秒附近的音效是不是重复触发") is True
+    assert query_needs_audio("只比较两张截图的 UI 布局") is False
 
 
 class _CapturingProvider:
