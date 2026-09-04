@@ -20,7 +20,16 @@ _AUDIO_MARKERS = (
     "音频", "声音", "语音", "台词", "说话", "声效", "音效", "音乐", "听到",
     "audio", "sound", "voice", "speech", "music",
 )
-_TIME_MARKERS = ("秒", "分钟", "时间", "附近", "区间", "s", "sec", "min", ":")
+# Do not use a bare substring such as "s" for temporal detection: identifiers like
+# shield_race + build 1.4.7 would otherwise become false temporal queries. This expression
+# only recognizes an actual duration/timestamp form.
+_TIME_EXPRESSION_RE = re.compile(
+    r"(?ix)(?:"
+    r"(?<!\d)\d{1,4}:\d{2}(?:\.\d+)?(?!\d)"
+    r"|(?<![\w.])\d+(?:\.\d+)?\s*(?:毫秒|ms|秒|分钟|分|"
+    r"s(?:ec(?:ond)?s?)?|m(?:in(?:ute)?s?)?)(?![A-Za-z])"
+    r")"
+)
 
 
 def _tokens(text: str) -> set[str]:
@@ -42,8 +51,7 @@ def _audio_query(text: str) -> bool:
 
 
 def _temporal_query(text: str) -> bool:
-    value = str(text or "").lower()
-    return any(marker in value for marker in _TIME_MARKERS) and any(ch.isdigit() for ch in value)
+    return bool(_TIME_EXPRESSION_RE.search(str(text or "")))
 
 
 class AssetDescriptor(BaseModel):
@@ -210,6 +218,15 @@ def _worker_items(assets: list[AssetDescriptor], *, audio_query: bool) -> tuple[
     return visual, audio
 
 
+def _sanitize_result(result: WorkerResult, items: list[dict[str, Any]]) -> WorkerResult:
+    """Enforce dispatch scope at the coordinator boundary, even for buggy workers."""
+    allowed = {str(item.get("key", "")) for item in items}
+    if not allowed:
+        return WorkerResult(result.backend, [], result.latency_ms, result.error or "not_dispatched")
+    rows = [row for row in result.scores if row.asset_id in allowed and math.isfinite(row.score)]
+    return WorkerResult(result.backend, rows, result.latency_ms, result.error)
+
+
 def _normalize_backend(rows: list[WorkerScore]) -> dict[str, float]:
     if not rows:
         return {}
@@ -248,6 +265,8 @@ async def rank(request: RankRequest) -> dict[str, Any]:
         backend_hint="lco",
     )
     visual_result, audio_result = await asyncio.gather(visual_task, audio_task)
+    visual_result = _sanitize_result(visual_result, visual_items)
+    audio_result = _sanitize_result(audio_result, audio_items)
 
     visual_norm = _normalize_backend(visual_result.scores)
     audio_norm = _normalize_backend(audio_result.scores)
@@ -274,7 +293,16 @@ async def rank(request: RankRequest) -> dict[str, Any]:
 
         if score <= 0.0 and not (visual or audio):
             continue
-        source = visual_raw.get(asset.id) or audio_raw.get(asset.id)
+
+        # Preserve the localization produced by the strongest semantic specialist instead
+        # of blindly preferring visual metadata on sound-intent turns.
+        semantic_sources = [
+            (visual, visual_raw.get(asset.id)),
+            (audio, audio_raw.get(asset.id)),
+        ]
+        semantic_sources.sort(key=lambda pair: pair[0], reverse=True)
+        source = next((row for value, row in semantic_sources if value > 0 and row is not None), None)
+
         hit = {
             "asset_id": asset.id,
             "score": round(score, 6),
@@ -307,5 +335,6 @@ async def rank(request: RankRequest) -> dict[str, Any]:
             "visual_error": visual_result.error,
             "audio_error": audio_result.error,
             "audio_query": wants_audio,
+            "temporal_query": wants_time,
         },
     }
