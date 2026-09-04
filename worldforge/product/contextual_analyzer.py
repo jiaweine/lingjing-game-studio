@@ -8,6 +8,7 @@ from worldforge.context.retrieval_sidecar import (
     MultimodalRetrievalClient,
     apply_retrieval_hits,
 )
+from worldforge.context.temporal_evidence import merge_temporal_evidence
 
 from .analyzer import ProductAnalyzer as BaseProductAnalyzer
 
@@ -123,7 +124,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
         """Provider-facing multimodal evidence under strict raw/derived budgets."""
         rows = list(assets or [])
         base = self.multimodal_compiler.model_assets(rows)
-        return augment_model_assets(
+        enriched = augment_model_assets(
             rows,
             base,
             raw_media_max_bytes=16 * 1024 * 1024,
@@ -131,6 +132,15 @@ class ProductAnalyzer(BaseProductAnalyzer):
             exact_frame_budget=4,
             scene_frame_budget=6,
             audio_budget=3,
+        )
+        # Explicit time ranges such as "35-45 秒" are a stronger signal than static
+        # upload-time sampling. Dense interval frames are generated lazily and cached,
+        # then inserted after exact timestamp evidence while preserving the image budget.
+        return merge_temporal_evidence(
+            rows,
+            enriched,
+            max_total_frames=6,
+            max_images=10,
         )
 
     def _asset_context(self, assets):
