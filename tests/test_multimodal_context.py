@@ -75,7 +75,9 @@ def test_video_temporal_query_selects_nearest_available_keyframe():
         if asset.get("meta", {}).get("source_kind") == "video"
     ]
     assert 60.0 in timestamps
-    assert "60.0s" in packet.manifest
+    # Display formatting is intentionally human-readable (60s -> 1:00.0); semantic
+    # correctness is asserted from the structured timestamp above.
+    assert "1:00.0" in packet.manifest
 
 
 def test_every_asset_remains_in_manifest_while_model_payload_is_bounded():
