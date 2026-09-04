@@ -71,11 +71,28 @@ class ProductAnalyzer(BaseProductAnalyzer):
         )
         apply_retrieval_hits(multimodal_packet.assets, semantic_result)
 
+        # Segment-aware retrievers may return a precise [start, end] interval. Do not treat
+        # this derived interval as truth; use it only to ask the original media for denser
+        # evidence. The verifier/model still sees frames/audio extracted from the source.
+        semantic_ranges: dict[str, list[tuple[float, float]]] = {}
+        for hit in semantic_result.hits:
+            if hit.start is None or hit.end is None or hit.end <= hit.start:
+                continue
+            semantic_ranges.setdefault(hit.asset_id, []).append((hit.start, hit.end))
+
         audio_query = query_needs_audio(str(text))
         for asset in multimodal_packet.assets:
             meta = asset.get("meta", {}) or {}
             context = meta.get("_context", {}) or {}
-            context["query_text"] = str(text)
+            extra_ranges = semantic_ranges.get(str(asset.get("id", "")), [])[:3]
+            range_suffix = " ".join(
+                f"{start:.3f}-{end:.3f}秒"
+                for start, end in extra_ranges
+            )
+            context["query_text"] = (
+                f"{text} {range_suffix}".strip() if range_suffix else str(text)
+            )
+            context["semantic_time_ranges"] = [list(item) for item in extra_ranges]
             context["needs_audio"] = audio_query
             meta["_context"] = context
             asset["meta"] = meta
@@ -117,6 +134,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
             for asset in multimodal_packet.assets
             if (asset.get("meta", {}) or {}).get("_context", {}).get("selected")
         ]
+        context["semantic_segment_hits"] = sum(len(rows) for rows in semantic_ranges.values())
         result["context"] = context
         return result
 
@@ -133,7 +151,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
             scene_frame_budget=6,
             audio_budget=3,
         )
-        # Explicit time ranges such as "35-45 秒" are a stronger signal than static
+        # Explicit time ranges or semantic segment hits are a stronger signal than static
         # upload-time sampling. Dense interval frames are generated lazily and cached,
         # then inserted after exact timestamp evidence while preserving the image budget.
         return merge_temporal_evidence(
