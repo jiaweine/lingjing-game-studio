@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from worldforge.context import ContextCompiler, MultimodalContextCompiler
+from worldforge.context.media_derivatives import augment_model_assets, query_needs_audio
 
 from .analyzer import ProductAnalyzer as BaseProductAnalyzer
 
@@ -55,6 +56,14 @@ class ProductAnalyzer(BaseProductAnalyzer):
 
         packet = self.context_compiler.compile(str(text), raw_history)
         multimodal_packet = self.multimodal_compiler.compile(str(text), raw_assets)
+        audio_query = query_needs_audio(str(text))
+        for asset in multimodal_packet.assets:
+            meta = asset.get("meta", {}) or {}
+            context = meta.get("_context", {}) or {}
+            context["query_text"] = str(text)
+            context["needs_audio"] = audio_query
+            meta["_context"] = context
+            asset["meta"] = meta
 
         compiled_history = [dict(message) for message in packet.messages]
         if raw_history:
@@ -96,8 +105,17 @@ class ProductAnalyzer(BaseProductAnalyzer):
         return result
 
     def _model_assets(self, assets):
-        """Provider-facing multimodal evidence under strict image/audio budgets."""
-        return self.multimodal_compiler.model_assets(list(assets or []))
+        """Provider-facing multimodal evidence under strict raw/derived budgets."""
+        rows = list(assets or [])
+        base = self.multimodal_compiler.model_assets(rows)
+        return augment_model_assets(
+            rows,
+            base,
+            raw_media_max_bytes=16 * 1024 * 1024,
+            raw_video_budget=2,
+            exact_frame_budget=4,
+            audio_budget=3,
+        )
 
     def _asset_context(self, assets):
         """Prompt-facing all-asset manifest plus deep excerpts for selected evidence."""
