@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from worldforge.context import ContextCompiler, MultimodalContextCompiler
@@ -43,14 +44,17 @@ def _kind(asset: dict[str, Any]) -> str:
 class ProductAnalyzer(BaseProductAnalyzer):
     """Product analyzer with bounded long-horizon and multimodal context compilation.
 
-    Raw messages/assets remain authoritative. The original analyzer is not modified; this
-    wrapper constrains its model-facing context, evidence budget and confidence semantics.
-    Derived retrieval/index caches are disposable and synthetic runtime runs are explicitly
-    prevented from masquerading as real project verification.
+    Raw messages/assets remain authoritative. ContextOS constrains model-facing context,
+    evidence budget, execution scope and confidence semantics. Derived retrieval/index caches
+    are disposable, and synthetic runtime is opt-in so it cannot masquerade as real project
+    verification in the default product path.
     """
 
     def __init__(self, engine, providers):
         super().__init__(engine, providers)
+        self.synthetic_review_enabled = os.getenv(
+            "LINGJING_PRODUCT_SYNTHETIC_REVIEW", "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self.context_compiler = ContextCompiler(
             recent_messages=4,
             retrieved_messages=3,
@@ -151,9 +155,6 @@ class ProductAnalyzer(BaseProductAnalyzer):
                 f"{query} {range_suffix}".strip() if range_suffix else query
             )
             context["semantic_time_ranges"] = [list(item) for item in extra_ranges]
-            # One deterministic plan controls retrieval GPU, FFmpeg derivatives and final
-            # provider tokens. Cost must not merely move to another layer after retrieval
-            # has correctly decided to skip expensive semantic work.
             context["needs_audio"] = evidence_plan.needs_audio
             context["provider_visual_enabled"] = evidence_plan.needs_visual
             context["provider_audio_enabled"] = evidence_plan.needs_audio
@@ -254,6 +255,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
         context["runtime_verification_scope"] = (
             "synthetic-builtin-scenario" if result.get("runtime") else "none"
         )
+        context["synthetic_review_opt_in"] = bool(self.synthetic_review_enabled)
         result["context"] = context
         return result
 
@@ -301,8 +303,6 @@ class ProductAnalyzer(BaseProductAnalyzer):
             eligible_rows,
             base,
             raw_media_max_bytes=16 * 1024 * 1024,
-            # Raw video may expose an audio stream to the provider. Visual-only turns use
-            # frames, so "no audio required" really means zero provider audio exposure.
             raw_video_budget=1 if (allow_visual and allow_audio) else 0,
             exact_frame_budget=min(4, frame_budget) if allow_visual else 0,
             scene_frame_budget=frame_budget if allow_visual else 0,
