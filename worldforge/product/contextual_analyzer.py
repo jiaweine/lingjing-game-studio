@@ -12,6 +12,7 @@ from worldforge.context.retrieval_sidecar import (
     apply_retrieval_hits,
 )
 from worldforge.context.temporal_evidence import merge_temporal_evidence
+from worldforge.context.verification_contract import build_verification_contract
 
 from .analyzer import ProductAnalyzer as BaseProductAnalyzer
 
@@ -19,10 +20,10 @@ from .analyzer import ProductAnalyzer as BaseProductAnalyzer
 class ProductAnalyzer(BaseProductAnalyzer):
     """Product analyzer with bounded long-horizon and multimodal context compilation.
 
-    The original analyzer remains untouched. Raw messages/assets remain authoritative; all
-    compiled state, semantic locators and preindex caches are disposable. Expensive complete
-    indexing is scheduled only after the user-facing analysis has completed and is routed
-    to independently configured indexer replicas.
+    Raw messages/assets remain authoritative. The original analyzer is not modified; this
+    wrapper constrains its model-facing context, evidence budget and confidence semantics.
+    Derived retrieval/index caches are disposable and synthetic runtime runs are explicitly
+    prevented from masquerading as real project verification.
     """
 
     def __init__(self, engine, providers):
@@ -91,6 +92,14 @@ class ProductAnalyzer(BaseProductAnalyzer):
         evidence_assessment = self.evidence_controller.assess(
             evidence_plan, semantic_result, multimodal_packet.assets
         )
+        verification_contract = build_verification_contract(
+            evidence_plan,
+            multimodal_packet.assets,
+            # The current product analyzer still uses built-in synthetic scenarios. A future
+            # real GameAdapter/EnvironmentAdapter can explicitly flip this to True only after
+            # actual project execution is connected and verified.
+            actual_project_execution_available=False,
+        )
 
         semantic_ranges: dict[str, list[tuple[float, float]]] = {}
         semantic_text_hits = 0
@@ -107,17 +116,14 @@ class ProductAnalyzer(BaseProductAnalyzer):
             context = meta.get("_context", {}) or {}
             extra_ranges = semantic_ranges.get(str(asset.get("id", "")), [])[:3]
             range_suffix = " ".join(
-                f"{start:.3f}-{end:.3f}秒"
-                for start, end in extra_ranges
+                f"{start:.3f}-{end:.3f}秒" for start, end in extra_ranges
             )
             context["query_text"] = (
                 f"{query} {range_suffix}".strip() if range_suffix else query
             )
             context["semantic_time_ranges"] = [list(item) for item in extra_ranges]
             context["needs_audio"] = audio_query
-            context["evidence_temporal_frame_budget"] = (
-                evidence_plan.temporal_frame_budget
-            )
+            context["evidence_temporal_frame_budget"] = evidence_plan.temporal_frame_budget
             context["evidence_stop_reason"] = evidence_assessment.stop_reason
             meta["_context"] = context
             asset["meta"] = meta
@@ -142,6 +148,13 @@ class ProductAnalyzer(BaseProductAnalyzer):
                     "content": evidence_assessment.render(evidence_plan),
                 }
             )
+            compiled_history.append(
+                {
+                    "id": "context:verification-contract",
+                    "role": "user",
+                    "content": verification_contract.render(),
+                }
+            )
 
         result = await super().run(
             text=text,
@@ -152,20 +165,27 @@ class ProductAnalyzer(BaseProductAnalyzer):
             human_feedback_gate=human_feedback_gate,
         )
 
-        # Only after the answer path is complete do we warm complete derived indexes. The
-        # scheduler is disabled by default and coordinator index routing requires explicit
-        # dedicated indexer URLs, so this cannot silently compete with online retrieval GPU.
         preindex_scheduled = self.preindex_scheduler.schedule(
             self.semantic_retriever,
             multimodal_packet.assets,
         )
 
         context = dict(result.get("context") or {})
+        heuristic_confidence = float(context.get("evidence_confidence") or 0.0)
+        bounded_confidence = round(
+            min(heuristic_confidence, verification_contract.confidence_cap), 2
+        )
+        context["evidence_confidence_heuristic"] = heuristic_confidence
+        context["evidence_confidence"] = bounded_confidence
+        context["evidence_confidence_basis"] = (
+            "heuristic-bounded-by-verification-scope"
+        )
         context.update(packet.stats())
         context.update(multimodal_packet.stats())
         context.update(semantic_result.stats())
         context.update(evidence_plan.stats())
         context.update(evidence_assessment.stats())
+        context.update(verification_contract.stats())
         context.update(self.preindex_scheduler.stats())
         context["preindex_scheduled_this_run"] = preindex_scheduled
         context["history_messages"] = len(raw_history)
@@ -181,6 +201,9 @@ class ProductAnalyzer(BaseProductAnalyzer):
             len(rows) for rows in semantic_ranges.values()
         )
         context["semantic_text_chunk_hits"] = semantic_text_hits
+        context["runtime_verification_scope"] = (
+            "synthetic-builtin-scenario" if result.get("runtime") else "none"
+        )
         result["context"] = context
         return result
 
