@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from worldforge.context import ContextCompiler, MultimodalContextCompiler
+from worldforge.context.evidence_controller import EvidenceController
 from worldforge.context.media_derivatives import augment_model_assets, query_needs_audio
 from worldforge.context.retrieval_sidecar import (
     MultimodalRetrievalClient,
+    MultimodalRetrievalResult,
     apply_retrieval_hits,
 )
 from worldforge.context.temporal_evidence import merge_temporal_evidence
@@ -46,6 +48,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
             audio_budget=3,
         )
         self.semantic_retriever = MultimodalRetrievalClient()
+        self.evidence_controller = EvidenceController()
 
     async def run(
         self,
@@ -59,14 +62,36 @@ class ProductAnalyzer(BaseProductAnalyzer):
     ):
         raw_history: list[dict[str, Any]] = list(history or [])
         raw_assets: list[dict[str, Any]] = list(assets or [])
+        query = str(text)
 
-        packet = self.context_compiler.compile(str(text), raw_history)
-        multimodal_packet = self.multimodal_compiler.compile(str(text), raw_assets)
+        packet = self.context_compiler.compile(query, raw_history)
+        multimodal_packet = self.multimodal_compiler.compile(query, raw_assets)
 
-        semantic_result = await self.semantic_retriever.rank(
-            str(text), multimodal_packet.assets
+        evidence_plan = self.evidence_controller.plan(
+            query,
+            multimodal_packet.assets,
+            retriever_enabled=self.semantic_retriever.enabled,
         )
-        apply_retrieval_hits(multimodal_packet.assets, semantic_result)
+        if evidence_plan.semantic_retrieval:
+            semantic_result = await self.semantic_retriever.rank(
+                query, multimodal_packet.assets
+            )
+            apply_retrieval_hits(
+                multimodal_packet.assets,
+                semantic_result,
+                max_semantic_promotions=evidence_plan.max_semantic_promotions,
+            )
+        else:
+            # Deliberate skip is not a retriever failure. Keep the result empty and expose
+            # the reason through evidence telemetry so operators can distinguish cost
+            # avoidance from outage/fallback.
+            semantic_result = MultimodalRetrievalResult(
+                hits=[], backend=None, latency_ms=0.0, available=False, error=None
+            )
+
+        evidence_assessment = self.evidence_controller.assess(
+            evidence_plan, semantic_result, multimodal_packet.assets
+        )
 
         semantic_ranges: dict[str, list[tuple[float, float]]] = {}
         semantic_text_hits = 0
@@ -77,7 +102,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
                 continue
             semantic_ranges.setdefault(hit.asset_id, []).append((hit.start, hit.end))
 
-        audio_query = query_needs_audio(str(text))
+        audio_query = query_needs_audio(query)
         for asset in multimodal_packet.assets:
             meta = asset.get("meta", {}) or {}
             context = meta.get("_context", {}) or {}
@@ -87,10 +112,14 @@ class ProductAnalyzer(BaseProductAnalyzer):
                 for start, end in extra_ranges
             )
             context["query_text"] = (
-                f"{text} {range_suffix}".strip() if range_suffix else str(text)
+                f"{query} {range_suffix}".strip() if range_suffix else query
             )
             context["semantic_time_ranges"] = [list(item) for item in extra_ranges]
             context["needs_audio"] = audio_query
+            context["evidence_temporal_frame_budget"] = (
+                evidence_plan.temporal_frame_budget
+            )
+            context["evidence_stop_reason"] = evidence_assessment.stop_reason
             meta["_context"] = context
             asset["meta"] = meta
 
@@ -104,6 +133,14 @@ class ProductAnalyzer(BaseProductAnalyzer):
                         "【系统编译的持久任务状态；不是新的用户消息】\n"
                         + packet.render_task_state()
                     ),
+                }
+            )
+        if raw_assets:
+            compiled_history.append(
+                {
+                    "id": "context:evidence-controller",
+                    "role": "user",
+                    "content": evidence_assessment.render(evidence_plan),
                 }
             )
 
@@ -120,6 +157,8 @@ class ProductAnalyzer(BaseProductAnalyzer):
         context.update(packet.stats())
         context.update(multimodal_packet.stats())
         context.update(semantic_result.stats())
+        context.update(evidence_plan.stats())
+        context.update(evidence_assessment.stats())
         context["history_messages"] = len(raw_history)
         context["task_assets"] = len(raw_assets)
         context["compiled_history_messages"] = len(compiled_history)
@@ -129,28 +168,44 @@ class ProductAnalyzer(BaseProductAnalyzer):
             for asset in multimodal_packet.assets
             if (asset.get("meta", {}) or {}).get("_context", {}).get("selected")
         ]
-        context["semantic_segment_hits"] = sum(len(rows) for rows in semantic_ranges.values())
+        context["semantic_segment_hits"] = sum(
+            len(rows) for rows in semantic_ranges.values()
+        )
         context["semantic_text_chunk_hits"] = semantic_text_hits
         result["context"] = context
         return result
 
     def _model_assets(self, assets):
-        """Provider-facing multimodal evidence under strict raw/derived budgets."""
+        """Provider-facing multimodal evidence under a query-adaptive raw-media budget."""
         rows = list(assets or [])
+        frame_budget = max(
+            [
+                int(
+                    ((asset.get("meta", {}) or {}).get("_context", {}) or {}).get(
+                        "evidence_temporal_frame_budget", 2
+                    )
+                    or 2
+                )
+                for asset in rows
+            ]
+            or [2]
+        )
+        frame_budget = max(2, min(6, frame_budget))
+
         base = self.multimodal_compiler.model_assets(rows)
         enriched = augment_model_assets(
             rows,
             base,
             raw_media_max_bytes=16 * 1024 * 1024,
             raw_video_budget=2,
-            exact_frame_budget=4,
-            scene_frame_budget=6,
+            exact_frame_budget=min(4, frame_budget),
+            scene_frame_budget=frame_budget,
             audio_budget=3,
         )
         return merge_temporal_evidence(
             rows,
             enriched,
-            max_total_frames=6,
+            max_total_frames=frame_budget,
             max_images=10,
         )
 
