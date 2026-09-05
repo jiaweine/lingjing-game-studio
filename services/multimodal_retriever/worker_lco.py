@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 from threading import RLock
+import time
 from typing import Any
 
 import numpy as np
@@ -29,6 +30,7 @@ class ScoreItem(BaseModel):
 class ScoreRequest(BaseModel):
     query: str
     items: list[ScoreItem] = Field(default_factory=list, max_length=48)
+    budget_ms: int | None = Field(default=None, ge=50, le=120000)
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,22 @@ class LCORuntime:
     @property
     def backend_name(self) -> str:
         return f"lco:{self.model_name}"
+
+    @staticmethod
+    def _deadline_for_request(request: ScoreRequest) -> float | None:
+        if request.budget_ms is None:
+            return None
+        return time.perf_counter() + max(0.05, request.budget_ms / 1000.0)
+
+    @staticmethod
+    def _deadline_exhausted(deadline: float | None) -> bool:
+        return deadline is not None and time.perf_counter() >= deadline
+
+    @staticmethod
+    def _remaining_budget_ms(deadline: float | None) -> int | None:
+        if deadline is None:
+            return None
+        return max(50, int((deadline - time.perf_counter()) * 1000.0))
 
     def _load(self):
         with self._model_lock:
@@ -275,6 +293,7 @@ class LCORuntime:
         return vector
 
     def _score_sync(self, request: ScoreRequest) -> dict[str, Any]:
+        deadline = self._deadline_for_request(request)
         query_vector = self._query_vector(request.query)
         valid: list[tuple[ScoreItem, tuple[int, int]]] = []
         uncached: list[tuple[ScoreItem, tuple[int, int]]] = []
@@ -299,6 +318,8 @@ class LCORuntime:
                 uncached.append((item, fingerprint))
 
         for start in range(0, len(uncached), self.batch_size):
+            if self._deadline_exhausted(deadline):
+                break
             batch = uncached[start : start + self.batch_size]
             conversations = [
                 self._item_message(item) for item, _fingerprint in batch
@@ -330,6 +351,7 @@ class LCORuntime:
             "scores": scores,
             "memory_cache_entries": len(self.asset_cache),
             "persistent_cache_entries": self.vector_store.count(),
+            "budget_exhausted": self._deadline_exhausted(deadline),
         }
 
     async def score(self, request: ScoreRequest) -> dict[str, Any]:
