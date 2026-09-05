@@ -143,9 +143,10 @@ class EvidenceAssessment:
 class EvidenceController:
     """Route expensive evidence work by expected information gain.
 
-    Asset modality is a prior, not an override. One long replay is a within-source ranking
-    problem for a content question, but an attached replay must not force GPU retrieval for
-    an exact build/hash lookup. Raw evidence and the Frozen Verifier remain authoritative.
+    Attached media supplies a prior for ambiguous content questions, but exact build/hash/
+    identifier lookups remain metadata-first unless the user explicitly asks about media
+    content. The same plan controls semantic retrieval, media derivation, and provider token
+    spend so cost is not merely shifted from one layer to another.
     """
 
     def plan(
@@ -165,14 +166,11 @@ class EvidenceController:
         exact_identifier = bool(_IDENTIFIER_RE.search(query_text))
 
         kinds = [_asset_kind(asset) for asset in assets]
-        visual_count = sum(kind in {"image", "video"} for kind in kinds)
+        image_assets = [asset for asset in assets if _asset_kind(asset) == "image"]
+        video_assets = [asset for asset in assets if _asset_kind(asset) == "video"]
+        audio_assets = [asset for asset in assets if _asset_kind(asset) == "audio"]
+        visual_count = len(image_assets) + len(video_assets)
         text_count = sum(kind == "text" for kind in kinds)
-        video_assets = [
-            asset for asset in assets if _asset_kind(asset) == "video"
-        ]
-        audio_assets = [
-            asset for asset in assets if _asset_kind(asset) == "audio"
-        ]
         videos_with_audio = [
             asset
             for asset in video_assets
@@ -188,8 +186,20 @@ class EvidenceController:
             for asset in audio_assets
         )
 
-        needs_audio = explicit_audio or bool(audio_assets)
-        needs_visual = explicit_visual or bool(video_assets)
+        # Exact identifiers strongly suggest a metadata/log lookup. Otherwise attached media
+        # is a useful prior: users often ask "Boss 为什么没死？" after attaching a replay
+        # without spelling out the word video/image/audio.
+        content_default = not exact_identifier
+        needs_visual = bool(
+            explicit_visual
+            or (content_default and (image_assets or video_assets))
+            or ((causal or comparison) and video_assets)
+        )
+        needs_audio = bool(
+            explicit_audio
+            or (content_default and audio_assets)
+            or (causal and audio_assets)
+        )
 
         full_text_hits = 0
         identifier_hits = 0
@@ -222,10 +232,9 @@ class EvidenceController:
             and not causal
             and not comparison
         )
-        visual_ambiguity = (
-            explicit_visual
-            and (visual_count > 1 or bool(video_assets))
-        ) or (bool(video_assets) and not exact_identifier)
+        visual_ambiguity = needs_visual and (
+            visual_count > 1 or bool(video_assets)
+        )
         audio_ambiguity = explicit_audio and audio_count > 0
         text_semantic_gap = (
             (needs_text or text_count > 0)
@@ -233,11 +242,9 @@ class EvidenceController:
             and full_text_hits == 0
         )
         cross_source_reasoning = (causal or comparison) and len(assets) > 1
-        vague_multimodal = (
-            not exact_identifier and len(set(kinds) - {"file"}) >= 2
-        )
+        vague_multimodal = content_default and len(set(kinds) - {"file"}) >= 2
         implicit_long_media = (
-            not exact_identifier
+            content_default
             and (
                 long_video_present
                 or long_audio_present
@@ -282,7 +289,7 @@ class EvidenceController:
         elif needs_visual:
             frame_budget = 3
         else:
-            frame_budget = 2
+            frame_budget = 0
         promotions = 8 if (causal or comparison) else 5 if semantic else 0
 
         return EvidencePlan(
@@ -325,20 +332,14 @@ class EvidenceController:
                 or bool(hit.text_excerpt)
             )
         )
-        modalities = tuple(
-            sorted({str(hit.modality) for hit in hits if hit.modality})
-        )
+        modalities = tuple(sorted({str(hit.modality) for hit in hits if hit.modality}))
 
         semantic_component = 0.0
         if hits:
-            semantic_component += min(
-                0.38, max(0.0, strongest) * 0.30
-            )
+            semantic_component += min(0.38, max(0.0, strongest) * 0.30)
             semantic_component += min(0.18, localized * 0.09)
             semantic_component += min(0.10, len(modalities) * 0.05)
-        sufficiency = min(
-            1.0, plan.deterministic_score + semantic_component
-        )
+        sufficiency = min(1.0, plan.deterministic_score + semantic_component)
 
         if not plan.semantic_retrieval:
             stop = (
@@ -347,9 +348,7 @@ class EvidenceController:
                 or plan.needs_temporal
             )
             stop_reason = (
-                plan.reason
-                if stop
-                else "semantic-unavailable-or-not-worth-cost"
+                plan.reason if stop else "semantic-unavailable-or-not-worth-cost"
             )
         elif hits and localized and sufficiency >= 0.60:
             stop = True
@@ -366,17 +365,11 @@ class EvidenceController:
                 "因果结论需至少两类独立证据或执行/Verifier 复现；否则明确保留为假设。"
             )
         elif plan.comparison:
-            posture = (
-                "比较必须保持 build/branch/config 对齐，并指出缺失的对照维度。"
-            )
+            posture = "比较必须保持 build/branch/config 对齐，并指出缺失的对照维度。"
         elif plan.needs_temporal:
-            posture = (
-                "时间定位必须引用原始媒体时间段；embedding 区间只作导航。"
-            )
+            posture = "时间定位必须引用原始媒体时间段；embedding 区间只作导航。"
         else:
-            posture = (
-                "优先引用可追溯原始证据；证据不足时不要把相关性写成事实。"
-            )
+            posture = "优先引用可追溯原始证据；证据不足时不要把相关性写成事实。"
 
         return EvidenceAssessment(
             sufficiency=sufficiency,
