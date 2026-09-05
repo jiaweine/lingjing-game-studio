@@ -7,6 +7,7 @@ import hashlib
 import os
 from pathlib import Path
 from threading import RLock
+import time
 from typing import Any
 
 import numpy as np
@@ -30,6 +31,10 @@ class ScoreItem(BaseModel):
 class ScoreRequest(BaseModel):
     query: str
     items: list[ScoreItem] = Field(default_factory=list, max_length=128)
+    # Cooperative compute budget. It cannot interrupt a CUDA kernel already in flight, but
+    # it prevents the worker from starting another expensive batch after the caller's SLO
+    # has effectively expired.
+    budget_ms: int | None = Field(default=None, ge=50, le=120000)
 
 
 @dataclass(frozen=True)
@@ -56,7 +61,9 @@ class LRUVectorCache:
 
     def put(self, key: str, fingerprint: tuple[int, int], vector: np.ndarray) -> None:
         with self._lock:
-            self._rows[key] = CacheEntry(fingerprint, vector.astype(np.float32, copy=False))
+            self._rows[key] = CacheEntry(
+                fingerprint, vector.astype(np.float32, copy=False)
+            )
             self._rows.move_to_end(key)
             while len(self._rows) > self.capacity:
                 self._rows.popitem(last=False)
@@ -95,6 +102,22 @@ class WeMMRuntime:
     def backend_name(self) -> str:
         return f"wemm:{self.model_name}:{self.dimension}d"
 
+    @staticmethod
+    def _deadline_for_request(request: ScoreRequest) -> float | None:
+        if request.budget_ms is None:
+            return None
+        return time.perf_counter() + max(0.05, request.budget_ms / 1000.0)
+
+    @staticmethod
+    def _deadline_exhausted(deadline: float | None) -> bool:
+        return deadline is not None and time.perf_counter() >= deadline
+
+    @staticmethod
+    def _remaining_budget_ms(deadline: float | None) -> int | None:
+        if deadline is None:
+            return None
+        return max(50, int((deadline - time.perf_counter()) * 1000.0))
+
     def _load(self):
         with self._model_lock:
             if self._model is not None:
@@ -115,7 +138,9 @@ class WeMMRuntime:
                 "matryoshka_dimensions",
                 None,
             )
-            if supported is not None and self.dimension not in set(int(x) for x in supported):
+            if supported is not None and self.dimension not in set(
+                int(x) for x in supported
+            ):
                 raise RuntimeError(
                     f"WEMM_DIMENSION={self.dimension} not supported; available={supported}"
                 )
@@ -203,7 +228,9 @@ class WeMMRuntime:
                 return cached
 
         fingerprint = self._text_fingerprint(normalized)
-        key_hash = hashlib.sha256(normalized.encode("utf-8", errors="ignore")).hexdigest()
+        key_hash = hashlib.sha256(
+            normalized.encode("utf-8", errors="ignore")
+        ).hexdigest()
         persistent_key = f"query:{key_hash}"
         vector = self._get_cached_vector(persistent_key, fingerprint)
         if vector is None:
@@ -218,6 +245,7 @@ class WeMMRuntime:
         return vector
 
     def _score_sync(self, request: ScoreRequest) -> dict[str, Any]:
+        deadline = self._deadline_for_request(request)
         query_vector = self._query_vector(request.query)
         valid: list[tuple[ScoreItem, tuple[int, int]]] = []
         vectors: dict[str, np.ndarray] = {}
@@ -245,10 +273,19 @@ class WeMMRuntime:
             else:
                 uncached.append((item, fingerprint, cache_key))
 
-        if uncached:
-            samples = [self._sample(item) for item, _fingerprint, _key in uncached]
-            encoded = self._encode(samples)
-            for (item, fingerprint, cache_key), vector in zip(uncached, encoded, strict=True):
+        # External batching makes the cooperative deadline meaningful. SentenceTransformer's
+        # internal batch loop cannot be stopped by an HTTP disconnect once model.encode has
+        # started, so we only start a new CUDA batch while budget remains.
+        for offset in range(0, len(uncached), self.batch_size):
+            if self._deadline_exhausted(deadline):
+                break
+            batch = uncached[offset : offset + self.batch_size]
+            encoded = self._encode(
+                [self._sample(item) for item, _fingerprint, _key in batch]
+            )
+            for (item, fingerprint, cache_key), vector in zip(
+                batch, encoded, strict=True
+            ):
                 vectors[item.key] = vector
                 self._put_cached_vector(cache_key, fingerprint, vector)
 
@@ -267,7 +304,6 @@ class WeMMRuntime:
                 }
             )
         scores.sort(key=lambda row: row["score"], reverse=True)
-        # Pruning is cheap compared with model work and keeps a bounded derived disk cache.
         if self.vector_store.count() > self.persistent_max_rows:
             self.vector_store.prune(max_rows=self.persistent_max_rows)
         return {
@@ -276,6 +312,7 @@ class WeMMRuntime:
             "scores": scores,
             "memory_cache_entries": len(self.asset_cache),
             "persistent_cache_entries": self.vector_store.count(),
+            "budget_exhausted": self._deadline_exhausted(deadline),
         }
 
     async def score(self, request: ScoreRequest) -> dict[str, Any]:
