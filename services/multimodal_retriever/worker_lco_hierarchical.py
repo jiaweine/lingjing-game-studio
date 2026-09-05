@@ -14,7 +14,7 @@ from .audio_segments import materialize_audio_segment
 from .video_segments import merge_windows, segment_windows
 from .worker_lco import LCORuntime, ScoreItem, ScoreRequest
 
-app = FastAPI(title="Lingjing Hierarchical LCO Audio Worker", version="0.1.0")
+app = FastAPI(title="Lingjing Hierarchical LCO Audio Worker", version="0.2.0")
 
 
 class IndexRequest(BaseModel):
@@ -27,7 +27,8 @@ class HierarchicalLCORuntime(LCORuntime):
     Online scoring cold-builds only a few coarse/fine windows. Full coarse indexing is a
     separate /v1/index operation intended for a low-priority or dedicated GPU replica.
     Source-level leases prevent duplicate 7B inference across workers; concurrent losers
-    reuse partial windows rather than blocking the request path.
+    reuse partial windows rather than blocking the request path. Cooperative deadlines stop
+    at stage boundaries so a useful coarse answer survives when there is no budget for fine.
     """
 
     def __init__(self) -> None:
@@ -175,9 +176,7 @@ class HierarchicalLCORuntime(LCORuntime):
                 continue
             if row.get("start") is None or row.get("end") is None:
                 continue
-            out.append(
-                (float(row["start"]), float(row["end"]), row["vector"])
-            )
+            out.append((float(row["start"]), float(row["end"]), row["vector"]))
         return out
 
     def _cached_source_segment(
@@ -207,6 +206,8 @@ class HierarchicalLCORuntime(LCORuntime):
         self,
         item: ScoreItem,
         query_vector: np.ndarray,
+        *,
+        deadline: float | None = None,
     ) -> dict[str, Any] | None:
         duration = float(item.duration or 0.0)
         source_fp = self._source_fingerprint(item)
@@ -224,10 +225,10 @@ class HierarchicalLCORuntime(LCORuntime):
             return self._cached_source_segment(item, source_fp, query_vector)
 
         try:
-            coarse_vectors = self._stored_audio_rows(
-                item, source_fp, level="coarse"
-            )
+            coarse_vectors = self._stored_audio_rows(item, source_fp, level="coarse")
             if not coarse_vectors:
+                if self._deadline_exhausted(deadline):
+                    return None
                 coarse = segment_windows(
                     0.0,
                     duration,
@@ -246,6 +247,21 @@ class HierarchicalLCORuntime(LCORuntime):
             ranked_coarse = self._rank_segments(query_vector, coarse_vectors)
             if not ranked_coarse:
                 return None
+
+            # A completed coarse pass is already a useful localization. Do not throw it
+            # away or start another 7B pass once the online SLO budget has been consumed.
+            if self._deadline_exhausted(deadline):
+                score, start, end = ranked_coarse[0]
+                return {
+                    "key": item.key,
+                    "score": round(max(-1.0, min(1.0, score)), 7),
+                    "modality": item.modality,
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "evidence_ref": (
+                        f"asset:{item.key}:acoustic:coarse-budget:{start:.3f}-{end:.3f}"
+                    ),
+                }
 
             fine_candidates: list[tuple[float, float]] = []
             for _score, start, end in ranked_coarse[: self.top_coarse]:
@@ -339,6 +355,7 @@ class HierarchicalLCORuntime(LCORuntime):
         }
 
     def _score_sync(self, request: ScoreRequest) -> dict[str, Any]:
+        deadline = self._deadline_for_request(request)
         segmented: list[ScoreItem] = []
         direct: list[ScoreItem] = []
         for item in request.items:
@@ -351,13 +368,40 @@ class HierarchicalLCORuntime(LCORuntime):
             else:
                 direct.append(item)
 
-        base = super()._score_sync(
-            ScoreRequest(query=request.query, items=direct)
-        )
-        scores = list(base.get("scores", []) or [])
+        scores: list[dict[str, Any]] = []
+        if direct and not self._deadline_exhausted(deadline):
+            remaining = self._remaining_budget_ms(deadline)
+            base = super()._score_sync(
+                ScoreRequest(
+                    query=request.query,
+                    items=direct,
+                    budget_ms=remaining,
+                )
+            )
+            scores.extend(list(base.get("scores", []) or []))
+
+        # Query vector is often hot after the direct pass. If no direct items exist it is
+        # still the one unavoidable encode needed to rank cached/coarse acoustic windows.
+        if not segmented or self._deadline_exhausted(deadline):
+            scores.sort(key=lambda row: float(row.get("score", 0.0)), reverse=True)
+            return {
+                "backend": self.backend_name,
+                "scores": scores,
+                "memory_cache_entries": len(self.asset_cache),
+                "persistent_cache_entries": self.vector_store.count(),
+                "hierarchical_audio_assets": len(segmented),
+                "budget_exhausted": self._deadline_exhausted(deadline),
+            }
+
         query_vector = self._query_vector(request.query)
         for item in segmented:
-            row = self._score_long_audio(item, query_vector)
+            if self._deadline_exhausted(deadline):
+                break
+            row = self._score_long_audio(
+                item,
+                query_vector,
+                deadline=deadline,
+            )
             if row:
                 scores.append(row)
         scores.sort(key=lambda row: float(row.get("score", 0.0)), reverse=True)
@@ -367,6 +411,7 @@ class HierarchicalLCORuntime(LCORuntime):
             "memory_cache_entries": len(self.asset_cache),
             "persistent_cache_entries": self.vector_store.count(),
             "hierarchical_audio_assets": len(segmented),
+            "budget_exhausted": self._deadline_exhausted(deadline),
         }
 
 
