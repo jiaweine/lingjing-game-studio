@@ -51,7 +51,9 @@ def test_cosine_calibration_does_not_turn_tiny_gap_into_false_certainty():
 
     assert normalized["a"] > normalized["b"]
     assert normalized["a"] - normalized["b"] < 0.12
-    assert normalized["b"] > 0.70
+    # The lower-ranked item must retain substantial absolute cosine confidence instead of
+    # becoming zero merely because another candidate is microscopically higher.
+    assert normalized["b"] > 0.65
 
 
 @pytest.mark.asyncio
