@@ -14,7 +14,7 @@ from .text_chunks import TextChunk, stream_text_chunks
 from .video_segments import materialize_video_segment, merge_windows, segment_windows
 from .worker_wemm import ScoreItem, ScoreRequest, WeMMRuntime
 
-app = FastAPI(title="Lingjing Hierarchical WeMM Worker", version="0.1.0")
+app = FastAPI(title="Lingjing Hierarchical WeMM Worker", version="0.2.0")
 
 
 class IndexRequest(BaseModel):
@@ -28,6 +28,7 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
     indexing is exposed separately through /v1/index so production can point indexing at a
     dedicated low-priority GPU replica. Source-level builds are singleflight across workers;
     concurrent losers reuse partial vectors or return no semantic row instead of waiting.
+    Cooperative deadlines are checked between GPU batches and coarse/fine stages.
     """
 
     def __init__(self) -> None:
@@ -76,6 +77,9 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         self.text_index_batch = max(
             1, int(os.getenv("WEMM_TEXT_INDEX_BATCH", "32"))
         )
+        # Protected by the single GPU lane. Keeping the deadline as transient runtime state
+        # lets lower-level helpers cooperate without changing their public/tested signatures.
+        self._active_deadline: float | None = None
 
     @property
     def backend_name(self) -> str:
@@ -99,6 +103,8 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         source_fp = self._source_fingerprint(item) or "unknown"
 
         for start, end in windows:
+            if self._deadline_exhausted(self._active_deadline):
+                break
             clip = materialize_video_segment(
                 item.path,
                 asset_key=item.key,
@@ -127,13 +133,17 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             else:
                 missing.append((start, end, clip, fingerprint, cache_key))
 
-        if missing:
-            samples = [
-                {"video": clip} for _start, _end, clip, _fp, _key in missing
-            ]
-            encoded = self._encode(samples)
+        # Externalize the batching so an online request can stop between CUDA batches. An
+        # offline index build has no active deadline and therefore simply runs all batches.
+        for offset in range(0, len(missing), self.batch_size):
+            if self._deadline_exhausted(self._active_deadline):
+                break
+            batch = missing[offset : offset + self.batch_size]
+            encoded = self._encode(
+                [{"video": clip} for _start, _end, clip, _fp, _key in batch]
+            )
             for (start, end, _clip, fingerprint, cache_key), vector in zip(
-                missing, encoded, strict=True
+                batch, encoded, strict=True
             ):
                 self._put_cached_vector(cache_key, fingerprint, vector)
                 self.vector_store.put_unit(
@@ -182,9 +192,7 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
                 continue
             if row.get("start") is None or row.get("end") is None:
                 continue
-            out.append(
-                (float(row["start"]), float(row["end"]), row["vector"])
-            )
+            out.append((float(row["start"]), float(row["end"]), row["vector"]))
         return out
 
     def _cached_source_segment(
@@ -214,6 +222,8 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         self,
         item: ScoreItem,
         query_vector: np.ndarray,
+        *,
+        deadline: float | None = None,
     ) -> dict[str, Any] | None:
         duration = float(item.duration or 0.0)
         source_fp = self._source_fingerprint(item)
@@ -231,19 +241,17 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             return self._cached_source_segment(item, source_fp, query_vector)
 
         try:
-            coarse_vectors = self._stored_video_rows(
-                item, source_fp, level="coarse"
-            )
+            coarse_vectors = self._stored_video_rows(item, source_fp, level="coarse")
             if not coarse_vectors:
+                if self._deadline_exhausted(deadline):
+                    return None
                 coarse = segment_windows(
                     0.0,
                     duration,
                     self.coarse_seconds,
                     max_windows=self.online_max_coarse_windows,
                 )
-                coarse_vectors = self._vectors_for_segments(
-                    item, coarse, level="coarse"
-                )
+                coarse_vectors = self._vectors_for_segments(item, coarse, level="coarse")
             self.vector_store.refresh_build_lease(
                 cache_key=lease_key,
                 backend=self.backend_name,
@@ -253,6 +261,19 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             ranked_coarse = self._rank_segments(query_vector, coarse_vectors)
             if not ranked_coarse:
                 return None
+
+            if self._deadline_exhausted(deadline):
+                score, start, end = ranked_coarse[0]
+                return {
+                    "key": item.key,
+                    "score": round(max(-1.0, min(1.0, score)), 7),
+                    "modality": "video",
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "evidence_ref": (
+                        f"asset:{item.key}:segment:coarse-budget:{start:.3f}-{end:.3f}"
+                    ),
+                }
 
             fine_candidates: list[tuple[float, float]] = []
             for _score, start, end in ranked_coarse[: self.top_coarse]:
@@ -321,9 +342,7 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
                 )
 
         if missing:
-            encoded = self._encode(
-                [chunk.text for chunk, _fp, _key in missing]
-            )
+            encoded = self._encode([chunk.text for chunk, _fp, _key in missing])
             for (chunk, fingerprint, cache_key), vector in zip(
                 missing, encoded, strict=True
             ):
@@ -378,8 +397,11 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         if not claimed:
             return rows
 
-        max_chunks = (
-            self.text_max_chunks if full_build else self.online_text_max_chunks
+        max_chunks = self.text_max_chunks if full_build else self.online_text_max_chunks
+        # Keep offline throughput high, but online work must be stoppable after each actual
+        # model batch rather than hiding many batches inside one large model.encode call.
+        batch_limit = self.text_index_batch if full_build else min(
+            self.text_index_batch, self.batch_size
         )
         try:
             batch: list[TextChunk] = []
@@ -390,9 +412,13 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
                 overlap_chars=self.text_overlap_chars,
                 max_chunks=max_chunks,
             ):
+                if not full_build and self._deadline_exhausted(self._active_deadline):
+                    break
                 batch.append(chunk)
                 count += 1
-                if len(batch) >= self.text_index_batch:
+                if len(batch) >= batch_limit:
+                    if not full_build and self._deadline_exhausted(self._active_deadline):
+                        break
                     self._index_text_batch(item, source_fp, batch)
                     batch = []
                     self.vector_store.refresh_build_lease(
@@ -401,9 +427,15 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
                         owner=self.build_owner,
                         lease_seconds=self.build_lease_seconds,
                     )
-            if batch:
+            if batch and (
+                full_build or not self._deadline_exhausted(self._active_deadline)
+            ):
                 self._index_text_batch(item, source_fp, batch)
-            if full_build or count < max_chunks:
+            # Only a true full scan gets a completion marker. A deadline-shortened online
+            # prefix is valid partial evidence but must never masquerade as a complete index.
+            if full_build or (
+                count < max_chunks and not self._deadline_exhausted(self._active_deadline)
+            ):
                 self.vector_store.set_meta(complete_key, str(count))
             return self.vector_store.list_source_vectors(
                 source_key=item.key,
@@ -422,6 +454,8 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         self,
         item: ScoreItem,
         query_vector: np.ndarray,
+        *,
+        deadline: float | None = None,
     ) -> dict[str, Any] | None:
         path = Path(item.path)
         if not path.is_file():
@@ -429,7 +463,15 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         source_fp = self._source_fingerprint(item)
         if source_fp is None:
             return None
-        rows = self._ensure_text_index(item, source_fp, full_build=False)
+        if self._deadline_exhausted(deadline):
+            rows = self.vector_store.list_source_vectors(
+                source_key=item.key,
+                source_fingerprint=source_fp,
+                backend=self.backend_name,
+                modality="text",
+            )
+        else:
+            rows = self._ensure_text_index(item, source_fp, full_build=False)
         if not rows:
             return None
 
@@ -446,9 +488,7 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             "modality": "text",
             "char_start": char_start,
             "char_end": char_end,
-            "text_excerpt": str(best.get("excerpt") or "")[
-                : self.text_excerpt_chars
-            ],
+            "text_excerpt": str(best.get("excerpt") or "")[: self.text_excerpt_chars],
             "evidence_ref": f"asset:{item.key}:chars:{char_start}-{char_end}",
         }
 
@@ -482,28 +522,34 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             )
 
     def _index_sync(self, request: IndexRequest) -> dict[str, Any]:
+        # Offline indexing must never inherit a stale online deadline.
+        previous_deadline = self._active_deadline
+        self._active_deadline = None
         indexed_text = 0
         indexed_video = 0
         skipped = 0
-        for item in request.items:
-            if item.modality == "text_file" and Path(item.path).is_file():
-                source_fp = self._source_fingerprint(item)
-                if source_fp is None:
-                    skipped += 1
-                    continue
-                self._ensure_text_index(item, source_fp, full_build=True)
-                indexed_text += 1
-            elif (
-                item.modality == "video"
-                and float(item.duration or 0.0) >= self.segment_threshold
-                and Path(item.path).is_file()
-            ):
-                if self._preindex_long_video(item):
-                    indexed_video += 1
+        try:
+            for item in request.items:
+                if item.modality == "text_file" and Path(item.path).is_file():
+                    source_fp = self._source_fingerprint(item)
+                    if source_fp is None:
+                        skipped += 1
+                        continue
+                    self._ensure_text_index(item, source_fp, full_build=True)
+                    indexed_text += 1
+                elif (
+                    item.modality == "video"
+                    and float(item.duration or 0.0) >= self.segment_threshold
+                    and Path(item.path).is_file()
+                ):
+                    if self._preindex_long_video(item):
+                        indexed_video += 1
+                    else:
+                        skipped += 1
                 else:
                     skipped += 1
-            else:
-                skipped += 1
+        finally:
+            self._active_deadline = previous_deadline
         return {
             "backend": self.backend_name,
             "indexed_text_files": indexed_text,
@@ -513,44 +559,73 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         }
 
     def _score_sync(self, request: ScoreRequest) -> dict[str, Any]:
-        long_videos: list[ScoreItem] = []
-        text_files: list[ScoreItem] = []
-        direct_items: list[ScoreItem] = []
-        for item in request.items:
-            if item.modality == "text_file" and Path(item.path).is_file():
-                text_files.append(item)
-            elif (
-                item.modality == "video"
-                and float(item.duration or 0.0) >= self.segment_threshold
-                and Path(item.path).is_file()
-            ):
-                long_videos.append(item)
-            else:
-                direct_items.append(item)
+        deadline = self._deadline_for_request(request)
+        previous_deadline = self._active_deadline
+        self._active_deadline = deadline
+        try:
+            long_videos: list[ScoreItem] = []
+            text_files: list[ScoreItem] = []
+            direct_items: list[ScoreItem] = []
+            for item in request.items:
+                if item.modality == "text_file" and Path(item.path).is_file():
+                    text_files.append(item)
+                elif (
+                    item.modality == "video"
+                    and float(item.duration or 0.0) >= self.segment_threshold
+                    and Path(item.path).is_file()
+                ):
+                    long_videos.append(item)
+                else:
+                    direct_items.append(item)
 
-        base = super()._score_sync(
-            ScoreRequest(query=request.query, items=direct_items)
-        )
-        scores = list(base.get("scores", []) or [])
-        query_vector = self._query_vector(request.query)
-        for item in long_videos:
-            row = self._score_long_video(item, query_vector)
-            if row:
-                scores.append(row)
-        for item in text_files:
-            row = self._score_text_file(item, query_vector)
-            if row:
-                scores.append(row)
-        scores.sort(key=lambda row: float(row.get("score", 0.0)), reverse=True)
-        return {
-            "backend": self.backend_name,
-            "dimension": self.dimension,
-            "scores": scores,
-            "memory_cache_entries": len(self.asset_cache),
-            "persistent_cache_entries": self.vector_store.count(),
-            "hierarchical_videos": len(long_videos),
-            "semantic_text_files": len(text_files),
-        }
+            scores: list[dict[str, Any]] = []
+            if direct_items and not self._deadline_exhausted(deadline):
+                remaining = self._remaining_budget_ms(deadline)
+                base = super()._score_sync(
+                    ScoreRequest(
+                        query=request.query,
+                        items=direct_items,
+                        budget_ms=remaining,
+                    )
+                )
+                scores.extend(list(base.get("scores", []) or []))
+
+            if (long_videos or text_files) and not self._deadline_exhausted(deadline):
+                query_vector = self._query_vector(request.query)
+                for item in long_videos:
+                    if self._deadline_exhausted(deadline):
+                        break
+                    row = self._score_long_video(
+                        item,
+                        query_vector,
+                        deadline=deadline,
+                    )
+                    if row:
+                        scores.append(row)
+                for item in text_files:
+                    if self._deadline_exhausted(deadline):
+                        break
+                    row = self._score_text_file(
+                        item,
+                        query_vector,
+                        deadline=deadline,
+                    )
+                    if row:
+                        scores.append(row)
+
+            scores.sort(key=lambda row: float(row.get("score", 0.0)), reverse=True)
+            return {
+                "backend": self.backend_name,
+                "dimension": self.dimension,
+                "scores": scores,
+                "memory_cache_entries": len(self.asset_cache),
+                "persistent_cache_entries": self.vector_store.count(),
+                "hierarchical_videos": len(long_videos),
+                "semantic_text_files": len(text_files),
+                "budget_exhausted": self._deadline_exhausted(deadline),
+            }
+        finally:
+            self._active_deadline = previous_deadline
 
 
 RUNTIME = HierarchicalWeMMRuntime()
