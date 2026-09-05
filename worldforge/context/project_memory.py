@@ -71,6 +71,44 @@ def _memory_key(value: str) -> str:
     return normalized
 
 
+def _clean_scope(
+    build_ref: str | None,
+    branch_ref: str | None,
+    commit_ref: str | None,
+    environment_ref: str | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    return (
+        str(build_ref)[:160] if build_ref else None,
+        str(branch_ref)[:200] if branch_ref else None,
+        str(commit_ref)[:160] if commit_ref else None,
+        str(environment_ref)[:160] if environment_ref else None,
+    )
+
+
+def _scope_key(
+    build_ref: str | None,
+    branch_ref: str | None,
+    commit_ref: str | None,
+    environment_ref: str | None,
+) -> str:
+    # JSON avoids delimiter ambiguity in branch names and is deterministic across workers.
+    return json.dumps(
+        [build_ref, branch_ref, commit_ref, environment_ref],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _scope_specificity(row: dict[str, Any]) -> int:
+    # A commit is the strongest identity anchor; build + branch can jointly outrank it.
+    return (
+        4 * int(bool(row.get("build_ref")))
+        + 2 * int(bool(row.get("branch_ref")))
+        + 8 * int(bool(row.get("commit_ref")))
+        + 1 * int(bool(row.get("environment_ref")))
+    )
+
+
 class MemoryConflict(RuntimeError):
     pass
 
@@ -78,15 +116,14 @@ class MemoryConflict(RuntimeError):
 class ProjectMemoryStore:
     """Authoritative, project-scoped, versioned long-term memory.
 
-    Raw conversation/event/asset data remains the ultimate evidence source. This store is a
-    governed semantic materialization: every memory version has provenance, explicit project
-    scope and optional build/branch/commit/environment validity. Versions are append-only;
-    a small head table advances through compare-and-swap so concurrent workers cannot silently
-    overwrite each other.
+    Raw messages/events/assets remain ultimate evidence. This store is a governed semantic
+    materialization: every version has provenance, explicit project scope and optional
+    build/branch/commit/environment identity. Versions are append-only; a scope-aware head
+    pointer advances through compare-and-swap so concurrent workers cannot silently overwrite
+    one another or collapse facts from different game builds.
 
-    Embeddings are deliberately absent here. They belong to a rebuildable derived retrieval
-    index. Correctness, revision history, deletion and access control must not depend on a
-    vector database being healthy.
+    Embeddings deliberately do not live here. They are rebuildable derived indexes; access
+    control, revision history, forgetting and correctness cannot depend on vector health.
     """
 
     def __init__(self, engine: Engine, *, auto_create_schema: bool = False) -> None:
@@ -137,6 +174,7 @@ class ProjectMemoryStore:
             Column("workspace_id", String(64), nullable=False, index=True),
             Column("project_id", String(64), nullable=False, index=True),
             Column("memory_key", String(240), nullable=False),
+            Column("scope_key", String(520), nullable=False),
             Column("revision", Integer, nullable=False),
             Column("kind", String(48), nullable=False),
             Column("content", Text, nullable=False),
@@ -161,6 +199,7 @@ class ProjectMemoryStore:
             UniqueConstraint(
                 "project_id",
                 "memory_key",
+                "scope_key",
                 "revision",
                 name="uq_context_memory_revision",
             ),
@@ -171,6 +210,7 @@ class ProjectMemoryStore:
             Column("workspace_id", String(64), nullable=False, index=True),
             Column("project_id", String(64), primary_key=True),
             Column("memory_key", String(240), primary_key=True),
+            Column("scope_key", String(520), primary_key=True),
             Column("memory_id", String(64), nullable=False),
             Column("revision", Integer, nullable=False),
             Column("state", String(32), nullable=False, index=True),
@@ -217,11 +257,11 @@ class ProjectMemoryStore:
     @staticmethod
     def _decode_item(row: Any) -> dict[str, Any]:
         data = ProjectMemoryStore._dict(row)
+        raw = data.pop("value_json", "{}")
         try:
-            data["value"] = json.loads(data.pop("value_json") or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
+            data["value"] = json.loads(raw or "{}")
+        except (TypeError, ValueError):
             data["value"] = {}
-            data.pop("value_json", None)
         data["pinned"] = bool(data.get("pinned"))
         return data
 
@@ -243,7 +283,9 @@ class ProjectMemoryStore:
         if row is None:
             raise PermissionError("用户不属于该工作区")
 
-    def _require_project(self, connection, workspace_id: str, project_id: str) -> dict[str, Any]:
+    def _require_project(
+        self, connection, workspace_id: str, project_id: str
+    ) -> dict[str, Any]:
         row = connection.execute(
             select(self.projects).where(
                 and_(
@@ -333,7 +375,8 @@ class ProjectMemoryStore:
             self._require_project(connection, workspace_id, project_id)
             conversation = connection.execute(
                 sql_text(
-                    "SELECT workspace_id FROM conversations WHERE id = :conversation_id LIMIT 1"
+                    "SELECT workspace_id FROM conversations "
+                    "WHERE id = :conversation_id LIMIT 1"
                 ),
                 {"conversation_id": conversation_id},
             ).first()
@@ -402,6 +445,7 @@ class ProjectMemoryStore:
         actor_id: str,
         project_id: str,
         memory_key: str,
+        scope_key: str,
         kind: str,
         content: str,
         value: dict[str, Any],
@@ -429,6 +473,7 @@ class ProjectMemoryStore:
                     and_(
                         self.heads.c.project_id == project_id,
                         self.heads.c.memory_key == memory_key,
+                        self.heads.c.scope_key == scope_key,
                     )
                 )
             ).first()
@@ -442,10 +487,13 @@ class ProjectMemoryStore:
                     workspace_id=workspace_id,
                     project_id=project_id,
                     memory_key=memory_key,
+                    scope_key=scope_key,
                     revision=revision,
                     kind=kind,
                     content=content,
-                    value_json=json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+                    value_json=json.dumps(
+                        value, ensure_ascii=False, separators=(",", ":")
+                    ),
                     state=state,
                     confidence=confidence,
                     importance=importance,
@@ -472,6 +520,7 @@ class ProjectMemoryStore:
                         and_(
                             self.heads.c.project_id == project_id,
                             self.heads.c.memory_key == memory_key,
+                            self.heads.c.scope_key == scope_key,
                             self.heads.c.revision == int(head["revision"]),
                             self.heads.c.memory_id == head["memory_id"],
                         )
@@ -485,13 +534,14 @@ class ProjectMemoryStore:
                     )
                 )
                 if result.rowcount != 1:
-                    raise MemoryConflict(memory_key)
+                    raise MemoryConflict(f"{memory_key}@{scope_key}")
             else:
                 connection.execute(
                     insert(self.heads).values(
                         workspace_id=workspace_id,
                         project_id=project_id,
                         memory_key=memory_key,
+                        scope_key=scope_key,
                         memory_id=memory_id,
                         revision=revision,
                         state=state,
@@ -547,11 +597,18 @@ class ProjectMemoryStore:
         importance = self._bounded01(importance, "importance")
         if valid_from is not None and valid_to is not None and valid_to <= valid_from:
             raise ValueError("valid_to 必须晚于 valid_from")
+        build_ref, branch_ref, commit_ref, environment_ref = _clean_scope(
+            build_ref, branch_ref, commit_ref, environment_ref
+        )
+        scope_key = _scope_key(
+            build_ref, branch_ref, commit_ref, environment_ref
+        )
         kwargs = dict(
             workspace_id=workspace_id,
             actor_id=actor_id,
             project_id=project_id,
             memory_key=key,
+            scope_key=scope_key,
             kind=kind,
             content=content,
             value=dict(value or {}),
@@ -559,10 +616,10 @@ class ProjectMemoryStore:
             confidence=confidence,
             importance=importance,
             pinned=bool(pinned),
-            build_ref=(str(build_ref)[:160] if build_ref else None),
-            branch_ref=(str(branch_ref)[:200] if branch_ref else None),
-            commit_ref=(str(commit_ref)[:160] if commit_ref else None),
-            environment_ref=(str(environment_ref)[:160] if environment_ref else None),
+            build_ref=build_ref,
+            branch_ref=branch_ref,
+            commit_ref=commit_ref,
+            environment_ref=environment_ref,
             valid_from=valid_from,
             valid_to=valid_to,
             expires_at=expires_at,
@@ -577,7 +634,7 @@ class ProjectMemoryStore:
             except (IntegrityError, MemoryConflict) as exc:
                 last_error = exc
                 continue
-        raise MemoryConflict(f"memory CAS failed: {key}") from last_error
+        raise MemoryConflict(f"memory CAS failed: {key}@{scope_key}") from last_error
 
     def current_memory(
         self,
@@ -586,9 +643,17 @@ class ProjectMemoryStore:
         actor_id: str,
         project_id: str,
         memory_key: str,
+        build_ref: str | None = None,
+        branch_ref: str | None = None,
+        commit_ref: str | None = None,
+        environment_ref: str | None = None,
         include_inactive: bool = False,
     ) -> dict[str, Any] | None:
         key = _memory_key(memory_key)
+        build_ref, branch_ref, commit_ref, environment_ref = _clean_scope(
+            build_ref, branch_ref, commit_ref, environment_ref
+        )
+        scope = _scope_key(build_ref, branch_ref, commit_ref, environment_ref)
         with self.engine.connect() as connection:
             self._require_member(connection, workspace_id, actor_id)
             self._require_project(connection, workspace_id, project_id)
@@ -602,6 +667,7 @@ class ProjectMemoryStore:
                         self.heads.c.workspace_id == workspace_id,
                         self.heads.c.project_id == project_id,
                         self.heads.c.memory_key == key,
+                        self.heads.c.scope_key == scope,
                     )
                 )
             )
@@ -617,8 +683,16 @@ class ProjectMemoryStore:
         actor_id: str,
         project_id: str,
         memory_key: str,
+        build_ref: str | None = None,
+        branch_ref: str | None = None,
+        commit_ref: str | None = None,
+        environment_ref: str | None = None,
     ) -> list[dict[str, Any]]:
         key = _memory_key(memory_key)
+        build_ref, branch_ref, commit_ref, environment_ref = _clean_scope(
+            build_ref, branch_ref, commit_ref, environment_ref
+        )
+        scope = _scope_key(build_ref, branch_ref, commit_ref, environment_ref)
         with self.engine.connect() as connection:
             self._require_member(connection, workspace_id, actor_id)
             self._require_project(connection, workspace_id, project_id)
@@ -629,6 +703,7 @@ class ProjectMemoryStore:
                         self.items.c.workspace_id == workspace_id,
                         self.items.c.project_id == project_id,
                         self.items.c.memory_key == key,
+                        self.items.c.scope_key == scope,
                     )
                 )
                 .order_by(self.items.c.revision.asc())
@@ -643,6 +718,10 @@ class ProjectMemoryStore:
         project_id: str,
         memory_key: str,
         state: str,
+        build_ref: str | None = None,
+        branch_ref: str | None = None,
+        commit_ref: str | None = None,
+        environment_ref: str | None = None,
         source_type: str,
         source_id: str,
         source_excerpt: str = "",
@@ -652,6 +731,10 @@ class ProjectMemoryStore:
             actor_id=actor_id,
             project_id=project_id,
             memory_key=memory_key,
+            build_ref=build_ref,
+            branch_ref=branch_ref,
+            commit_ref=commit_ref,
+            environment_ref=environment_ref,
             include_inactive=True,
         )
         if current is None:
@@ -683,10 +766,37 @@ class ProjectMemoryStore:
     @staticmethod
     def _scope_predicate(column, supplied: str | None):
         if supplied is None:
-            # No identity means no right to consume identity-specific memory. This is a
-            # deliberate anti-staleness rule, not a retrieval-quality compromise.
+            # Missing identity grants access only to general memory. This prevents a stale
+            # build-specific fact from leaking into a query that did not establish its build.
             return column.is_(None)
         return or_(column.is_(None), column == supplied)
+
+    @staticmethod
+    def _resolve_scope_shadowing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["memory_key"]), []).append(row)
+        resolved: list[dict[str, Any]] = []
+        for candidates in grouped.values():
+            best = max(_scope_specificity(row) for row in candidates)
+            winners = [row for row in candidates if _scope_specificity(row) == best]
+            conflict = len(winners) > 1
+            for row in winners:
+                item = dict(row)
+                item["scope_specificity"] = best
+                item["scope_conflict"] = conflict
+                resolved.append(item)
+        resolved.sort(
+            key=lambda row: (
+                1 if row.get("pinned") else 0,
+                float(row.get("importance") or 0.0),
+                float(row.get("confidence") or 0.0),
+                int(row.get("scope_specificity") or 0),
+                float(row.get("created_at") or 0.0),
+            ),
+            reverse=True,
+        )
+        return resolved
 
     def list_current_memories(
         self,
@@ -703,6 +813,9 @@ class ProjectMemoryStore:
         limit: int = 250,
     ) -> list[dict[str, Any]]:
         moment = time.time() if at_time is None else float(at_time)
+        build_ref, branch_ref, commit_ref, environment_ref = _clean_scope(
+            build_ref, branch_ref, commit_ref, environment_ref
+        )
         with self.engine.connect() as connection:
             self._require_member(connection, workspace_id, actor_id)
             self._require_project(connection, workspace_id, project_id)
@@ -737,9 +850,10 @@ class ProjectMemoryStore:
                     self.items.c.confidence.desc(),
                     self.items.c.created_at.desc(),
                 )
-                .limit(max(1, min(2000, int(limit))))
+                .limit(max(1, min(4000, int(limit) * 4)))
             ).all()
-        return [self._decode_item(row) for row in rows]
+        decoded = [self._decode_item(row) for row in rows]
+        return self._resolve_scope_shadowing(decoded)[: max(1, min(2000, int(limit)))]
 
     def search_memories(
         self,
@@ -778,20 +892,29 @@ class ProjectMemoryStore:
                 if query_tokens
                 else 0.0
             )
-            exact_key = 1.0 if normalized_query and normalized_query in row["memory_key"] else 0.0
+            exact_key = (
+                1.0
+                if normalized_query and normalized_query in str(row["memory_key"])
+                else 0.0
+            )
             score = (
-                0.58 * overlap
-                + 0.16 * exact_key
+                0.56 * overlap
+                + 0.14 * exact_key
                 + 0.10 * float(row["confidence"])
                 + 0.08 * float(row["importance"])
-                + 0.08 * (1.0 if row["pinned"] else 0.0)
+                + 0.06 * (1.0 if row["pinned"] else 0.0)
+                + 0.06 * min(1.0, float(row.get("scope_specificity") or 0) / 8.0)
             )
             if score > 0.08 or row["pinned"]:
                 enriched = dict(row)
                 enriched["retrieval_score"] = round(score, 6)
                 scored.append((score, enriched))
-        scored.sort(key=lambda pair: (pair[0], pair[1]["revision"]), reverse=True)
-        return [row for _score, row in scored[: max(1, min(100, int(top_k)))]]
+        scored.sort(
+            key=lambda pair: (pair[0], pair[1]["revision"]), reverse=True
+        )
+        return [
+            row for _score, row in scored[: max(1, min(100, int(top_k)))]
+        ]
 
     def add_relation(
         self,
@@ -812,22 +935,34 @@ class ProjectMemoryStore:
         if from_key == to_key:
             raise ValueError("memory relation 不能自环")
         now = time.time()
-        with self.engine.begin() as connection:
-            self._require_member(connection, workspace_id, actor_id)
-            self._require_project(connection, workspace_id, project_id)
-            for key in (from_key, to_key):
-                head = connection.execute(
-                    select(self.heads.c.memory_id).where(
+        try:
+            with self.engine.begin() as connection:
+                self._require_member(connection, workspace_id, actor_id)
+                self._require_project(connection, workspace_id, project_id)
+                for key in (from_key, to_key):
+                    head = connection.execute(
+                        select(self.heads.c.memory_id).where(
+                            and_(
+                                self.heads.c.project_id == project_id,
+                                self.heads.c.memory_key == key,
+                            )
+                        ).limit(1)
+                    ).first()
+                    if head is None:
+                        raise KeyError(key)
+                existing = connection.execute(
+                    select(self.relations).where(
                         and_(
-                            self.heads.c.project_id == project_id,
-                            self.heads.c.memory_key == key,
+                            self.relations.c.project_id == project_id,
+                            self.relations.c.from_key == from_key,
+                            self.relations.c.relation == relation,
+                            self.relations.c.to_key == to_key,
                         )
                     )
                 ).first()
-                if head is None:
-                    raise KeyError(key)
-            relation_id = _id("relation")
-            try:
+                if existing:
+                    return self._dict(existing)
+                relation_id = _id("relation")
                 connection.execute(
                     insert(self.relations).values(
                         id=relation_id,
@@ -841,7 +976,14 @@ class ProjectMemoryStore:
                         created_at=now,
                     )
                 )
-            except IntegrityError:
+                row = connection.execute(
+                    select(self.relations).where(self.relations.c.id == relation_id)
+                ).first()
+                return self._dict(row)
+        except IntegrityError:
+            # A concurrent worker inserted the same edge. The failed transaction is already
+            # rolled back before this read, which keeps PostgreSQL and SQLite semantics safe.
+            with self.engine.connect() as connection:
                 row = connection.execute(
                     select(self.relations).where(
                         and_(
@@ -852,11 +994,9 @@ class ProjectMemoryStore:
                         )
                     )
                 ).first()
+            if row:
                 return self._dict(row)
-            row = connection.execute(
-                select(self.relations).where(self.relations.c.id == relation_id)
-            ).first()
-        return self._dict(row)
+            raise
 
     def record_usage(
         self,
