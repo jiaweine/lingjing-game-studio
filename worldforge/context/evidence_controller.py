@@ -143,10 +143,9 @@ class EvidenceAssessment:
 class EvidenceController:
     """Route expensive evidence work by expected information gain.
 
-    The policy is deterministic on purpose: GPU retrieval may improve recall, but it cannot
-    become an opaque authority for whether evidence exists. Long video/audio content is a
-    special case: even with one source there is a *within-source* ranking problem, so a
-    single asset must not be mistaken for a trivial no-retrieval task.
+    Asset modality is a prior, not an override. One long replay is a within-source ranking
+    problem for a content question, but an attached replay must not force GPU retrieval for
+    an exact build/hash lookup. Raw evidence and the Frozen Verifier remain authoritative.
     """
 
     def plan(
@@ -189,9 +188,6 @@ class EvidenceController:
             for asset in audio_assets
         )
 
-        # A media asset itself is a strong modality prior. Users often ask "为什么没死？"
-        # after attaching one replay and never say the word "video". Do not require magic
-        # keywords to recognize a within-video/within-audio localization problem.
         needs_audio = explicit_audio or bool(audio_assets)
         needs_visual = explicit_visual or bool(video_assets)
 
@@ -226,9 +222,10 @@ class EvidenceController:
             and not causal
             and not comparison
         )
-        visual_ambiguity = needs_visual and (
-            visual_count > 1 or bool(video_assets)
-        )
+        visual_ambiguity = (
+            explicit_visual
+            and (visual_count > 1 or bool(video_assets))
+        ) or (bool(video_assets) and not exact_identifier)
         audio_ambiguity = explicit_audio and audio_count > 0
         text_semantic_gap = (
             (needs_text or text_count > 0)
@@ -239,9 +236,6 @@ class EvidenceController:
         vague_multimodal = (
             not exact_identifier and len(set(kinds) - {"file"}) >= 2
         )
-        # Exact build/hash questions are usually metadata/log lookup. Otherwise a long media
-        # source contains thousands of candidate moments and benefits from localization even
-        # when it is the only attached asset.
         implicit_long_media = (
             not exact_identifier
             and (
