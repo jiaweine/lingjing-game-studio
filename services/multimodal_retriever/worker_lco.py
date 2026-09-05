@@ -12,6 +12,8 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from .vector_store import PersistentVectorStore
+
 app = FastAPI(title="Lingjing LCO Audio Embedding Worker", version="0.1.0")
 
 
@@ -53,7 +55,9 @@ class LRUVectorCache:
 
     def put(self, key: str, fingerprint: tuple[int, int], vector: np.ndarray) -> None:
         with self._lock:
-            self._rows[key] = CacheEntry(fingerprint, vector.astype(np.float32, copy=False))
+            self._rows[key] = CacheEntry(
+                fingerprint, vector.astype(np.float32, copy=False)
+            )
             self._rows.move_to_end(key)
             while len(self._rows) > self.capacity:
                 self._rows.popitem(last=False)
@@ -66,9 +70,9 @@ class LRUVectorCache:
 class LCORuntime:
     """Specialist acoustic embedding worker based on LCO-Embedding-Omni.
 
-    This worker is intentionally not the default visual retriever: the 7B omni model is
-    only called for sound/speech/music questions. Keeping it on a separate GPU avoids
-    paying its memory/latency cost on ordinary image/video turns.
+    The 7B model is only used for sound/speech/music queries. Acoustic vectors are derived
+    state and are persisted independently from the product database so expensive embeddings
+    survive worker restarts while raw media remains authoritative and fully rebuildable.
     """
 
     def __init__(self) -> None:
@@ -77,12 +81,30 @@ class LCORuntime:
         )
         self.device = os.getenv("LCO_DEVICE", "cuda")
         self.batch_size = max(1, int(os.getenv("LCO_BATCH_SIZE", "2")))
-        self.video_max_frames = max(2, int(os.getenv("LCO_VIDEO_MAX_FRAMES", "12")))
+        self.video_max_frames = max(
+            2, int(os.getenv("LCO_VIDEO_MAX_FRAMES", "12"))
+        )
         self.video_fps = max(0.1, float(os.getenv("LCO_VIDEO_FPS", "1")))
-        self.video_max_pixels = max(28 * 28, int(os.getenv("LCO_VIDEO_MAX_PIXELS", str(224 * 224))))
-        self.asset_cache = LRUVectorCache(int(os.getenv("LCO_ASSET_CACHE", "4096")))
+        self.video_max_pixels = max(
+            28 * 28,
+            int(os.getenv("LCO_VIDEO_MAX_PIXELS", str(224 * 224))),
+        )
+        self.asset_cache = LRUVectorCache(
+            int(os.getenv("LCO_ASSET_CACHE", "4096"))
+        )
+        cache_root = Path(
+            os.getenv("LINGJING_RETRIEVER_CACHE_DIR", "outputs/retrieval-cache")
+        )
+        self.vector_store = PersistentVectorStore(
+            os.getenv("LCO_VECTOR_CACHE_DB", str(cache_root / "lco-vectors.sqlite3"))
+        )
+        self.persistent_max_rows = max(
+            1000, int(os.getenv("LCO_VECTOR_CACHE_MAX_ROWS", "120000"))
+        )
         self.query_cache: OrderedDict[str, np.ndarray] = OrderedDict()
-        self.query_cache_limit = max(16, int(os.getenv("LCO_QUERY_CACHE", "256")))
+        self.query_cache_limit = max(
+            16, int(os.getenv("LCO_QUERY_CACHE", "256"))
+        )
         self._query_lock = RLock()
         self._model_lock = RLock()
         self._model: Any = None
@@ -127,6 +149,43 @@ class LCORuntime:
         stat = Path(path).stat()
         return int(stat.st_size), int(stat.st_mtime_ns)
 
+    @staticmethod
+    def _fingerprint_string(fingerprint: tuple[int, int]) -> str:
+        return f"{int(fingerprint[0])}:{int(fingerprint[1])}"
+
+    def _get_cached_vector(
+        self,
+        cache_key: str,
+        fingerprint: tuple[int, int],
+    ) -> np.ndarray | None:
+        cached = self.asset_cache.get(cache_key, fingerprint)
+        if cached is not None:
+            return cached
+        cached = self.vector_store.get(
+            cache_key,
+            self._fingerprint_string(fingerprint),
+            self.backend_name,
+        )
+        if cached is not None:
+            self.asset_cache.put(cache_key, fingerprint, cached)
+        return cached
+
+    def _put_cached_vector(
+        self,
+        cache_key: str,
+        fingerprint: tuple[int, int],
+        vector: np.ndarray,
+    ) -> None:
+        self.asset_cache.put(cache_key, fingerprint, vector)
+        self.vector_store.put(
+            cache_key,
+            self._fingerprint_string(fingerprint),
+            self.backend_name,
+            vector,
+        )
+        if self.vector_store.count() > self.persistent_max_rows:
+            self.vector_store.prune(max_rows=self.persistent_max_rows)
+
     def _text_message(self, query: str) -> list[dict[str, Any]]:
         return [
             {
@@ -164,7 +223,9 @@ class LCORuntime:
             raise ValueError(f"unsupported modality: {item.modality}")
         return [{"role": "user", "content": content}]
 
-    def _encode_messages(self, conversations: list[list[dict[str, Any]]]) -> np.ndarray:
+    def _encode_messages(
+        self, conversations: list[list[dict[str, Any]]]
+    ) -> np.ndarray:
         import torch
 
         model, processor, process_mm_info = self._load()
@@ -173,7 +234,6 @@ class LCORuntime:
             tokenize=False,
             add_generation_prompt=True,
         )
-        # Audio from video is intentionally enabled for this specialist path.
         audio_inputs, image_inputs, video_inputs = process_mm_info(
             conversations,
             use_audio_in_video=True,
@@ -232,7 +292,7 @@ class LCORuntime:
                 continue
             valid.append((item, fingerprint))
             cache_key = f"{item.modality}:{item.key}"
-            cached = self.asset_cache.get(cache_key, fingerprint)
+            cached = self._get_cached_vector(cache_key, fingerprint)
             if cached is not None:
                 vectors[item.key] = cached
             else:
@@ -240,11 +300,15 @@ class LCORuntime:
 
         for start in range(0, len(uncached), self.batch_size):
             batch = uncached[start : start + self.batch_size]
-            conversations = [self._item_message(item) for item, _fingerprint in batch]
+            conversations = [
+                self._item_message(item) for item, _fingerprint in batch
+            ]
             encoded = self._encode_messages(conversations)
             for (item, fingerprint), vector in zip(batch, encoded, strict=True):
                 vectors[item.key] = vector
-                self.asset_cache.put(f"{item.modality}:{item.key}", fingerprint, vector)
+                self._put_cached_vector(
+                    f"{item.modality}:{item.key}", fingerprint, vector
+                )
 
         scores = []
         for item, _fingerprint in valid:
@@ -264,7 +328,8 @@ class LCORuntime:
         return {
             "backend": self.backend_name,
             "scores": scores,
-            "cache_entries": len(self.asset_cache),
+            "memory_cache_entries": len(self.asset_cache),
+            "persistent_cache_entries": self.vector_store.count(),
         }
 
     async def score(self, request: ScoreRequest) -> dict[str, Any]:
@@ -282,7 +347,8 @@ async def healthz() -> dict[str, Any]:
         "backend": RUNTIME.backend_name,
         "device": RUNTIME.device,
         "model_loaded": RUNTIME._model is not None,
-        "asset_cache_entries": len(RUNTIME.asset_cache),
+        "memory_cache_entries": len(RUNTIME.asset_cache),
+        "persistent_cache_entries": RUNTIME.vector_store.count(),
     }
 
 
