@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 from .text_chunks import TextChunk, stream_text_chunks
 from .video_segments import materialize_video_segment, merge_windows, segment_windows
@@ -16,13 +17,17 @@ from .worker_wemm import ScoreItem, ScoreRequest, WeMMRuntime
 app = FastAPI(title="Lingjing Hierarchical WeMM Worker", version="0.1.0")
 
 
-class HierarchicalWeMMRuntime(WeMMRuntime):
-    """WeMM worker with hierarchical video and complete-file text retrieval.
+class IndexRequest(BaseModel):
+    items: list[ScoreItem] = Field(default_factory=list, max_length=128)
 
-    Expensive source-level index construction is singleflight across processes through
-    short SQLite leases. A concurrent loser never waits behind another GPU build: it uses
-    already-materialized partial vectors when available, otherwise returns no semantic row
-    so WorldForge can immediately fall back to deterministic/raw evidence.
+
+class HierarchicalWeMMRuntime(WeMMRuntime):
+    """WeMM worker with bounded online retrieval and rebuildable offline indexing.
+
+    Online requests may cold-build only a small amount of derived state. Full text/video
+    indexing is exposed separately through /v1/index so production can point indexing at a
+    dedicated low-priority GPU replica. Source-level builds are singleflight across workers;
+    concurrent losers reuse partial vectors or return no semantic row instead of waiting.
     """
 
     def __init__(self) -> None:
@@ -47,6 +52,12 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         self.max_fine_windows = max(
             4, int(os.getenv("WEMM_VIDEO_MAX_FINE_WINDOWS", "24"))
         )
+        self.online_max_coarse_windows = max(
+            2, int(os.getenv("WEMM_ONLINE_MAX_COARSE_WINDOWS", "8"))
+        )
+        self.online_max_fine_windows = max(
+            2, int(os.getenv("WEMM_ONLINE_MAX_FINE_WINDOWS", "8"))
+        )
         self.text_chunk_chars = max(
             1000, int(os.getenv("WEMM_TEXT_CHUNK_CHARS", "8000"))
         )
@@ -55,6 +66,9 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         )
         self.text_max_chunks = max(
             32, int(os.getenv("WEMM_TEXT_MAX_CHUNKS", "20000"))
+        )
+        self.online_text_max_chunks = max(
+            1, int(os.getenv("WEMM_ONLINE_TEXT_MAX_CHUNKS", "16"))
         )
         self.text_excerpt_chars = max(
             400, int(os.getenv("WEMM_TEXT_EXCERPT_CHARS", "2800"))
@@ -114,7 +128,9 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
                 missing.append((start, end, clip, fingerprint, cache_key))
 
         if missing:
-            samples = [{"video": clip} for _start, _end, clip, _fp, _key in missing]
+            samples = [
+                {"video": clip} for _start, _end, clip, _fp, _key in missing
+            ]
             encoded = self._encode(samples)
             for (start, end, _clip, fingerprint, cache_key), vector in zip(
                 missing, encoded, strict=True
@@ -146,24 +162,40 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         scored.sort(reverse=True)
         return scored
 
-    def _cached_source_segment(
+    def _stored_video_rows(
         self,
         item: ScoreItem,
         source_fp: str,
-        query_vector: np.ndarray,
-    ) -> dict[str, Any] | None:
+        *,
+        level: str | None = None,
+    ) -> list[tuple[float, float, np.ndarray]]:
         rows = self.vector_store.list_source_vectors(
             source_key=item.key,
             source_fingerprint=source_fp,
             backend=self.backend_name,
             modality="video",
         )
-        candidates = [
-            (float(row["start"]), float(row["end"]), row["vector"])
-            for row in rows
-            if row.get("start") is not None and row.get("end") is not None
-        ]
-        ranked = self._rank_segments(query_vector, candidates)
+        out: list[tuple[float, float, np.ndarray]] = []
+        marker = f"video-segment:{level}:" if level else None
+        for row in rows:
+            if marker and marker not in str(row.get("cache_key", "")):
+                continue
+            if row.get("start") is None or row.get("end") is None:
+                continue
+            out.append(
+                (float(row["start"]), float(row["end"]), row["vector"])
+            )
+        return out
+
+    def _cached_source_segment(
+        self,
+        item: ScoreItem,
+        source_fp: str,
+        query_vector: np.ndarray,
+    ) -> dict[str, Any] | None:
+        ranked = self._rank_segments(
+            query_vector, self._stored_video_rows(item, source_fp)
+        )
         if not ranked:
             return None
         score, start, end = ranked[0]
@@ -173,7 +205,9 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             "modality": "video",
             "start": round(start, 3),
             "end": round(end, 3),
-            "evidence_ref": f"asset:{item.key}:segment:cached:{start:.3f}-{end:.3f}",
+            "evidence_ref": (
+                f"asset:{item.key}:segment:cached:{start:.3f}-{end:.3f}"
+            ),
         }
 
     def _score_long_video(
@@ -197,13 +231,19 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             return self._cached_source_segment(item, source_fp, query_vector)
 
         try:
-            coarse = segment_windows(
-                0.0,
-                duration,
-                self.coarse_seconds,
-                max_windows=self.max_coarse_windows,
+            coarse_vectors = self._stored_video_rows(
+                item, source_fp, level="coarse"
             )
-            coarse_vectors = self._vectors_for_segments(item, coarse, level="coarse")
+            if not coarse_vectors:
+                coarse = segment_windows(
+                    0.0,
+                    duration,
+                    self.coarse_seconds,
+                    max_windows=self.online_max_coarse_windows,
+                )
+                coarse_vectors = self._vectors_for_segments(
+                    item, coarse, level="coarse"
+                )
             self.vector_store.refresh_build_lease(
                 cache_key=lease_key,
                 backend=self.backend_name,
@@ -214,17 +254,20 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             if not ranked_coarse:
                 return None
 
-            fine_candidates = []
+            fine_candidates: list[tuple[float, float]] = []
             for _score, start, end in ranked_coarse[: self.top_coarse]:
                 fine_candidates.extend(
                     segment_windows(
                         start,
                         end,
                         self.fine_seconds,
-                        max_windows=max(2, self.max_fine_windows // self.top_coarse),
+                        max_windows=max(
+                            2,
+                            self.online_max_fine_windows // self.top_coarse,
+                        ),
                     )
                 )
-            fine = merge_windows(fine_candidates)[: self.max_fine_windows]
+            fine = merge_windows(fine_candidates)[: self.online_max_fine_windows]
             fine_vectors = self._vectors_for_segments(item, fine, level="fine")
             ranked_fine = self._rank_segments(query_vector, fine_vectors)
 
@@ -278,7 +321,9 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
                 )
 
         if missing:
-            encoded = self._encode([chunk.text for chunk, _fp, _key in missing])
+            encoded = self._encode(
+                [chunk.text for chunk, _fp, _key in missing]
+            )
             for (chunk, fingerprint, cache_key), vector in zip(
                 missing, encoded, strict=True
             ):
@@ -298,6 +343,8 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         self,
         item: ScoreItem,
         source_fp: str,
+        *,
+        full_build: bool = False,
     ) -> list[dict[str, Any]]:
         config = (
             f"{self.text_chunk_chars}:{self.text_overlap_chars}:{self.text_max_chunks}"
@@ -318,6 +365,8 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             expected = -1
         if expected >= 0 and len(rows) == expected:
             return rows
+        if rows and not full_build:
+            return rows
 
         lease_key = f"build:text:{item.key}:{source_fp}:{config}"
         claimed = self.vector_store.try_claim_build(
@@ -329,6 +378,9 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         if not claimed:
             return rows
 
+        max_chunks = (
+            self.text_max_chunks if full_build else self.online_text_max_chunks
+        )
         try:
             batch: list[TextChunk] = []
             count = 0
@@ -336,7 +388,7 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
                 item.path,
                 chunk_chars=self.text_chunk_chars,
                 overlap_chars=self.text_overlap_chars,
-                max_chunks=self.text_max_chunks,
+                max_chunks=max_chunks,
             ):
                 batch.append(chunk)
                 count += 1
@@ -351,7 +403,8 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
                     )
             if batch:
                 self._index_text_batch(item, source_fp, batch)
-            self.vector_store.set_meta(complete_key, str(count))
+            if full_build or count < max_chunks:
+                self.vector_store.set_meta(complete_key, str(count))
             return self.vector_store.list_source_vectors(
                 source_key=item.key,
                 source_fingerprint=source_fp,
@@ -376,7 +429,7 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
         source_fp = self._source_fingerprint(item)
         if source_fp is None:
             return None
-        rows = self._ensure_text_index(item, source_fp)
+        rows = self._ensure_text_index(item, source_fp, full_build=False)
         if not rows:
             return None
 
@@ -393,8 +446,70 @@ class HierarchicalWeMMRuntime(WeMMRuntime):
             "modality": "text",
             "char_start": char_start,
             "char_end": char_end,
-            "text_excerpt": str(best.get("excerpt") or "")[: self.text_excerpt_chars],
+            "text_excerpt": str(best.get("excerpt") or "")[
+                : self.text_excerpt_chars
+            ],
             "evidence_ref": f"asset:{item.key}:chars:{char_start}-{char_end}",
+        }
+
+    def _preindex_long_video(self, item: ScoreItem) -> bool:
+        duration = float(item.duration or 0.0)
+        source_fp = self._source_fingerprint(item)
+        if duration <= 0 or source_fp is None:
+            return False
+        lease_key = f"build:video:{item.key}:{source_fp}"
+        if not self.vector_store.try_claim_build(
+            cache_key=lease_key,
+            backend=self.backend_name,
+            owner=self.build_owner,
+            lease_seconds=self.build_lease_seconds,
+        ):
+            return False
+        try:
+            coarse = segment_windows(
+                0.0,
+                duration,
+                self.coarse_seconds,
+                max_windows=self.max_coarse_windows,
+            )
+            self._vectors_for_segments(item, coarse, level="coarse")
+            return True
+        finally:
+            self.vector_store.release_build(
+                cache_key=lease_key,
+                backend=self.backend_name,
+                owner=self.build_owner,
+            )
+
+    def _index_sync(self, request: IndexRequest) -> dict[str, Any]:
+        indexed_text = 0
+        indexed_video = 0
+        skipped = 0
+        for item in request.items:
+            if item.modality == "text_file" and Path(item.path).is_file():
+                source_fp = self._source_fingerprint(item)
+                if source_fp is None:
+                    skipped += 1
+                    continue
+                self._ensure_text_index(item, source_fp, full_build=True)
+                indexed_text += 1
+            elif (
+                item.modality == "video"
+                and float(item.duration or 0.0) >= self.segment_threshold
+                and Path(item.path).is_file()
+            ):
+                if self._preindex_long_video(item):
+                    indexed_video += 1
+                else:
+                    skipped += 1
+            else:
+                skipped += 1
+        return {
+            "backend": self.backend_name,
+            "indexed_text_files": indexed_text,
+            "indexed_long_videos": indexed_video,
+            "skipped": skipped,
+            "persistent_cache_entries": self.vector_store.count(),
         }
 
     def _score_sync(self, request: ScoreRequest) -> dict[str, Any]:
@@ -455,6 +570,9 @@ async def healthz() -> dict[str, Any]:
         "coarse_seconds": RUNTIME.coarse_seconds,
         "fine_seconds": RUNTIME.fine_seconds,
         "text_chunk_chars": RUNTIME.text_chunk_chars,
+        "online_text_max_chunks": RUNTIME.online_text_max_chunks,
+        "online_max_coarse_windows": RUNTIME.online_max_coarse_windows,
+        "online_max_fine_windows": RUNTIME.online_max_fine_windows,
     }
 
 
@@ -463,5 +581,15 @@ async def score(request: ScoreRequest) -> dict[str, Any]:
     try:
         async with RUNTIME.gpu_lock:
             return await asyncio.to_thread(RUNTIME._score_sync, request)
+    except (RuntimeError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/v1/index")
+async def index(request: IndexRequest) -> dict[str, Any]:
+    """Full derived indexing endpoint intended for a dedicated low-priority replica."""
+    try:
+        async with RUNTIME.gpu_lock:
+            return await asyncio.to_thread(RUNTIME._index_sync, request)
     except (RuntimeError, ValueError, OSError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
