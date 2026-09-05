@@ -56,15 +56,16 @@ def upgrade() -> None:
         ["conversation_id"],
     )
 
-    # Every row is an immutable semantic-memory version. The current version is selected
-    # through context_memory_heads, avoiding in-place fact mutation and making provenance
-    # / rollback / audit deterministic under concurrent workers.
+    # Every row is an immutable semantic-memory version. scope_key is a deterministic
+    # identity tuple (build/branch/commit/environment), allowing a fact to have simultaneous
+    # current versions for different builds instead of one build silently replacing another.
     op.create_table(
         "context_memory_items",
         sa.Column("id", sa.String(64), primary_key=True),
         sa.Column("workspace_id", sa.String(64), nullable=False),
         sa.Column("project_id", sa.String(64), nullable=False),
         sa.Column("memory_key", sa.String(240), nullable=False),
+        sa.Column("scope_key", sa.String(520), nullable=False),
         sa.Column("revision", sa.Integer(), nullable=False),
         sa.Column("kind", sa.String(48), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
@@ -89,14 +90,15 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "project_id",
             "memory_key",
+            "scope_key",
             "revision",
             name="uq_context_memory_revision",
         ),
     )
     op.create_index(
-        "ix_context_memory_items_project_key",
+        "ix_context_memory_items_project_key_scope",
         "context_memory_items",
-        ["project_id", "memory_key"],
+        ["project_id", "memory_key", "scope_key"],
     )
     op.create_index(
         "ix_context_memory_items_workspace",
@@ -119,11 +121,12 @@ def upgrade() -> None:
         sa.Column("workspace_id", sa.String(64), nullable=False),
         sa.Column("project_id", sa.String(64), nullable=False),
         sa.Column("memory_key", sa.String(240), nullable=False),
+        sa.Column("scope_key", sa.String(520), nullable=False),
         sa.Column("memory_id", sa.String(64), nullable=False),
         sa.Column("revision", sa.Integer(), nullable=False),
         sa.Column("state", sa.String(32), nullable=False),
         sa.Column("updated_at", sa.Float(), nullable=False),
-        sa.PrimaryKeyConstraint("project_id", "memory_key"),
+        sa.PrimaryKeyConstraint("project_id", "memory_key", "scope_key"),
     )
     op.create_index(
         "ix_context_memory_heads_workspace",
@@ -206,7 +209,7 @@ def downgrade() -> None:
     op.drop_index("ix_context_memory_items_expires_at", table_name="context_memory_items")
     op.drop_index("ix_context_memory_items_scope", table_name="context_memory_items")
     op.drop_index("ix_context_memory_items_workspace", table_name="context_memory_items")
-    op.drop_index("ix_context_memory_items_project_key", table_name="context_memory_items")
+    op.drop_index("ix_context_memory_items_project_key_scope", table_name="context_memory_items")
     op.drop_table("context_memory_items")
 
     op.drop_index(
