@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from worldforge.context import ContextCompiler, MultimodalContextCompiler
+from worldforge.context.claim_graph import build_claim_evidence_graph
 from worldforge.context.evidence_controller import EvidenceController
 from worldforge.context.media_derivatives import augment_model_assets
 from worldforge.context.preindex import PreindexScheduler
@@ -203,6 +204,16 @@ class ProductAnalyzer(BaseProductAnalyzer):
             human_feedback_gate=human_feedback_gate,
         )
 
+        claim_graph = build_claim_evidence_graph(
+            answer=result.get("answer"),
+            evidence=list(result.get("evidence") or []),
+            plan=evidence_plan,
+            semantic_result=semantic_result,
+            contract=verification_contract,
+            runtime_result=result.get("runtime"),
+        )
+        result["claim_evidence_graph"] = claim_graph.to_dict()
+
         preindex_scheduled = self.preindex_scheduler.schedule(
             self.semantic_retriever,
             multimodal_packet.assets,
@@ -224,6 +235,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
         context.update(evidence_plan.stats())
         context.update(evidence_assessment.stats())
         context.update(verification_contract.stats())
+        context.update(claim_graph.stats())
         context.update(self.preindex_scheduler.stats())
         context["preindex_scheduled_this_run"] = preindex_scheduled
         context["history_messages"] = len(raw_history)
