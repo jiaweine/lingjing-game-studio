@@ -7,8 +7,8 @@ from typing import Any, Iterable
 from .retrieval_sidecar import MultimodalRetrievalResult
 
 _AUDIO_MARKERS = (
-    "音频", "声音", "语音", "台词", "说话", "音效", "声效", "音乐", "听到",
-    "audio", "sound", "voice", "speech", "music",
+    "音频", "声音", "语音", "台词", "说话", "谁说", "说了", "音效", "声效", "音乐", "听到",
+    "audio", "sound", "voice", "speech", "music", "said", "speaker",
 )
 _VISUAL_MARKERS = (
     "视频", "录像", "录屏", "截图", "图片", "画面", "帧", "动画", "图标",
@@ -32,7 +32,10 @@ _TIME_RE = re.compile(
     r"s(?:ec(?:ond)?s?)?|m(?:in(?:ute)?s?)?)(?![A-Za-z])"
     r")"
 )
-_IDENTIFIER_RE = re.compile(r"(?i)(?:\b[a-f0-9]{7,40}\b|\b\d+\.\d+(?:\.\d+){0,3}\b|\b[A-Za-z][\w.-]*[_./:-][\w./:-]+\b)")
+_IDENTIFIER_RE = re.compile(
+    r"(?i)(?:\b[a-f0-9]{7,40}\b|\b\d+\.\d+(?:\.\d+){0,3}\b|"
+    r"\b[A-Za-z][\w.-]*[_./:-][\w./:-]+\b)"
+)
 
 
 def _contains_any(text: str, markers: Iterable[str]) -> bool:
@@ -53,7 +56,9 @@ def _asset_kind(asset: dict[str, Any]) -> str:
         return "video"
     if mime.startswith("audio/"):
         return "audio"
-    if mime.startswith("text/") or mime in {"application/json", "text/csv", "application/xml"}:
+    if mime.startswith("text/") or mime in {
+        "application/json", "text/csv", "application/xml"
+    }:
         return "text"
     return kind or "file"
 
@@ -136,11 +141,12 @@ class EvidenceAssessment:
 
 
 class EvidenceController:
-    """Budget semantic retrieval and stop evidence seeking when marginal value is low.
+    """Route expensive evidence work by expected information gain.
 
-    This controller is intentionally deterministic. It sits above optional GPU retrieval so
-    a learned/model policy cannot make correctness depend on another opaque generation. Its
-    outputs are telemetry + budget hints; raw evidence and the Frozen Verifier stay final.
+    The policy is deterministic on purpose: GPU retrieval may improve recall, but it cannot
+    become an opaque authority for whether evidence exists. Long video/audio content is a
+    special case: even with one source there is a *within-source* ranking problem, so a
+    single asset must not be mistaken for a trivial no-retrieval task.
     """
 
     def plan(
@@ -151,8 +157,8 @@ class EvidenceController:
         retriever_enabled: bool,
     ) -> EvidencePlan:
         query_text = str(query or "")
-        needs_audio = _contains_any(query_text, _AUDIO_MARKERS)
-        needs_visual = _contains_any(query_text, _VISUAL_MARKERS)
+        explicit_audio = _contains_any(query_text, _AUDIO_MARKERS)
+        explicit_visual = _contains_any(query_text, _VISUAL_MARKERS)
         needs_text = _contains_any(query_text, _TEXT_MARKERS)
         causal = _contains_any(query_text, _CAUSAL_MARKERS)
         comparison = _contains_any(query_text, _COMPARE_MARKERS)
@@ -161,11 +167,33 @@ class EvidenceController:
 
         kinds = [_asset_kind(asset) for asset in assets]
         visual_count = sum(kind in {"image", "video"} for kind in kinds)
-        audio_count = sum(kind == "audio" for kind in kinds) + sum(
-            _asset_kind(asset) == "video" and bool((asset.get("meta", {}) or {}).get("has_audio"))
-            for asset in assets
-        )
         text_count = sum(kind == "text" for kind in kinds)
+        video_assets = [
+            asset for asset in assets if _asset_kind(asset) == "video"
+        ]
+        audio_assets = [
+            asset for asset in assets if _asset_kind(asset) == "audio"
+        ]
+        videos_with_audio = [
+            asset
+            for asset in video_assets
+            if bool((asset.get("meta", {}) or {}).get("has_audio"))
+        ]
+        audio_count = len(audio_assets) + len(videos_with_audio)
+        long_video_present = any(
+            float((asset.get("meta", {}) or {}).get("duration") or 0.0) >= 30.0
+            for asset in video_assets
+        )
+        long_audio_present = any(
+            float((asset.get("meta", {}) or {}).get("duration") or 0.0) >= 20.0
+            for asset in audio_assets
+        )
+
+        # A media asset itself is a strong modality prior. Users often ask "为什么没死？"
+        # after attaching one replay and never say the word "video". Do not require magic
+        # keywords to recognize a within-video/within-audio localization problem.
+        needs_audio = explicit_audio or bool(audio_assets)
+        needs_visual = explicit_visual or bool(video_assets)
 
         full_text_hits = 0
         identifier_hits = 0
@@ -192,15 +220,36 @@ class EvidenceController:
             deterministic += 0.10
         deterministic = min(1.0, deterministic)
 
-        # Exact timestamp requests can go straight to source-frame/audio extraction. A
-        # semantic model adds little value unless the query also asks for causal/comparison
-        # reasoning over multiple sources.
-        timestamp_direct = needs_temporal and temporal_anchors > 0 and not causal and not comparison
-        visual_ambiguity = needs_visual and (visual_count > 1 or any(kind == "video" for kind in kinds))
-        audio_ambiguity = needs_audio and audio_count > 0
-        text_semantic_gap = (needs_text or text_count > 0) and text_count > 0 and full_text_hits == 0
+        timestamp_direct = (
+            needs_temporal
+            and temporal_anchors > 0
+            and not causal
+            and not comparison
+        )
+        visual_ambiguity = needs_visual and (
+            visual_count > 1 or bool(video_assets)
+        )
+        audio_ambiguity = explicit_audio and audio_count > 0
+        text_semantic_gap = (
+            (needs_text or text_count > 0)
+            and text_count > 0
+            and full_text_hits == 0
+        )
         cross_source_reasoning = (causal or comparison) and len(assets) > 1
-        vague_multimodal = not exact_identifier and len(set(kinds) - {"file"}) >= 2
+        vague_multimodal = (
+            not exact_identifier and len(set(kinds) - {"file"}) >= 2
+        )
+        # Exact build/hash questions are usually metadata/log lookup. Otherwise a long media
+        # source contains thousands of candidate moments and benefits from localization even
+        # when it is the only attached asset.
+        implicit_long_media = (
+            not exact_identifier
+            and (
+                long_video_present
+                or long_audio_present
+                or (causal and bool(video_assets))
+            )
+        )
 
         semantic = bool(
             retriever_enabled
@@ -211,6 +260,7 @@ class EvidenceController:
                 or text_semantic_gap
                 or cross_source_reasoning
                 or vague_multimodal
+                or implicit_long_media
             )
         )
 
@@ -219,7 +269,11 @@ class EvidenceController:
         elif timestamp_direct:
             reason = "direct-temporal-source-evidence"
         elif semantic:
-            reason = "semantic-information-gain"
+            reason = (
+                "within-media-localization"
+                if implicit_long_media and len(assets) <= 1
+                else "semantic-information-gain"
+            )
         elif deterministic >= 0.62:
             reason = "deterministic-evidence-sufficient"
         elif len(assets) <= 1:
@@ -227,7 +281,6 @@ class EvidenceController:
         else:
             reason = "low-expected-semantic-gain"
 
-        # Allocate expensive temporal pixels only where they can change the answer.
         if causal or comparison:
             frame_budget = 6
         elif needs_temporal:
@@ -265,23 +318,45 @@ class EvidenceController:
             1
             for hit in hits
             if (
-                (hit.start is not None and hit.end is not None and hit.end > hit.start)
-                or (hit.char_start is not None and hit.char_end is not None and hit.char_end > hit.char_start)
+                (
+                    hit.start is not None
+                    and hit.end is not None
+                    and hit.end > hit.start
+                )
+                or (
+                    hit.char_start is not None
+                    and hit.char_end is not None
+                    and hit.char_end > hit.char_start
+                )
                 or bool(hit.text_excerpt)
             )
         )
-        modalities = tuple(sorted({str(hit.modality) for hit in hits if hit.modality}))
+        modalities = tuple(
+            sorted({str(hit.modality) for hit in hits if hit.modality})
+        )
 
         semantic_component = 0.0
         if hits:
-            semantic_component += min(0.38, max(0.0, strongest) * 0.30)
+            semantic_component += min(
+                0.38, max(0.0, strongest) * 0.30
+            )
             semantic_component += min(0.18, localized * 0.09)
             semantic_component += min(0.10, len(modalities) * 0.05)
-        sufficiency = min(1.0, plan.deterministic_score + semantic_component)
+        sufficiency = min(
+            1.0, plan.deterministic_score + semantic_component
+        )
 
         if not plan.semantic_retrieval:
-            stop = plan.deterministic_score >= 0.52 or len(assets) <= 1 or plan.needs_temporal
-            stop_reason = plan.reason if stop else "semantic-unavailable-or-not-worth-cost"
+            stop = (
+                plan.deterministic_score >= 0.52
+                or len(assets) <= 1
+                or plan.needs_temporal
+            )
+            stop_reason = (
+                plan.reason
+                if stop
+                else "semantic-unavailable-or-not-worth-cost"
+            )
         elif hits and localized and sufficiency >= 0.60:
             stop = True
             stop_reason = "localized-semantic-evidence-sufficient"
@@ -289,9 +364,6 @@ class EvidenceController:
             stop = True
             stop_reason = "semantic-evidence-sufficient"
         else:
-            # The current experiment has one semantic round. Not pretending to have a
-            # second oracle is important: mark insufficiency so the answer can abstain or
-            # request actual project execution rather than looping indefinitely.
             stop = True
             stop_reason = "evidence-budget-exhausted"
 
@@ -300,11 +372,17 @@ class EvidenceController:
                 "因果结论需至少两类独立证据或执行/Verifier 复现；否则明确保留为假设。"
             )
         elif plan.comparison:
-            posture = "比较必须保持 build/branch/config 对齐，并指出缺失的对照维度。"
+            posture = (
+                "比较必须保持 build/branch/config 对齐，并指出缺失的对照维度。"
+            )
         elif plan.needs_temporal:
-            posture = "时间定位必须引用原始媒体时间段；embedding 区间只作导航。"
+            posture = (
+                "时间定位必须引用原始媒体时间段；embedding 区间只作导航。"
+            )
         else:
-            posture = "优先引用可追溯原始证据；证据不足时不要把相关性写成事实。"
+            posture = (
+                "优先引用可追溯原始证据；证据不足时不要把相关性写成事实。"
+            )
 
         return EvidenceAssessment(
             sufficiency=sufficiency,
