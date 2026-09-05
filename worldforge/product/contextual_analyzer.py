@@ -4,7 +4,7 @@ from typing import Any
 
 from worldforge.context import ContextCompiler, MultimodalContextCompiler
 from worldforge.context.evidence_controller import EvidenceController
-from worldforge.context.media_derivatives import augment_model_assets, query_needs_audio
+from worldforge.context.media_derivatives import augment_model_assets
 from worldforge.context.preindex import PreindexScheduler
 from worldforge.context.retrieval_sidecar import (
     MultimodalRetrievalClient,
@@ -15,6 +15,28 @@ from worldforge.context.temporal_evidence import merge_temporal_evidence
 from worldforge.context.verification_contract import build_verification_contract
 
 from .analyzer import ProductAnalyzer as BaseProductAnalyzer
+
+
+def _kind(asset: dict[str, Any]) -> str:
+    meta = asset.get("meta", {}) or {}
+    context = meta.get("_context", {}) or {}
+    kind = str(context.get("kind") or meta.get("kind") or "")
+    if kind and kind != "file":
+        return kind
+    mime = str(asset.get("mime", "") or "")
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("video/"):
+        return "video"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("text/") or mime in {
+        "application/json",
+        "application/xml",
+        "text/csv",
+    }:
+        return "text"
+    return kind or "file"
 
 
 class ProductAnalyzer(BaseProductAnalyzer):
@@ -52,6 +74,16 @@ class ProductAnalyzer(BaseProductAnalyzer):
         self.semantic_retriever = MultimodalRetrievalClient()
         self.evidence_controller = EvidenceController()
         self.preindex_scheduler = PreindexScheduler()
+
+    def intent(self, text, assets, history=None):
+        """Keep system-derived control context out of user-intent routing."""
+        clean_history = [
+            message
+            for message in (history or [])
+            if not str(message.get("id", "") or "").startswith("context:")
+            and not bool((message.get("payload", {}) or {}).get("system_derived"))
+        ]
+        return super().intent(text, assets, clean_history)
 
     async def run(
         self,
@@ -95,9 +127,6 @@ class ProductAnalyzer(BaseProductAnalyzer):
         verification_contract = build_verification_contract(
             evidence_plan,
             multimodal_packet.assets,
-            # The current product analyzer still uses built-in synthetic scenarios. A future
-            # real GameAdapter/EnvironmentAdapter can explicitly flip this to True only after
-            # actual project execution is connected and verified.
             actual_project_execution_available=False,
         )
 
@@ -110,7 +139,6 @@ class ProductAnalyzer(BaseProductAnalyzer):
                 continue
             semantic_ranges.setdefault(hit.asset_id, []).append((hit.start, hit.end))
 
-        audio_query = query_needs_audio(query)
         for asset in multimodal_packet.assets:
             meta = asset.get("meta", {}) or {}
             context = meta.get("_context", {}) or {}
@@ -122,8 +150,15 @@ class ProductAnalyzer(BaseProductAnalyzer):
                 f"{query} {range_suffix}".strip() if range_suffix else query
             )
             context["semantic_time_ranges"] = [list(item) for item in extra_ranges]
-            context["needs_audio"] = audio_query
-            context["evidence_temporal_frame_budget"] = evidence_plan.temporal_frame_budget
+            # One deterministic plan controls retrieval GPU, FFmpeg derivatives and final
+            # provider tokens. Cost must not merely move to another layer after retrieval
+            # has correctly decided to skip expensive semantic work.
+            context["needs_audio"] = evidence_plan.needs_audio
+            context["provider_visual_enabled"] = evidence_plan.needs_visual
+            context["provider_audio_enabled"] = evidence_plan.needs_audio
+            context["evidence_temporal_frame_budget"] = (
+                evidence_plan.temporal_frame_budget
+            )
             context["evidence_stop_reason"] = evidence_assessment.stop_reason
             meta["_context"] = context
             asset["meta"] = meta
@@ -138,6 +173,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
                         "【系统编译的持久任务状态；不是新的用户消息】\n"
                         + packet.render_task_state()
                     ),
+                    "payload": {"system_derived": True},
                 }
             )
         if raw_assets:
@@ -146,6 +182,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
                     "id": "context:evidence-controller",
                     "role": "user",
                     "content": evidence_assessment.render(evidence_plan),
+                    "payload": {"system_derived": True},
                 }
             )
             compiled_history.append(
@@ -153,6 +190,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
                     "id": "context:verification-contract",
                     "role": "user",
                     "content": verification_contract.render(),
+                    "payload": {"system_derived": True},
                 }
             )
 
@@ -208,37 +246,61 @@ class ProductAnalyzer(BaseProductAnalyzer):
         return result
 
     def _model_assets(self, assets):
-        """Provider-facing multimodal evidence under a query-adaptive raw-media budget."""
+        """Spend provider multimodal tokens only for modalities the plan actually needs."""
         rows = list(assets or [])
-        frame_budget = max(
-            [
-                int(
-                    ((asset.get("meta", {}) or {}).get("_context", {}) or {}).get(
-                        "evidence_temporal_frame_budget", 2
-                    )
-                    or 2
-                )
-                for asset in rows
-            ]
-            or [2]
+        contexts = [
+            ((asset.get("meta", {}) or {}).get("_context", {}) or {})
+            for asset in rows
+        ]
+        allow_visual = any(
+            bool(context.get("provider_visual_enabled")) for context in contexts
         )
-        frame_budget = max(2, min(6, frame_budget))
+        allow_audio = any(
+            bool(context.get("provider_audio_enabled")) for context in contexts
+        )
 
-        base = self.multimodal_compiler.model_assets(rows)
+        eligible_rows: list[dict[str, Any]] = []
+        for asset in rows:
+            kind = _kind(asset)
+            if kind in {"image", "video"}:
+                if allow_visual:
+                    eligible_rows.append(asset)
+                continue
+            if kind == "audio":
+                if allow_audio:
+                    eligible_rows.append(asset)
+                continue
+            eligible_rows.append(asset)
+
+        if allow_visual:
+            frame_budget = max(
+                [
+                    int(context.get("evidence_temporal_frame_budget", 0) or 0)
+                    for context in contexts
+                ]
+                or [0]
+            )
+            frame_budget = max(1, min(6, frame_budget))
+        else:
+            frame_budget = 0
+
+        base = self.multimodal_compiler.model_assets(eligible_rows)
         enriched = augment_model_assets(
-            rows,
+            eligible_rows,
             base,
             raw_media_max_bytes=16 * 1024 * 1024,
-            raw_video_budget=2,
-            exact_frame_budget=min(4, frame_budget),
-            scene_frame_budget=frame_budget,
-            audio_budget=3,
+            # Raw video may expose an audio stream to the provider. Visual-only turns use
+            # frames, so "no audio required" really means zero provider audio exposure.
+            raw_video_budget=1 if (allow_visual and allow_audio) else 0,
+            exact_frame_budget=min(4, frame_budget) if allow_visual else 0,
+            scene_frame_budget=frame_budget if allow_visual else 0,
+            audio_budget=3 if allow_audio else 0,
         )
         return merge_temporal_evidence(
-            rows,
+            eligible_rows,
             enriched,
             max_total_frames=frame_budget,
-            max_images=10,
+            max_images=10 if allow_visual else 0,
         )
 
     def _asset_context(self, assets):
