@@ -7,28 +7,41 @@ from worldforge.context.retrieval_sidecar import (
 )
 
 
-def _asset(asset_id: str, kind: str, *, selected=True, reasons=None, full_hits=0, time_hints=None, has_audio=False):
+def _asset(
+    asset_id: str,
+    kind: str,
+    *,
+    selected=True,
+    reasons=None,
+    full_hits=0,
+    time_hints=None,
+    has_audio=False,
+    duration=None,
+):
     mime = {
         "video": "video/mp4",
         "image": "image/png",
         "audio": "audio/wav",
         "text": "text/plain",
     }.get(kind, "application/octet-stream")
+    meta = {
+        "kind": kind,
+        "has_audio": has_audio,
+        "_context": {
+            "kind": kind,
+            "selected": selected,
+            "reasons": list(reasons or []),
+            "full_content_hits": full_hits,
+            "time_hints": list(time_hints or []),
+        },
+    }
+    if duration is not None:
+        meta["duration"] = duration
     return {
         "id": asset_id,
         "name": f"{asset_id}.{kind}",
         "mime": mime,
-        "meta": {
-            "kind": kind,
-            "has_audio": has_audio,
-            "_context": {
-                "kind": kind,
-                "selected": selected,
-                "reasons": list(reasons or []),
-                "full_content_hits": full_hits,
-                "time_hints": list(time_hints or []),
-            },
-        },
+        "meta": meta,
     }
 
 
@@ -36,7 +49,7 @@ def test_exact_timestamp_goes_directly_to_raw_temporal_evidence():
     controller = EvidenceController()
     plan = controller.plan(
         "37 秒附近 Boss 护盾图标是什么状态？",
-        [_asset("run", "video", time_hints=[37.0])],
+        [_asset("run", "video", time_hints=[37.0], duration=180.0)],
         retriever_enabled=True,
     )
 
@@ -46,10 +59,47 @@ def test_exact_timestamp_goes_directly_to_raw_temporal_evidence():
     assert plan.temporal_frame_budget == 4
 
 
+def test_single_long_video_content_question_uses_within_media_localization():
+    controller = EvidenceController()
+    plan = controller.plan(
+        "Boss 为什么没死？",
+        [_asset("run", "video", duration=600.0)],
+        retriever_enabled=True,
+    )
+
+    assert plan.needs_visual is True
+    assert plan.semantic_retrieval is True
+    assert plan.reason == "within-media-localization"
+
+
+def test_single_audio_content_question_uses_acoustic_retrieval_without_magic_keyword():
+    controller = EvidenceController()
+    plan = controller.plan(
+        "这段里是谁说了 boss？",
+        [_asset("voice", "audio", duration=180.0)],
+        retriever_enabled=True,
+    )
+
+    assert plan.needs_audio is True
+    assert plan.semantic_retrieval is True
+
+
+def test_exact_build_lookup_does_not_spend_video_semantic_gpu_just_because_video_is_attached():
+    controller = EvidenceController()
+    plan = controller.plan(
+        "检查 build 1.4.7",
+        [_asset("run", "video", duration=600.0)],
+        retriever_enabled=True,
+    )
+
+    assert plan.exact_identifier is True
+    assert plan.semantic_retrieval is False
+
+
 def test_causal_multimodal_problem_spends_semantic_budget():
     controller = EvidenceController()
     assets = [
-        _asset("run", "video", has_audio=True),
+        _asset("run", "video", has_audio=True, duration=600.0),
         _asset("log", "text"),
         _asset("config", "text"),
     ]
@@ -99,7 +149,10 @@ def test_single_large_log_with_no_lexical_hit_still_uses_semantic_chunks():
 
 def test_localized_semantic_hit_stops_after_one_high_value_round():
     controller = EvidenceController()
-    assets = [_asset("run", "video"), _asset("log", "text")]
+    assets = [
+        _asset("run", "video", duration=600.0),
+        _asset("log", "text"),
+    ]
     plan = controller.plan(
         "为什么 Boss 偶发双盾？结合视频和日志找原因",
         assets,
