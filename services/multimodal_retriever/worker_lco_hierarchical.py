@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+import socket
 from typing import Any
 
 import numpy as np
@@ -16,15 +17,19 @@ app = FastAPI(title="Lingjing Hierarchical LCO Audio Worker", version="0.1.0")
 
 
 class HierarchicalLCORuntime(LCORuntime):
-    """LCO acoustic worker with bounded coarse-to-fine temporal navigation.
+    """LCO acoustic worker with persistent, singleflight coarse-to-fine navigation.
 
-    Long audio and video-with-audio are converted into cached 16 kHz mono windows. Segment
-    embeddings and provenance metadata survive process restarts in the derived vector store;
-    source media remains authoritative and can rebuild every cached row.
+    Long audio/video-audio is converted to cached 16 kHz mono windows. Only one process may
+    build a source at a time; concurrent requests immediately reuse partial cached windows
+    or fall back upstream instead of duplicating expensive 7B inference.
     """
 
     def __init__(self) -> None:
         super().__init__()
+        self.build_owner = f"{socket.gethostname()}:{os.getpid()}:{id(self)}"
+        self.build_lease_seconds = max(
+            30.0, float(os.getenv("LCO_BUILD_LEASE_SECONDS", "300"))
+        )
         self.segment_threshold = max(
             20.0, float(os.getenv("LCO_SEGMENT_THRESHOLD_SECONDS", "60"))
         )
@@ -46,6 +51,12 @@ class HierarchicalLCORuntime(LCORuntime):
     def backend_name(self) -> str:
         return f"lco-hierarchical:{self.model_name}"
 
+    def _source_fingerprint(self, item: ScoreItem) -> str | None:
+        try:
+            return self._fingerprint_string(self._fingerprint(item.path))
+        except OSError:
+            return None
+
     def _vectors_for_segments(
         self,
         item: ScoreItem,
@@ -55,10 +66,7 @@ class HierarchicalLCORuntime(LCORuntime):
     ) -> list[tuple[float, float, np.ndarray]]:
         cached_rows: list[tuple[float, float, np.ndarray]] = []
         missing: list[tuple[float, float, str, tuple[int, int], str]] = []
-        try:
-            source_fp = self._fingerprint_string(self._fingerprint(item.path))
-        except OSError:
-            source_fp = "unknown"
+        source_fp = self._source_fingerprint(item) or "unknown"
 
         for start, end in windows:
             clip = materialize_audio_segment(
@@ -135,56 +143,110 @@ class HierarchicalLCORuntime(LCORuntime):
         scored.sort(reverse=True)
         return scored
 
-    def _score_long_audio(
+    def _cached_source_segment(
         self,
         item: ScoreItem,
+        source_fp: str,
         query_vector: np.ndarray,
     ) -> dict[str, Any] | None:
-        duration = float(item.duration or 0.0)
-        if duration <= 0:
-            return None
-
-        coarse = segment_windows(
-            0.0,
-            duration,
-            self.coarse_seconds,
-            max_windows=self.max_coarse_windows,
+        rows = self.vector_store.list_source_vectors(
+            source_key=item.key,
+            source_fingerprint=source_fp,
+            backend=self.backend_name,
+            modality="audio",
         )
-        coarse_vectors = self._vectors_for_segments(item, coarse, level="coarse")
-        ranked_coarse = self._rank_segments(query_vector, coarse_vectors)
-        if not ranked_coarse:
+        candidates = [
+            (float(row["start"]), float(row["end"]), row["vector"])
+            for row in rows
+            if row.get("start") is not None and row.get("end") is not None
+        ]
+        ranked = self._rank_segments(query_vector, candidates)
+        if not ranked:
             return None
-
-        fine_candidates = []
-        for _score, start, end in ranked_coarse[: self.top_coarse]:
-            fine_candidates.extend(
-                segment_windows(
-                    start,
-                    end,
-                    self.fine_seconds,
-                    max_windows=max(2, self.max_fine_windows // self.top_coarse),
-                )
-            )
-        fine = merge_windows(fine_candidates)[: self.max_fine_windows]
-        fine_vectors = self._vectors_for_segments(item, fine, level="fine")
-        ranked_fine = self._rank_segments(query_vector, fine_vectors)
-
-        if ranked_fine:
-            score, start, end = ranked_fine[0]
-            level = "fine"
-        else:
-            score, start, end = ranked_coarse[0]
-            level = "coarse"
+        score, start, end = ranked[0]
         return {
             "key": item.key,
             "score": round(max(-1.0, min(1.0, score)), 7),
             "modality": item.modality,
             "start": round(start, 3),
             "end": round(end, 3),
-            "evidence_ref": (
-                f"asset:{item.key}:acoustic:{level}:{start:.3f}-{end:.3f}"
-            ),
+            "evidence_ref": f"asset:{item.key}:acoustic:cached:{start:.3f}-{end:.3f}",
         }
+
+    def _score_long_audio(
+        self,
+        item: ScoreItem,
+        query_vector: np.ndarray,
+    ) -> dict[str, Any] | None:
+        duration = float(item.duration or 0.0)
+        source_fp = self._source_fingerprint(item)
+        if duration <= 0 or source_fp is None:
+            return None
+
+        lease_key = f"build:audio:{item.key}:{source_fp}"
+        claimed = self.vector_store.try_claim_build(
+            cache_key=lease_key,
+            backend=self.backend_name,
+            owner=self.build_owner,
+            lease_seconds=self.build_lease_seconds,
+        )
+        if not claimed:
+            return self._cached_source_segment(item, source_fp, query_vector)
+
+        try:
+            coarse = segment_windows(
+                0.0,
+                duration,
+                self.coarse_seconds,
+                max_windows=self.max_coarse_windows,
+            )
+            coarse_vectors = self._vectors_for_segments(item, coarse, level="coarse")
+            self.vector_store.refresh_build_lease(
+                cache_key=lease_key,
+                backend=self.backend_name,
+                owner=self.build_owner,
+                lease_seconds=self.build_lease_seconds,
+            )
+            ranked_coarse = self._rank_segments(query_vector, coarse_vectors)
+            if not ranked_coarse:
+                return None
+
+            fine_candidates = []
+            for _score, start, end in ranked_coarse[: self.top_coarse]:
+                fine_candidates.extend(
+                    segment_windows(
+                        start,
+                        end,
+                        self.fine_seconds,
+                        max_windows=max(2, self.max_fine_windows // self.top_coarse),
+                    )
+                )
+            fine = merge_windows(fine_candidates)[: self.max_fine_windows]
+            fine_vectors = self._vectors_for_segments(item, fine, level="fine")
+            ranked_fine = self._rank_segments(query_vector, fine_vectors)
+
+            if ranked_fine:
+                score, start, end = ranked_fine[0]
+                level = "fine"
+            else:
+                score, start, end = ranked_coarse[0]
+                level = "coarse"
+            return {
+                "key": item.key,
+                "score": round(max(-1.0, min(1.0, score)), 7),
+                "modality": item.modality,
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "evidence_ref": (
+                    f"asset:{item.key}:acoustic:{level}:{start:.3f}-{end:.3f}"
+                ),
+            }
+        finally:
+            self.vector_store.release_build(
+                cache_key=lease_key,
+                backend=self.backend_name,
+                owner=self.build_owner,
+            )
 
     def _score_sync(self, request: ScoreRequest) -> dict[str, Any]:
         segmented: list[ScoreItem] = []
