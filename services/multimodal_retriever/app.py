@@ -12,7 +12,7 @@ import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Lingjing Multimodal Retrieval Coordinator", version="0.2.0")
+app = FastAPI(title="Lingjing Multimodal Retrieval Coordinator", version="0.3.0")
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_./:+#@-]{2,}")
@@ -36,9 +36,7 @@ def _tokens(text: str) -> set[str]:
         if len(run) == 1:
             out.add(run)
         else:
-            out.update(
-                run[index : index + 2] for index in range(len(run) - 1)
-            )
+            out.update(run[index : index + 2] for index in range(len(run) - 1))
             if len(run) <= 8:
                 out.add(run)
     return out
@@ -93,6 +91,7 @@ class WorkerResult:
     scores: list[WorkerScore]
     latency_ms: float
     error: str | None = None
+    budget_exhausted: bool = False
 
 
 @dataclass(frozen=True)
@@ -105,9 +104,27 @@ class WorkerIndexResult:
 
 
 class WorkerClient:
-    def __init__(self, url: str, *, timeout_seconds: float = 0.9) -> None:
+    """HTTP client with a shorter cooperative compute budget than transport timeout.
+
+    HTTP cancellation cannot stop a CUDA kernel already running on a remote worker. The
+    worker therefore receives `budget_ms` and may stop before starting its next batch. The
+    network timeout remains slightly larger so partial results can still be returned.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float = 0.9,
+        compute_budget_ms: int | None = None,
+    ) -> None:
         self.url = url.strip().rstrip("/")
         self.timeout_seconds = max(0.05, float(timeout_seconds))
+        self.compute_budget_ms = (
+            max(50, int(compute_budget_ms))
+            if compute_budget_ms is not None
+            else None
+        )
 
     @property
     def enabled(self) -> bool:
@@ -123,12 +140,12 @@ class WorkerClient:
         if not self.enabled or not items:
             return WorkerResult(backend_hint, [], 0.0, "disabled")
         started = time.perf_counter()
+        payload: dict[str, Any] = {"query": query, "items": items}
+        if self.compute_budget_ms is not None:
+            payload["budget_ms"] = self.compute_budget_ms
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.post(
-                    f"{self.url}/v1/score",
-                    json={"query": query, "items": items},
-                )
+                response = await client.post(f"{self.url}/v1/score", json=payload)
             elapsed = (time.perf_counter() - started) * 1000.0
             if response.status_code >= 400:
                 return WorkerResult(
@@ -149,26 +166,10 @@ class WorkerClient:
                 if not math.isfinite(score):
                     continue
                 try:
-                    start = (
-                        float(raw["start"])
-                        if raw.get("start") is not None
-                        else None
-                    )
-                    end = (
-                        float(raw["end"])
-                        if raw.get("end") is not None
-                        else None
-                    )
-                    char_start = (
-                        int(raw["char_start"])
-                        if raw.get("char_start") is not None
-                        else None
-                    )
-                    char_end = (
-                        int(raw["char_end"])
-                        if raw.get("char_end") is not None
-                        else None
-                    )
+                    start = float(raw["start"]) if raw.get("start") is not None else None
+                    end = float(raw["end"]) if raw.get("end") is not None else None
+                    char_start = int(raw["char_start"]) if raw.get("char_start") is not None else None
+                    char_end = int(raw["char_end"]) if raw.get("char_end") is not None else None
                 except (TypeError, ValueError):
                     continue
                 rows.append(
@@ -193,12 +194,16 @@ class WorkerClient:
                         ),
                     )
                 )
-            return WorkerResult(backend, rows, elapsed)
+            return WorkerResult(
+                backend,
+                rows,
+                elapsed,
+                None,
+                bool(data.get("budget_exhausted")),
+            )
         except (httpx.HTTPError, TypeError, ValueError, KeyError) as exc:
             elapsed = (time.perf_counter() - started) * 1000.0
-            return WorkerResult(
-                backend_hint, [], elapsed, type(exc).__name__
-            )
+            return WorkerResult(backend_hint, [], elapsed, type(exc).__name__)
 
     async def index(
         self,
@@ -207,9 +212,7 @@ class WorkerClient:
         backend_hint: str,
     ) -> WorkerIndexResult:
         if not self.enabled or not items:
-            return WorkerIndexResult(
-                backend_hint, False, 0.0, {}, "disabled"
-            )
+            return WorkerIndexResult(backend_hint, False, 0.0, {}, "disabled")
         started = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -235,43 +238,29 @@ class WorkerClient:
         except (httpx.HTTPError, TypeError, ValueError, KeyError) as exc:
             elapsed = (time.perf_counter() - started) * 1000.0
             return WorkerIndexResult(
-                backend_hint,
-                False,
-                elapsed,
-                {},
-                type(exc).__name__,
+                backend_hint, False, elapsed, {}, type(exc).__name__
             )
 
 
 VISUAL_WORKER = WorkerClient(
     os.getenv("LINGJING_WEMM_WORKER_URL", ""),
-    timeout_seconds=float(
-        os.getenv("LINGJING_WEMM_WORKER_TIMEOUT_MS", "900")
-    )
-    / 1000.0,
+    timeout_seconds=float(os.getenv("LINGJING_WEMM_WORKER_TIMEOUT_MS", "900")) / 1000.0,
+    compute_budget_ms=int(os.getenv("LINGJING_WEMM_WORKER_BUDGET_MS", "760")),
 )
 AUDIO_WORKER = WorkerClient(
     os.getenv("LINGJING_LCO_WORKER_URL", ""),
-    timeout_seconds=float(
-        os.getenv("LINGJING_LCO_WORKER_TIMEOUT_MS", "1100")
-    )
-    / 1000.0,
+    timeout_seconds=float(os.getenv("LINGJING_LCO_WORKER_TIMEOUT_MS", "1100")) / 1000.0,
+    compute_budget_ms=int(os.getenv("LINGJING_LCO_WORKER_BUDGET_MS", "920")),
 )
 # Indexers are intentionally separate. Never silently fall back to an online worker: doing
-# so turns upload-time warming into head-of-line blocking for user-facing rank traffic.
+# so turns warming into head-of-line blocking for user-facing rank traffic.
 VISUAL_INDEXER = WorkerClient(
     os.getenv("LINGJING_WEMM_INDEXER_URL", ""),
-    timeout_seconds=float(
-        os.getenv("LINGJING_WEMM_INDEXER_TIMEOUT_MS", "300000")
-    )
-    / 1000.0,
+    timeout_seconds=float(os.getenv("LINGJING_WEMM_INDEXER_TIMEOUT_MS", "300000")) / 1000.0,
 )
 AUDIO_INDEXER = WorkerClient(
     os.getenv("LINGJING_LCO_INDEXER_URL", ""),
-    timeout_seconds=float(
-        os.getenv("LINGJING_LCO_INDEXER_TIMEOUT_MS", "300000")
-    )
-    / 1000.0,
+    timeout_seconds=float(os.getenv("LINGJING_LCO_INDEXER_TIMEOUT_MS", "300000")) / 1000.0,
 )
 
 
@@ -292,9 +281,7 @@ def _kind(asset: AssetDescriptor) -> str:
     return kind or "file"
 
 
-def _lexical_score(
-    query_tokens: set[str], asset: AssetDescriptor
-) -> float:
+def _lexical_score(query_tokens: set[str], asset: AssetDescriptor) -> float:
     searchable = " ".join(
         [
             asset.name,
@@ -311,9 +298,7 @@ def _lexical_score(
     exact_identifiers = [
         token
         for token in query_tokens
-        if any(ch.isdigit() for ch in token)
-        or "_" in token
-        or "." in token
+        if any(ch.isdigit() for ch in token) or "_" in token or "." in token
     ]
     lowered = searchable.lower()
     exact = sum(1 for token in exact_identifiers if token in lowered)
@@ -340,18 +325,12 @@ def _worker_items(
             semantic.append({**base, "modality": "text_file"})
         if audio_query and kind == "audio":
             audio.append({**base, "modality": "audio"})
-        elif (
-            audio_query
-            and kind == "video"
-            and asset.meta.get("has_audio")
-        ):
+        elif audio_query and kind == "video" and asset.meta.get("has_audio"):
             audio.append({**base, "modality": "video_with_audio"})
     return semantic, audio
 
 
-def _sanitize_result(
-    result: WorkerResult, items: list[dict[str, Any]]
-) -> WorkerResult:
+def _sanitize_result(result: WorkerResult, items: list[dict[str, Any]]) -> WorkerResult:
     allowed = {str(item.get("key", "")) for item in items}
     if not allowed:
         return WorkerResult(
@@ -359,6 +338,7 @@ def _sanitize_result(
             [],
             result.latency_ms,
             result.error or "not_dispatched",
+            result.budget_exhausted,
         )
     rows = [
         row
@@ -366,17 +346,16 @@ def _sanitize_result(
         if row.asset_id in allowed and math.isfinite(row.score)
     ]
     return WorkerResult(
-        result.backend, rows, result.latency_ms, result.error
+        result.backend,
+        rows,
+        result.latency_ms,
+        result.error,
+        result.budget_exhausted,
     )
 
 
 def _normalize_backend(rows: list[WorkerScore]) -> dict[str, float]:
-    """Calibrate normalized-embedding cosine without exaggerating tiny score gaps.
-
-    Cosine has absolute meaning here. Pure min-max would map 0.51 vs 0.50 to 1 vs 0 and
-    turn noise into certainty. Keep 90% absolute cosine confidence and use only 10% relative
-    spread as a tie-breaker within a backend.
-    """
+    """Keep absolute cosine meaning; relative ranking is only a light tie-breaker."""
     if not rows:
         return {}
     absolute = {
@@ -391,8 +370,7 @@ def _normalize_backend(rows: list[WorkerScore]) -> dict[str, float]:
         row.asset_id: (row.score - low) / (high - low) for row in rows
     }
     return {
-        row.asset_id: 0.90 * absolute[row.asset_id]
-        + 0.10 * relative[row.asset_id]
+        row.asset_id: 0.90 * absolute[row.asset_id] + 0.10 * relative[row.asset_id]
         for row in rows
     }
 
@@ -405,6 +383,8 @@ async def healthz() -> dict[str, Any]:
         "audio_worker": AUDIO_WORKER.enabled,
         "visual_indexer": VISUAL_INDEXER.enabled,
         "audio_indexer": AUDIO_INDEXER.enabled,
+        "visual_budget_ms": VISUAL_WORKER.compute_budget_ms,
+        "audio_budget_ms": AUDIO_WORKER.compute_budget_ms,
     }
 
 
@@ -414,9 +394,7 @@ async def rank(request: RankRequest) -> dict[str, Any]:
     query_tokens = _tokens(request.query)
     wants_audio = _audio_query(request.query)
     wants_time = _temporal_query(request.query)
-    semantic_items, audio_items = _worker_items(
-        request.assets, audio_query=wants_audio
-    )
+    semantic_items, audio_items = _worker_items(request.assets, audio_query=wants_audio)
 
     semantic_task = VISUAL_WORKER.score(
         query=request.query, items=semantic_items, backend_hint="wemm"
@@ -424,17 +402,13 @@ async def rank(request: RankRequest) -> dict[str, Any]:
     audio_task = AUDIO_WORKER.score(
         query=request.query, items=audio_items, backend_hint="lco"
     )
-    semantic_result, audio_result = await asyncio.gather(
-        semantic_task, audio_task
-    )
+    semantic_result, audio_result = await asyncio.gather(semantic_task, audio_task)
     semantic_result = _sanitize_result(semantic_result, semantic_items)
     audio_result = _sanitize_result(audio_result, audio_items)
 
     semantic_norm = _normalize_backend(semantic_result.scores)
     audio_norm = _normalize_backend(audio_result.scores)
-    semantic_raw = {
-        row.asset_id: row for row in semantic_result.scores
-    }
+    semantic_raw = {row.asset_id: row for row in semantic_result.scores}
     audio_raw = {row.asset_id: row for row in audio_result.scores}
 
     hits: list[dict[str, Any]] = []
@@ -460,11 +434,7 @@ async def rank(request: RankRequest) -> dict[str, Any]:
         ]
         semantic_sources.sort(key=lambda pair: pair[0], reverse=True)
         source = next(
-            (
-                row
-                for value, row in semantic_sources
-                if value > 0 and row is not None
-            ),
+            (row for value, row in semantic_sources if value > 0 and row is not None),
             None,
         )
         hit: dict[str, Any] = {
@@ -489,11 +459,7 @@ async def rank(request: RankRequest) -> dict[str, Any]:
         for result in (semantic_result, audio_result)
         if result.scores and not result.error
     ]
-    backend = (
-        "+".join(active_backends)
-        if active_backends
-        else "lexical-fallback"
-    )
+    backend = "+".join(active_backends) if active_backends else "lexical-fallback"
     elapsed = (time.perf_counter() - started) * 1000.0
     return {
         "backend": backend,
@@ -504,6 +470,10 @@ async def rank(request: RankRequest) -> dict[str, Any]:
             "audio_latency_ms": round(audio_result.latency_ms, 3),
             "visual_error": semantic_result.error,
             "audio_error": audio_result.error,
+            "visual_budget_exhausted": semantic_result.budget_exhausted,
+            "audio_budget_exhausted": audio_result.budget_exhausted,
+            "visual_budget_ms": VISUAL_WORKER.compute_budget_ms,
+            "audio_budget_ms": AUDIO_WORKER.compute_budget_ms,
             "audio_query": wants_audio,
             "temporal_query": wants_time,
         },
