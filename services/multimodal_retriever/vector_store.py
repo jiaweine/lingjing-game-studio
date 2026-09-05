@@ -13,8 +13,8 @@ class PersistentVectorStore:
     """SQLite-backed, fully rebuildable retrieval index.
 
     Raw project assets remain authoritative. This store keeps only derived vectors, source
-    locators, and indexing-completion markers. Deleting the DB must never lose project
-    information; workers can recreate every row from raw files.
+    locators, indexing-completion markers, and short-lived build leases. Deleting the DB
+    must never lose project information; workers can recreate every row from raw files.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -65,6 +65,18 @@ class PersistentVectorStore:
                 """
             )
             connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS build_leases (
+                    cache_key TEXT NOT NULL,
+                    backend TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    expires_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (cache_key, backend)
+                )
+                """
+            )
+            connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_vectors_updated_at ON vectors(updated_at)"
             )
             connection.execute(
@@ -72,6 +84,9 @@ class PersistentVectorStore:
                 CREATE INDEX IF NOT EXISTS ix_units_source
                 ON units(source_key, source_fingerprint, backend, modality)
                 """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_build_leases_expiry ON build_leases(expires_at)"
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -212,7 +227,12 @@ class PersistentVectorStore:
                   AND u.modality = ?
                 ORDER BY COALESCE(u.char_start, 0), COALESCE(u.start, 0)
                 """,
-                (str(source_key), str(source_fingerprint), str(backend), str(modality)),
+                (
+                    str(source_key),
+                    str(source_fingerprint),
+                    str(backend),
+                    str(modality),
+                ),
             ).fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
@@ -253,35 +273,122 @@ class PersistentVectorStore:
                 (str(meta_key), str(value), time.time()),
             )
 
+    def try_claim_build(
+        self,
+        *,
+        cache_key: str,
+        backend: str,
+        owner: str,
+        lease_seconds: float = 300.0,
+    ) -> bool:
+        """Claim derived-index work across processes without blocking online requests.
+
+        Expired leases are stealable, so worker crashes cannot permanently wedge an asset.
+        Callers that fail to acquire should use any partial index already present or fall
+        back to deterministic evidence rather than duplicating expensive GPU work.
+        """
+        now = time.time()
+        expires = now + max(0.05, float(lease_seconds))
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT owner, expires_at
+                FROM build_leases
+                WHERE cache_key = ? AND backend = ?
+                """,
+                (str(cache_key), str(backend)),
+            ).fetchone()
+            if row is not None and float(row[1]) > now and str(row[0]) != str(owner):
+                connection.rollback()
+                return False
+            connection.execute(
+                """
+                INSERT INTO build_leases(cache_key, backend, owner, expires_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key, backend) DO UPDATE SET
+                    owner = excluded.owner,
+                    expires_at = excluded.expires_at,
+                    updated_at = excluded.updated_at
+                """,
+                (str(cache_key), str(backend), str(owner), expires, now),
+            )
+            connection.commit()
+            return True
+
+    def refresh_build_lease(
+        self,
+        *,
+        cache_key: str,
+        backend: str,
+        owner: str,
+        lease_seconds: float = 300.0,
+    ) -> bool:
+        now = time.time()
+        expires = now + max(0.05, float(lease_seconds))
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE build_leases
+                SET expires_at = ?, updated_at = ?
+                WHERE cache_key = ? AND backend = ? AND owner = ?
+                """,
+                (expires, now, str(cache_key), str(backend), str(owner)),
+            )
+            return int(cursor.rowcount or 0) > 0
+
+    def release_build(
+        self,
+        *,
+        cache_key: str,
+        backend: str,
+        owner: str,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM build_leases
+                WHERE cache_key = ? AND backend = ? AND owner = ?
+                """,
+                (str(cache_key), str(backend), str(owner)),
+            )
+
     def prune(self, *, max_rows: int) -> int:
-        """Keep the newest N vectors and remove orphaned unit metadata."""
+        """Keep newest vectors and clean orphaned metadata/expired build leases."""
         max_rows = max(0, int(max_rows))
         with self._lock, self._connect() as connection:
-            count = int(connection.execute("SELECT COUNT(*) FROM vectors").fetchone()[0])
-            excess = max(0, count - max_rows)
-            if excess <= 0:
-                return 0
-            connection.execute(
-                """
-                DELETE FROM vectors
-                WHERE rowid IN (
-                    SELECT rowid FROM vectors ORDER BY updated_at ASC LIMIT ?
-                )
-                """,
-                (excess,),
+            count = int(
+                connection.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
             )
-            connection.execute(
-                """
-                DELETE FROM units
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM vectors AS v
-                    WHERE v.cache_key = units.cache_key
-                      AND v.backend = units.backend
+            excess = max(0, count - max_rows)
+            if excess > 0:
+                connection.execute(
+                    """
+                    DELETE FROM vectors
+                    WHERE rowid IN (
+                        SELECT rowid FROM vectors ORDER BY updated_at ASC LIMIT ?
+                    )
+                    """,
+                    (excess,),
                 )
-                """
+                connection.execute(
+                    """
+                    DELETE FROM units
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM vectors AS v
+                        WHERE v.cache_key = units.cache_key
+                          AND v.backend = units.backend
+                    )
+                    """
+                )
+            connection.execute(
+                "DELETE FROM build_leases WHERE expires_at <= ?",
+                (time.time(),),
             )
             return excess
 
     def count(self) -> int:
         with self._lock, self._connect() as connection:
-            return int(connection.execute("SELECT COUNT(*) FROM vectors").fetchone()[0])
+            return int(
+                connection.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
+            )
