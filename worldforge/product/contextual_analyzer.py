@@ -5,6 +5,7 @@ from typing import Any
 from worldforge.context import ContextCompiler, MultimodalContextCompiler
 from worldforge.context.evidence_controller import EvidenceController
 from worldforge.context.media_derivatives import augment_model_assets, query_needs_audio
+from worldforge.context.preindex import PreindexScheduler
 from worldforge.context.retrieval_sidecar import (
     MultimodalRetrievalClient,
     MultimodalRetrievalResult,
@@ -18,10 +19,10 @@ from .analyzer import ProductAnalyzer as BaseProductAnalyzer
 class ProductAnalyzer(BaseProductAnalyzer):
     """Product analyzer with bounded long-horizon and multimodal context compilation.
 
-    The original analyzer remains untouched. This adapter compiles the complete durable
-    conversation and every task asset into small, provenance-preserving packets before
-    delegating to the existing analysis pipeline. Raw messages/assets remain authoritative;
-    the compiled state is disposable and fully rebuildable.
+    The original analyzer remains untouched. Raw messages/assets remain authoritative; all
+    compiled state, semantic locators and preindex caches are disposable. Expensive complete
+    indexing is scheduled only after the user-facing analysis has completed and is routed
+    to independently configured indexer replicas.
     """
 
     def __init__(self, engine, providers):
@@ -49,6 +50,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
         )
         self.semantic_retriever = MultimodalRetrievalClient()
         self.evidence_controller = EvidenceController()
+        self.preindex_scheduler = PreindexScheduler()
 
     async def run(
         self,
@@ -82,9 +84,6 @@ class ProductAnalyzer(BaseProductAnalyzer):
                 max_semantic_promotions=evidence_plan.max_semantic_promotions,
             )
         else:
-            # Deliberate skip is not a retriever failure. Keep the result empty and expose
-            # the reason through evidence telemetry so operators can distinguish cost
-            # avoidance from outage/fallback.
             semantic_result = MultimodalRetrievalResult(
                 hits=[], backend=None, latency_ms=0.0, available=False, error=None
             )
@@ -153,12 +152,22 @@ class ProductAnalyzer(BaseProductAnalyzer):
             human_feedback_gate=human_feedback_gate,
         )
 
+        # Only after the answer path is complete do we warm complete derived indexes. The
+        # scheduler is disabled by default and coordinator index routing requires explicit
+        # dedicated indexer URLs, so this cannot silently compete with online retrieval GPU.
+        preindex_scheduled = self.preindex_scheduler.schedule(
+            self.semantic_retriever,
+            multimodal_packet.assets,
+        )
+
         context = dict(result.get("context") or {})
         context.update(packet.stats())
         context.update(multimodal_packet.stats())
         context.update(semantic_result.stats())
         context.update(evidence_plan.stats())
         context.update(evidence_assessment.stats())
+        context.update(self.preindex_scheduler.stats())
+        context["preindex_scheduled_this_run"] = preindex_scheduled
         context["history_messages"] = len(raw_history)
         context["task_assets"] = len(raw_assets)
         context["compiled_history_messages"] = len(compiled_history)
