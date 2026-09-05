@@ -18,9 +18,9 @@ app = FastAPI(title="Lingjing Hierarchical LCO Audio Worker", version="0.1.0")
 class HierarchicalLCORuntime(LCORuntime):
     """LCO acoustic worker with bounded coarse-to-fine temporal navigation.
 
-    Long audio and video-with-audio are converted into cached 16 kHz mono windows. This
-    avoids spending Omni visual tokens when the query is specifically about sound/speech,
-    while still returning a source-media [start, end] locator for final verification.
+    Long audio and video-with-audio are converted into cached 16 kHz mono windows. Segment
+    embeddings and provenance metadata survive process restarts in the derived vector store;
+    source media remains authoritative and can rebuild every cached row.
     """
 
     def __init__(self) -> None:
@@ -55,6 +55,10 @@ class HierarchicalLCORuntime(LCORuntime):
     ) -> list[tuple[float, float, np.ndarray]]:
         cached_rows: list[tuple[float, float, np.ndarray]] = []
         missing: list[tuple[float, float, str, tuple[int, int], str]] = []
+        try:
+            source_fp = self._fingerprint_string(self._fingerprint(item.path))
+        except OSError:
+            source_fp = "unknown"
 
         for start, end in windows:
             clip = materialize_audio_segment(
@@ -70,9 +74,18 @@ class HierarchicalLCORuntime(LCORuntime):
             except OSError:
                 continue
             cache_key = f"audio-segment:{level}:{item.key}:{start:.3f}:{end:.3f}"
-            vector = self.asset_cache.get(cache_key, fingerprint)
+            vector = self._get_cached_vector(cache_key, fingerprint)
             if vector is not None:
                 cached_rows.append((start, end, vector))
+                self.vector_store.put_unit(
+                    cache_key=cache_key,
+                    backend=self.backend_name,
+                    source_key=item.key,
+                    source_fingerprint=source_fp,
+                    modality="audio",
+                    start=start,
+                    end=end,
+                )
             else:
                 missing.append((start, end, clip, fingerprint, cache_key))
 
@@ -95,7 +108,16 @@ class HierarchicalLCORuntime(LCORuntime):
             for (start, end, _clip, fingerprint, cache_key), vector in zip(
                 batch, encoded, strict=True
             ):
-                self.asset_cache.put(cache_key, fingerprint, vector)
+                self._put_cached_vector(cache_key, fingerprint, vector)
+                self.vector_store.put_unit(
+                    cache_key=cache_key,
+                    backend=self.backend_name,
+                    source_key=item.key,
+                    source_fingerprint=source_fp,
+                    modality="audio",
+                    start=start,
+                    end=end,
+                )
                 cached_rows.append((start, end, vector))
 
         cached_rows.sort(key=lambda row: row[0])
@@ -188,7 +210,8 @@ class HierarchicalLCORuntime(LCORuntime):
         return {
             "backend": self.backend_name,
             "scores": scores,
-            "cache_entries": len(self.asset_cache),
+            "memory_cache_entries": len(self.asset_cache),
+            "persistent_cache_entries": self.vector_store.count(),
             "hierarchical_audio_assets": len(segmented),
         }
 
@@ -203,7 +226,8 @@ async def healthz() -> dict[str, Any]:
         "backend": RUNTIME.backend_name,
         "device": RUNTIME.device,
         "model_loaded": RUNTIME._model is not None,
-        "asset_cache_entries": len(RUNTIME.asset_cache),
+        "memory_cache_entries": len(RUNTIME.asset_cache),
+        "persistent_cache_entries": RUNTIME.vector_store.count(),
         "segment_threshold": RUNTIME.segment_threshold,
         "coarse_seconds": RUNTIME.coarse_seconds,
         "fine_seconds": RUNTIME.fine_seconds,
