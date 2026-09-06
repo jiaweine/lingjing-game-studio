@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 from worldforge.context import ContextCompiler, MultimodalContextCompiler
+from worldforge.context.budget import ContextBudgetBroker
 from worldforge.context.claim_graph import build_claim_evidence_graph
 from worldforge.context.evidence_controller import EvidenceController
 from worldforge.context.media_derivatives import augment_model_assets
@@ -63,6 +64,13 @@ class ProductAnalyzer(BaseProductAnalyzer):
             message_char_budget=9000,
             per_message_chars=2400,
             state_items_per_kind=8,
+        )
+        self.context_budget = ContextBudgetBroker(
+            max_history_messages=8,
+            history_char_budget=15000,
+            kernel_char_budget=5800,
+            per_message_char_budget=5800,
+            asset_text_char_budget=9000,
         )
         self.multimodal_compiler = MultimodalContextCompiler(
             selected_asset_budget=14,
@@ -217,6 +225,10 @@ class ProductAnalyzer(BaseProductAnalyzer):
                 }
             )
 
+        compiled_history_pre_budget = len(compiled_history)
+        budgeted_context = self.context_budget.pack(compiled_history)
+        compiled_history = budgeted_context.messages
+
         result = await super().run(
             text=text,
             assets=multimodal_packet.assets,
@@ -259,6 +271,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
         context.update(verification_contract.stats())
         context.update(claim_graph.stats())
         context.update(self.preindex_scheduler.stats())
+        context.update(budgeted_context.telemetry)
         if memory_packet is not None:
             context.update(memory_packet.stats())
         else:
@@ -276,6 +289,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
         context["preindex_scheduled_this_run"] = preindex_scheduled
         context["history_messages"] = len(raw_history)
         context["task_assets"] = len(raw_assets)
+        context["compiled_history_messages_pre_budget"] = compiled_history_pre_budget
         context["compiled_history_messages"] = len(compiled_history)
         context["task_state"] = packet.task_state
         context["multimodal_selected_asset_ids"] = [
@@ -374,8 +388,8 @@ class ProductAnalyzer(BaseProductAnalyzer):
                 + f":\n{excerpt[:4000]}"
             )
         if not semantic_lines:
-            return manifest
-        return (
+            return self.context_budget.clip_asset_context(manifest)
+        return self.context_budget.clip_asset_context(
             manifest
             + "\n\n【语义检索定位证据；仅用于定位，结论仍需以原始素材/Verifier 为准】\n"
             + "\n".join(semantic_lines)
