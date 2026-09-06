@@ -41,7 +41,6 @@ class ProjectScopeSnapshot:
 
     def retrieval_kwargs(self) -> dict[str, str | None]:
         if self.unresolved_conflict:
-            # Ambiguous current identity must never pick one version-specific memory by luck.
             return {field: None for field in _SCOPE_FIELDS}
         return {field: getattr(self, field) for field in _SCOPE_FIELDS}
 
@@ -63,7 +62,9 @@ class ProjectScopeSnapshot:
             if key not in _SCOPE_FIELDS:
                 continue
             rows = tuple(
-                value for value in (_clean(item) for item in list(values or [])[:12]) if value
+                value
+                for value in (_clean(item) for item in list(values or [])[:12])
+                if value
             )
             if rows:
                 conflicts[key] = rows
@@ -83,12 +84,7 @@ def resolve_project_scope(
     *,
     requested: dict[str, Any] | None = None,
 ) -> ProjectScopeSnapshot:
-    """Resolve a deterministic scope without guessing across conflicting selected assets.
-
-    Explicit request fields are authoritative for that field. Otherwise a field is inferred
-    only when every non-empty selected-asset value agrees. Any unresolved conflict forces
-    project-memory retrieval to general scope while preserving the conflict in telemetry.
-    """
+    """Resolve identity without guessing across conflicting selected assets."""
     requested = dict(requested or {})
     rows = list(assets or [])
     values: dict[str, str | None] = {}
@@ -106,7 +102,6 @@ def resolve_project_scope(
             sources.add("request")
             disagree = sorted(value for value in observed if value != explicit)
             if disagree:
-                # Keep the explicit user/API scope, but expose evidence identity disagreement.
                 conflicts[field] = tuple(sorted({explicit, *disagree}))
             continue
         if len(observed) == 1:
@@ -143,9 +138,11 @@ class ProjectMemoryPacket:
     memories: tuple[dict[str, Any], ...]
     query: str
     chars: int
-    mode: str = "frozen-project-memory-v1"
+    invalidated_refs: int = 0
+    mode: str = "materialized-project-memory-v2"
 
     def to_dict(self) -> dict[str, Any]:
+        """Materialized model-facing packet. Do not persist this as the durable job snapshot."""
         return {
             "mode": self.mode,
             "project_id": self.project_id,
@@ -153,7 +150,26 @@ class ProjectMemoryPacket:
             "scope": self.scope.to_dict(),
             "query": self.query[:2000],
             "chars": self.chars,
+            "invalidated_refs": self.invalidated_refs,
             "memories": [dict(row) for row in self.memories],
+        }
+
+    def to_job_snapshot(self) -> dict[str, Any]:
+        """Persist only immutable locators, never governed memory content, in the job row."""
+        return {
+            "mode": "project-memory-reference-snapshot-v1",
+            "project_id": self.project_id,
+            "project_name": self.project_name,
+            "scope": self.scope.to_dict(),
+            "query": self.query[:2000],
+            "memory_refs": [
+                {
+                    "id": row["id"],
+                    "revision": int(row["revision"]),
+                    "retrieval_score": float(row.get("retrieval_score") or 0.0),
+                }
+                for row in self.memories
+            ],
         }
 
     @classmethod
@@ -192,9 +208,9 @@ class ProjectMemoryPacket:
                 "source_excerpt": str(row.get("source_excerpt") or "")[:800],
                 "retrieval_score": float(row.get("retrieval_score") or 0.0),
             }
+            if chars + len(content) > 9000 and memories:
+                continue
             chars += len(content)
-            if chars > 9000:
-                break
             memories.append(safe)
         return cls(
             project_id=project_id,
@@ -203,7 +219,8 @@ class ProjectMemoryPacket:
             memories=tuple(memories),
             query=str(data.get("query") or "")[:2000],
             chars=chars,
-            mode=_clean(data.get("mode"), 64) or "frozen-project-memory-v1",
+            invalidated_refs=max(0, int(data.get("invalidated_refs") or 0)),
+            mode=_clean(data.get("mode"), 64) or "materialized-project-memory-v2",
         )
 
     def render(self) -> str:
@@ -214,12 +231,16 @@ class ProjectMemoryPacket:
             if getattr(scope, field)
         ) or "general"
         lines = [
-            "【系统冻结的项目长期记忆；不是新的用户消息，也不是本轮验证证据】",
+            "【系统冻结并在执行时重新授权的项目长期记忆；不是新的用户消息，也不是本轮验证证据】",
             f"项目: {self.project_name} ({self.project_id})",
             f"身份作用域: {identity}",
         ]
         if scope.unresolved_conflict:
             lines.append("作用域存在未解决冲突；本包仅允许使用 general-scope 记忆。")
+        if self.invalidated_refs:
+            lines.append(
+                f"有 {self.invalidated_refs} 条排队时命中的记忆已被更新、撤回或删除，本轮已主动丢弃，未自动替换。"
+            )
         for row in self.memories:
             row_scope = ", ".join(
                 f"{field.removesuffix('_ref')}={row.get(field)}"
@@ -232,8 +253,10 @@ class ProjectMemoryPacket:
                 f"{row['content']}"
             )
         if not self.memories:
-            lines.append("- 本轮没有命中可用的项目长期记忆。")
-        lines.append("规则: 项目记忆用于连续性/先验；当前原始素材与 Verifier 冲突时，以当前可验证证据为准。")
+            lines.append("- 本轮没有仍然有效的项目长期记忆。")
+        lines.append(
+            "规则: 项目记忆只用于连续性/先验；当前原始素材与 Verifier 冲突时，以当前可验证证据为准。"
+        )
         return "\n".join(lines)
 
     def stats(self) -> dict[str, Any]:
@@ -243,6 +266,7 @@ class ProjectMemoryPacket:
             "project_memory_selected": len(self.memories),
             "project_memory_chars": self.chars,
             "project_memory_ids": [row["id"] for row in self.memories],
+            "project_memory_invalidated_refs": self.invalidated_refs,
             "project_memory_scope": self.scope.to_dict(),
             "project_memory_scope_conflict": self.scope.unresolved_conflict,
         }
@@ -278,15 +302,15 @@ def compile_project_memory_packet(
         content = str(row.get("content") or "").strip()
         if not content:
             continue
-        cost = len(content)
-        if selected and used + cost > max(1200, int(char_budget)):
+        safe_content = content[:2400]
+        if selected and used + len(safe_content) > max(1200, int(char_budget)):
             continue
         safe = {
             "id": str(row["id"]),
             "memory_key": str(row["memory_key"]),
             "revision": int(row["revision"]),
             "kind": str(row["kind"]),
-            "content": content[:2400],
+            "content": safe_content,
             "state": str(row["state"]),
             "confidence": float(row["confidence"]),
             "importance": float(row["importance"]),
@@ -301,7 +325,7 @@ def compile_project_memory_packet(
             "retrieval_score": float(row.get("retrieval_score") or 0.0),
         }
         selected.append(safe)
-        used += len(safe["content"])
+        used += len(safe_content)
         if len(selected) >= top_k:
             break
     return ProjectMemoryPacket(
