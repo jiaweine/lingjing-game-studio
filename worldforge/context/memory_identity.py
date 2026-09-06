@@ -12,8 +12,15 @@ _VERSION_RE = re.compile(
     r"(?i)\b(?:build|version|ver|v)\s*[:=#-]?\s*[a-z0-9][a-z0-9._+-]{1,31}\b"
     r"|版本\s*[:：=#-]?\s*[a-z0-9][a-z0-9._+-]{1,31}"
 )
-_NUMBER_RE = re.compile(r"(?<![a-z_])[-+]?\d+(?:\.\d+)?(?:\s*(?:ms|s|sec|secs|second|seconds|秒|分|分钟|%|％))?", re.IGNORECASE)
+# Longest unit alternatives must come first. Otherwise `5 seconds` can match only the leading
+# `s` and leave `econds`, creating a fake stable identifier shared by unrelated memories.
+_NUMBER_RE = re.compile(
+    r"(?<![a-z_])[-+]?\d+(?:\.\d+)?"
+    r"(?:\s*(?:milliseconds|millisecond|seconds|second|secs|sec|minutes|minute|分钟|ms|s|秒|分|%|％))?",
+    re.IGNORECASE,
+)
 _PUNCT_RE = re.compile(r"[^a-z0-9_\u4e00-\u9fff]+", re.IGNORECASE)
+_CJK_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
 
 # These words describe assertion status or generic glue, not semantic identity. Removing them
 # makes "confirmed cooldown=6" and "cooldown is now 5" comparable without pretending that
@@ -49,10 +56,14 @@ _STOP_TOKENS = {
     "version",
     "ver",
     "value",
+    "milliseconds",
+    "millisecond",
     "seconds",
     "second",
     "secs",
     "sec",
+    "minutes",
+    "minute",
     "ms",
 }
 _SCOPE_FIELDS = ("build_ref", "branch_ref", "commit_ref", "environment_ref")
@@ -119,7 +130,11 @@ def _normalize(text: str) -> str:
     value = _VERSION_RE.sub(" ", value)
     value = _NUMBER_RE.sub(" ", value)
     value = _PUNCT_RE.sub(" ", value)
-    return re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r"\s+", " ", value).strip()
+    # Removing an assertion marker in the middle of Chinese text can introduce a synthetic
+    # whitespace boundary (`护盾冷却 已确认 是` -> `护盾冷却 是`). Canonicalize that boundary so
+    # CJK n-grams describe the subject/predicate rather than the extractor's edit position.
+    return _CJK_SPACE_RE.sub("", value)
 
 
 def _tokens(text: str) -> set[str]:
@@ -147,7 +162,8 @@ def _tokens(text: str) -> set[str]:
 def _stable_ascii_identifiers(text: str) -> set[str]:
     identifiers: set[str] = set()
     without_versions = _VERSION_RE.sub(" ", str(text or "").lower())
-    for raw in _ASCII_RE.findall(without_versions):
+    without_values = _NUMBER_RE.sub(" ", without_versions)
+    for raw in _ASCII_RE.findall(without_values):
         token = raw.strip("./:+#@-")
         if (
             len(token) >= 3
@@ -157,6 +173,15 @@ def _stable_ascii_identifiers(text: str) -> set[str]:
         ):
             identifiers.add(token)
     return identifiers
+
+
+def _structured_identifiers(text: str) -> set[str]:
+    """Identifiers likely to name concrete game/config entities rather than prose words."""
+    return {
+        token
+        for token in _stable_ascii_identifiers(text)
+        if any(separator in token for separator in ("_", ".", "/", ":", "#", "@"))
+    }
 
 
 def _overlap(left: set[str], right: set[str]) -> float:
@@ -215,14 +240,24 @@ def _head_score(proposal: dict[str, Any], head: dict[str, Any]) -> tuple[float, 
 
     proposal_content = str(proposal.get("content") or "")
     head_content = str(head.get("content") or "")
+    proposal_normalized = _normalize(proposal_content)
+    head_normalized = _normalize(head_content)
     proposal_tokens = _tokens(proposal_content)
     head_tokens = _tokens(head_content)
     lexical = _overlap(proposal_tokens, head_tokens)
     skeleton = _skeleton_similarity(proposal_content, head_content)
+    exact_skeleton = bool(proposal_normalized and proposal_normalized == head_normalized)
 
     proposal_ids = _stable_ascii_identifiers(proposal_content)
     head_ids = _stable_ascii_identifiers(head_content)
     identifier = _overlap(proposal_ids, head_ids)
+    proposal_entities = _structured_identifiers(proposal_content)
+    head_entities = _structured_identifiers(head_content)
+    entity_conflict = bool(
+        proposal_entities
+        and head_entities
+        and not (proposal_entities & head_entities)
+    )
 
     key_tokens = _tokens(str(head.get("memory_key") or ""))
     key_affinity = _overlap(proposal_tokens, key_tokens)
@@ -234,6 +269,8 @@ def _head_score(proposal: dict[str, Any], head: dict[str, Any]) -> tuple[float, 
         + 0.10 * identifier
         + 0.12 * key_affinity
         + 0.08 * scope_score
+        + (0.08 if exact_skeleton else 0.0)
+        - (0.22 if entity_conflict else 0.0)
     )
 
     reasons: list[str] = []
@@ -241,12 +278,16 @@ def _head_score(proposal: dict[str, Any], head: dict[str, Any]) -> tuple[float, 
         reasons.append("strong-stable-token-overlap")
     elif lexical >= 0.50:
         reasons.append("moderate-stable-token-overlap")
-    if skeleton >= 0.80:
+    if exact_skeleton:
+        reasons.append("exact-value-stripped-skeleton")
+    elif skeleton >= 0.80:
         reasons.append("same-value-stripped-skeleton")
     elif skeleton >= 0.62:
         reasons.append("similar-value-stripped-skeleton")
     if identifier >= 0.66:
         reasons.append("shared-stable-identifiers")
+    if entity_conflict:
+        reasons.append("conflicting-structured-identifiers")
     if key_affinity >= 0.55:
         reasons.append("proposal-matches-key-semantics")
     reasons.append(f"scope:{scope_relation}")
