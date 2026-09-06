@@ -254,6 +254,7 @@ function renderProposal(proposal) {
       <p class="memory-content">${memoryEsc(proposal.content)}</p>
       <div class="memory-meta">
         <span>scope · ${memoryEsc(scopeText(proposal))}</span>
+        <span>conversation · ${memoryEsc(proposal.conversation_id)}</span>
         <span>source · message:${memoryEsc(proposal.message_id)}</span>
         <span>extractor · ${memoryEsc(proposal.extractor_version || "deterministic")}</span>
       </div>
@@ -507,9 +508,9 @@ async function refreshMemoryPanel(force = false) {
   memoryState.loading = true;
   renderMemoryLoading();
   try {
-    if (!memoryState.session) {
-      memoryState.session = await memoryApi("/api/auth/me");
-    }
+    // Workspace membership can change independently of the page lifecycle. Re-authorize
+    // the current principal on every governance refresh instead of caching an old role.
+    memoryState.session = await memoryApi("/api/auth/me");
     const binding = await memoryApi(`/api/conversations/${encodeURIComponent(conversationId)}/project`);
     memoryState.project = binding.project || null;
     if (!memoryState.project) {
