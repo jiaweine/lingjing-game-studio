@@ -44,14 +44,18 @@ class ContextBudgetBroker:
         max_history_messages: int = 8,
         history_char_budget: int = 15000,
         kernel_char_budget: int = 5800,
+        per_message_char_budget: int = 5800,
         asset_text_char_budget: int = 9000,
         section_char_budgets: dict[str, int] | None = None,
     ) -> None:
         self.max_history_messages = max(2, min(32, int(max_history_messages)))
         self.history_char_budget = max(5000, int(history_char_budget))
         # The base provider adapter truncates each prior message to 6000 chars. Stay below it
-        # so the merged kernel pack is never cut a second time downstream.
+        # so neither the merged kernel nor a historical message is cut a second time.
         self.kernel_char_budget = max(1200, min(5900, int(kernel_char_budget)))
+        self.per_message_char_budget = max(
+            600, min(5900, int(per_message_char_budget))
+        )
         self.asset_text_char_budget = max(2000, int(asset_text_char_budget))
         self.section_char_budgets = {
             "verification": 1200,
@@ -63,8 +67,8 @@ class ContextBudgetBroker:
         }
 
     @staticmethod
-    def _content(message: dict[str, Any]) -> str:
-        return str(message.get("content", "") or "").strip()
+    def _content(message: dict[str, Any] | None) -> str:
+        return str((message or {}).get("content", "") or "").strip()
 
     @staticmethod
     def _derived(message: dict[str, Any]) -> bool:
@@ -199,23 +203,33 @@ class ContextBudgetBroker:
         packed_reversed: list[dict[str, Any]] = []
         used = 0
         dropped_for_chars = 0
+        clipped_messages = 0
         for message in reversed(kept):
-            content = self._content(message)
+            raw_content = self._content(message)
+            content = self.clip_text(
+                raw_content,
+                self.per_message_char_budget,
+                label="conversation message",
+            )
+            if content != raw_content:
+                clipped_messages += 1
             if not packed_reversed:
-                clipped = self.clip_text(
+                content = self.clip_text(
                     content,
-                    conversation_budget,
+                    min(self.per_message_char_budget, conversation_budget),
                     label="conversation history",
                 )
                 item = dict(message)
-                item["content"] = clipped
+                item["content"] = content
                 packed_reversed.append(item)
-                used += len(clipped)
+                used += len(content)
                 continue
             if used + len(content) > conversation_budget:
                 dropped_for_chars += 1
                 continue
-            packed_reversed.append(message)
+            item = dict(message)
+            item["content"] = content
+            packed_reversed.append(item)
             used += len(content)
         packed = list(reversed(packed_reversed))
         if kernel is not None:
@@ -230,6 +244,7 @@ class ContextBudgetBroker:
             "context_budget_output_chars": output_chars,
             "context_budget_history_char_limit": self.history_char_budget,
             "context_budget_kernel_char_limit": self.kernel_char_budget,
+            "context_budget_per_message_char_limit": self.per_message_char_budget,
             "context_budget_asset_text_char_limit": self.asset_text_char_budget,
             "context_budget_kernel_chars": kernel_chars,
             "context_budget_kernel_sections": kernel_stats["sections"],
@@ -239,8 +254,13 @@ class ContextBudgetBroker:
             "context_budget_conversation_messages_dropped": (
                 dropped_for_slots + dropped_for_chars
             ),
+            "context_budget_conversation_messages_clipped": clipped_messages,
             "context_budget_provider_last_n_safe": (
                 len(packed) <= self.max_history_messages
+            ),
+            "context_budget_provider_per_message_safe": all(
+                len(self._content(message)) <= self.per_message_char_budget
+                for message in packed
             ),
         }
         return BudgetedContext(messages=packed, telemetry=telemetry)
