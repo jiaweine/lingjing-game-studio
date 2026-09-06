@@ -12,7 +12,7 @@ import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Lingjing Multimodal Retrieval Coordinator", version="0.3.0")
+app = FastAPI(title="Lingjing Multimodal Retrieval Coordinator", version="0.3.1")
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_./:+#@-]{2,}")
@@ -104,12 +104,7 @@ class WorkerIndexResult:
 
 
 class WorkerClient:
-    """HTTP client with a shorter cooperative compute budget than transport timeout.
-
-    HTTP cancellation cannot stop a CUDA kernel already running on a remote worker. The
-    worker therefore receives `budget_ms` and may stop before starting its next batch. The
-    network timeout remains slightly larger so partial results can still be returned.
-    """
+    """HTTP client with a shorter cooperative compute budget than transport timeout."""
 
     def __init__(
         self,
@@ -252,8 +247,6 @@ AUDIO_WORKER = WorkerClient(
     timeout_seconds=float(os.getenv("LINGJING_LCO_WORKER_TIMEOUT_MS", "1100")) / 1000.0,
     compute_budget_ms=int(os.getenv("LINGJING_LCO_WORKER_BUDGET_MS", "920")),
 )
-# Indexers are intentionally separate. Never silently fall back to an online worker: doing
-# so turns warming into head-of-line blocking for user-facing rank traffic.
 VISUAL_INDEXER = WorkerClient(
     os.getenv("LINGJING_WEMM_INDEXER_URL", ""),
     timeout_seconds=float(os.getenv("LINGJING_WEMM_INDEXER_TIMEOUT_MS", "300000")) / 1000.0,
@@ -375,16 +368,25 @@ def _normalize_backend(rows: list[WorkerScore]) -> dict[str, float]:
     }
 
 
+def _worker_budget_ms(worker: Any) -> int | None:
+    """Expose optional capability telemetry without coupling the coordinator to one client."""
+    value = getattr(worker, "compute_budget_ms", None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     return {
         "ok": True,
-        "visual_worker": VISUAL_WORKER.enabled,
-        "audio_worker": AUDIO_WORKER.enabled,
-        "visual_indexer": VISUAL_INDEXER.enabled,
-        "audio_indexer": AUDIO_INDEXER.enabled,
-        "visual_budget_ms": VISUAL_WORKER.compute_budget_ms,
-        "audio_budget_ms": AUDIO_WORKER.compute_budget_ms,
+        "visual_worker": bool(getattr(VISUAL_WORKER, "enabled", False)),
+        "audio_worker": bool(getattr(AUDIO_WORKER, "enabled", False)),
+        "visual_indexer": bool(getattr(VISUAL_INDEXER, "enabled", False)),
+        "audio_indexer": bool(getattr(AUDIO_INDEXER, "enabled", False)),
+        "visual_budget_ms": _worker_budget_ms(VISUAL_WORKER),
+        "audio_budget_ms": _worker_budget_ms(AUDIO_WORKER),
     }
 
 
@@ -472,8 +474,8 @@ async def rank(request: RankRequest) -> dict[str, Any]:
             "audio_error": audio_result.error,
             "visual_budget_exhausted": semantic_result.budget_exhausted,
             "audio_budget_exhausted": audio_result.budget_exhausted,
-            "visual_budget_ms": VISUAL_WORKER.compute_budget_ms,
-            "audio_budget_ms": AUDIO_WORKER.compute_budget_ms,
+            "visual_budget_ms": _worker_budget_ms(VISUAL_WORKER),
+            "audio_budget_ms": _worker_budget_ms(AUDIO_WORKER),
             "audio_query": wants_audio,
             "temporal_query": wants_time,
         },
