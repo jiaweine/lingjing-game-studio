@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from worldforge.context.memory_consolidator import MemoryConsolidator
@@ -170,6 +172,76 @@ def test_approval_is_atomic_idempotent_and_preserves_scope_and_provenance(tmp_pa
         branch_ref="release",
     )
     assert len(history) == 1
+
+
+def test_approval_cannot_rewrite_user_confirmed_content(tmp_path):
+    product, memory, consolidator, project, conversation = _setup(tmp_path)
+    _message, proposals = _propose(
+        product,
+        consolidator,
+        project,
+        conversation,
+        "已确认护盾冷却是 6 秒。",
+    )
+    proposal = proposals[0]
+
+    with pytest.raises(ValueError, match="不能在批准时改写"):
+        consolidator.approve_proposal(
+            workspace_id=DEMO_WORKSPACE_ID,
+            actor_id=DEMO_USER_ID,
+            project_id=project["id"],
+            proposal_id=proposal["id"],
+            memory_key="combat.shield.cooldown",
+            content="已确认护盾冷却是 4 秒。",
+        )
+
+    assert memory.current_memory(
+        workspace_id=DEMO_WORKSPACE_ID,
+        actor_id=DEMO_USER_ID,
+        project_id=project["id"],
+        memory_key="combat.shield.cooldown",
+    ) is None
+    assert consolidator.list_proposals(
+        workspace_id=DEMO_WORKSPACE_ID,
+        actor_id=DEMO_USER_ID,
+        project_id=project["id"],
+        status="pending",
+    )[0]["id"] == proposal["id"]
+
+
+def test_concurrent_approval_commits_exactly_one_memory_revision(tmp_path):
+    product, memory, consolidator, project, conversation = _setup(tmp_path)
+    _message, proposals = _propose(
+        product,
+        consolidator,
+        project,
+        conversation,
+        "发布前必须运行全套回归。",
+    )
+    proposal_id = proposals[0]["id"]
+
+    def approve():
+        return consolidator.approve_proposal(
+            workspace_id=DEMO_WORKSPACE_ID,
+            actor_id=DEMO_USER_ID,
+            project_id=project["id"],
+            proposal_id=proposal_id,
+            memory_key="release.regression.required",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: approve(), range(2)))
+
+    memory_ids = {row["memory"]["id"] for row in results}
+    assert len(memory_ids) == 1
+    history = memory.memory_history(
+        workspace_id=DEMO_WORKSPACE_ID,
+        actor_id=DEMO_USER_ID,
+        project_id=project["id"],
+        memory_key="release.regression.required",
+    )
+    assert len(history) == 1
+    assert history[0]["revision"] == 1
 
 
 def test_rejected_proposal_cannot_later_be_promoted(tmp_path):
