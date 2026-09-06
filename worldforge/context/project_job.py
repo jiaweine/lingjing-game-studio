@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, text as sql_text
 
+from worldforge.settings import settings
+
+from .memory_consolidator import MemoryConsolidator
 from .project_memory import ProjectMemoryStore
 from .project_packet import (
     ProjectMemoryPacket,
@@ -12,6 +16,22 @@ from .project_packet import (
     compile_project_memory_packet,
     resolve_project_scope,
 )
+
+logger = logging.getLogger("worldforge.context.project_job")
+_CONSOLIDATORS: dict[int, MemoryConsolidator] = {}
+
+
+def _memory_consolidator(store: ProjectMemoryStore) -> MemoryConsolidator:
+    key = id(store.engine)
+    consolidator = _CONSOLIDATORS.get(key)
+    if consolidator is None:
+        consolidator = MemoryConsolidator(
+            store.engine,
+            store,
+            auto_create_schema=settings.auto_create_schema,
+        )
+        _CONSOLIDATORS[key] = consolidator
+    return consolidator
 
 
 def build_job_project_context(
@@ -193,6 +213,58 @@ def materialize_job_project_memory(
     )
 
 
+def _stage_current_user_proposals(
+    store: ProjectMemoryStore,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    job_context: dict[str, Any],
+) -> int:
+    """Best-effort derived staging; never block execution if proposal extraction fails.
+
+    One active job is allowed per conversation, so the most recent persisted user message is
+    the authoritative source for that job. Retries see the same message and the consolidator
+    fingerprint makes staging idempotent.
+    """
+    actor_id = str(job_context.get("actor_id") or "")
+    project_id = str(job_context.get("project_id") or "")
+    if not actor_id or not project_id:
+        return 0
+    try:
+        with store.engine.connect() as connection:
+            source = connection.execute(
+                sql_text(
+                    "SELECT id, content FROM messages "
+                    "WHERE conversation_id = :conversation_id AND role = 'user' "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1"
+                ),
+                {"conversation_id": conversation_id},
+            ).first()
+        if source is None:
+            return 0
+        scope = ProjectScopeSnapshot.from_dict(job_context.get("scope"))
+        rows = _memory_consolidator(store).propose_user_message(
+            workspace_id=workspace_id,
+            actor_id=actor_id,
+            project_id=project_id,
+            conversation_id=conversation_id,
+            message_id=str(source[0]),
+            content=str(source[1]),
+            scope=scope,
+        )
+        return sum(1 for row in rows if row.get("status") == "pending")
+    except Exception:
+        logger.exception(
+            "memory proposal staging failed",
+            extra={
+                "workspace_id": workspace_id,
+                "conversation_id": conversation_id,
+                "project_id": project_id,
+            },
+        )
+        return 0
+
+
 def record_job_memory_usage(
     store: ProjectMemoryStore,
     *,
@@ -202,7 +274,12 @@ def record_job_memory_usage(
     packet: ProjectMemoryPacket | None,
     reason: str = "analysis-context-snapshot",
 ) -> int:
-    """Audit actual materialized consumption without mutating memory truth/importance."""
+    """Audit materialized memory use and stage reviewable user-memory proposals.
+
+    Proposal staging is derived/advisory and therefore best-effort. It never mutates memory
+    truth and never blocks the analysis job; only an explicit later approval can create an
+    authoritative memory revision.
+    """
     data = dict(job_context or {})
     actor_id = str(data.get("actor_id") or "")
     project_id = str(data.get("project_id") or "")
@@ -222,4 +299,10 @@ def record_job_memory_usage(
             score=float(row.get("retrieval_score") or 0.0),
         )
         recorded += 1
+    _stage_current_user_proposals(
+        store,
+        workspace_id=workspace_id,
+        conversation_id=conversation_id,
+        job_context=data,
+    )
     return recorded
