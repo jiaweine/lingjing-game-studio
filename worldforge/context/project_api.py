@@ -10,6 +10,7 @@ from sqlalchemy import and_, select
 from worldforge.settings import settings
 
 from .memory_consolidator import MemoryConsolidator
+from .memory_identity_api import register_memory_identity_routes
 from .project_memory import MemoryConflict, ProjectMemoryStore
 
 
@@ -492,4 +493,10 @@ def build_project_memory_router(
         )
         return proposal
 
+    register_memory_identity_routes(
+        router,
+        memory_store=memory_store,
+        memory_consolidator=memory_consolidator,
+        require_principal=require_principal,
+    )
     return router
