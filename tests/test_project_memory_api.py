@@ -49,11 +49,13 @@ def test_project_memory_is_frozen_as_refs_and_reaches_analyzer_context():
             "build_ref": "1.4.7",
             "confidence": 1.0,
             "importance": 0.9,
-            "source_type": "user_api",
         },
     )
     assert memory_response.status_code == 200
     memory = memory_response.json()
+    assert memory["source_type"] == "user_api"
+    assert memory["source_id"].startswith("api:")
+    assert memory["state"] == "active"
 
     sent = client.post(
         f"/api/conversations/{conversation['id']}/messages",
@@ -100,6 +102,48 @@ def test_project_memory_is_frozen_as_refs_and_reaches_analyzer_context():
     assert context["project_memory_invalidated_refs"] == 0
     assert context["history_snapshot_valid"] is True
     assert context["history_snapshot_invalidated"] is False
+
+
+def test_memory_api_rejects_forged_system_provenance_and_initial_tombstone():
+    client = TestClient(app)
+    registration = client.post(
+        "/api/auth/register",
+        json={
+            "email": _email("provenance-owner"),
+            "password": "strong-password-789",
+            "name": "Provenance Owner",
+            "workspace_name": f"Provenance Lab {uuid.uuid4().hex[:6]}",
+        },
+    )
+    assert registration.status_code == 200
+    project = client.post("/api/projects", json={"name": "Secure Project"}).json()
+
+    forged = client.post(
+        f"/api/projects/{project['id']}/memories",
+        json={
+            "memory_key": "combat.verified",
+            "kind": "fact",
+            "content": "这是用户输入，不是 verifier 证据",
+            "source_type": "verifier",
+            "source_id": "verifier:trusted-run",
+            "state": "retracted",
+        },
+    )
+    assert forged.status_code == 422
+
+    created = client.post(
+        f"/api/projects/{project['id']}/memories",
+        json={
+            "memory_key": "combat.verified",
+            "kind": "fact",
+            "content": "这是用户输入，不是 verifier 证据",
+        },
+    )
+    assert created.status_code == 200
+    row = created.json()
+    assert row["source_type"] == "user_api"
+    assert row["source_id"].startswith("api:")
+    assert row["state"] == "active"
 
 
 def test_unbound_conversation_does_not_guess_project_memory():
