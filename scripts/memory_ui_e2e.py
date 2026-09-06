@@ -161,6 +161,27 @@ with sync_playwright() as playwright:
     page.wait_for_function("Array.from(document.querySelectorAll('.memory-history-row')).some(node=>node.textContent.includes('6 秒')) && Array.from(document.querySelectorAll('.memory-history-row')).some(node=>node.textContent.includes('5 秒'))")
     report["checks"]["revision_history_visible"] = True
 
+    # Workspace membership can change without reloading the page. A governance refresh must
+    # re-authorize the current role so stale owner controls do not remain visible to a viewer.
+    page.evaluate("""
+      S.session = {...S.session, user: {...S.session.user, role: 'viewer'}};
+      S.proposals.push({
+        id:'proposal-viewer',project_id:'project-atlas',conversation_id:'cv-e2e',
+        message_id:'msg-viewer',suggested_key:'proposal.constraint.viewer',kind:'constraint',
+        content:'发布前必须重新验证 viewer 场景。',build_ref:null,branch_ref:'release',
+        commit_ref:null,environment_ref:null,extractor_version:'deterministic-user-memory-v1',
+        status:'pending'
+      });
+    """)
+    page.click("#memoryRefreshBtn")
+    page.wait_for_function("document.querySelector('#memoryPanelBody').textContent.includes('只读成员可以查看 proposal')")
+    report["checks"]["workspace_role_reauthorized"] = (
+        page.locator('[data-memory-approve]').count() == 0
+        and page.locator('[data-memory-reject]').count() == 0
+        and page.locator('[data-memory-state]').count() == 0
+        and page.locator('.memory-proposal[data-proposal-id="proposal-viewer"]').count() == 1
+    )
+
     browser.close()
 
 report["ok"] = all(report["checks"].values()) and not report["errors"]
