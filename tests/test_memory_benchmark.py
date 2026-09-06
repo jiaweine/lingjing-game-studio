@@ -14,3 +14,4 @@ def test_lingjing_memory_benchmark_passes_all_governance_competencies():
     assert result.provenance_integrity == 1.0
     assert result.queued_snapshot_revocation == 1.0
     assert result.restart_persistence == 1.0
+    assert result.ingestion_outbox_cancellation == 1.0
