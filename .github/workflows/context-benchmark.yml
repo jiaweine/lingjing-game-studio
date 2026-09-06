@@ -9,6 +9,8 @@ on:
 jobs:
   context-benchmark:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
