@@ -6,6 +6,7 @@ from typing import Any, Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from .memory_consolidator import MemoryConsolidator
 from .project_memory import MemoryConflict, ProjectMemoryStore
 
 
@@ -49,16 +50,38 @@ class MemoryStateRequest(BaseModel):
     note: str = Field(default="", max_length=4000)
 
 
+class ProposalApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    memory_key: str | None = Field(default=None, max_length=240)
+    content: str | None = Field(default=None, max_length=20000)
+    note: str = Field(default="", max_length=4000)
+
+
+class ProposalRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(default="", max_length=4000)
+
+
 def build_project_memory_router(
     *,
     memory_store: ProjectMemoryStore,
+    memory_consolidator: MemoryConsolidator,
     product_store,
     require_principal: Callable,
     require_editor: Callable,
 ) -> APIRouter:
     router = APIRouter(tags=["project-memory"])
 
-    def audit(request: Request, principal, action: str, resource_type: str, resource_id: str, payload=None):
+    def audit(
+        request: Request,
+        principal,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        payload=None,
+    ):
         product_store.add_audit(
             request_id=getattr(request.state, "request_id", uuid.uuid4().hex),
             action=action,
@@ -84,7 +107,9 @@ def build_project_memory_router(
                 default_branch=req.default_branch,
             )
         except (ValueError, PermissionError) as exc:
-            raise HTTPException(409 if isinstance(exc, ValueError) else 403, str(exc)) from exc
+            raise HTTPException(
+                409 if isinstance(exc, ValueError) else 403, str(exc)
+            ) from exc
         audit(request, principal, "project.create", "project", project["id"])
         return project
 
@@ -150,11 +175,9 @@ def build_project_memory_router(
         request: Request,
         principal=Depends(require_editor),
     ):
-        # External callers author the semantic content, but cannot forge verifier/system
-        # provenance or create a tombstone in the same operation. Governance state changes
-        # go through /memory-state and every API-originated revision is attributable to the
-        # authenticated user + request audit record.
-        source_id = f"api:{getattr(request.state, 'request_id', uuid.uuid4().hex)}"
+        source_id = (
+            f"api:{getattr(request.state, 'request_id', uuid.uuid4().hex)}"
+        )
         try:
             row = memory_store.put_memory(
                 workspace_id=principal.workspace_id,
@@ -263,7 +286,9 @@ def build_project_memory_router(
         request: Request,
         principal=Depends(require_editor),
     ):
-        source_id = f"api:{getattr(request.state, 'request_id', uuid.uuid4().hex)}"
+        source_id = (
+            f"api:{getattr(request.state, 'request_id', uuid.uuid4().hex)}"
+        )
         try:
             row = memory_store.set_memory_state(
                 workspace_id=principal.workspace_id,
@@ -293,8 +318,117 @@ def build_project_memory_router(
             "memory.state",
             "project_memory",
             row["id"],
-            {"project_id": project_id, "memory_key": row["memory_key"], "state": row["state"]},
+            {
+                "project_id": project_id,
+                "memory_key": row["memory_key"],
+                "state": row["state"],
+            },
         )
         return row
+
+    @router.get("/api/projects/{project_id}/memory-proposals")
+    def memory_proposal_list(
+        project_id: str,
+        status: str = Query(default="pending", max_length=32),
+        conversation_id: str | None = Query(default=None, max_length=64),
+        limit: int = Query(default=100, ge=1, le=500),
+        principal=Depends(require_principal),
+    ):
+        status_filter = None if status.strip().lower() == "all" else status
+        try:
+            return memory_consolidator.list_proposals(
+                workspace_id=principal.workspace_id,
+                actor_id=principal.user_id,
+                project_id=project_id,
+                status=status_filter,
+                conversation_id=conversation_id,
+                limit=limit,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "项目不存在") from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @router.post(
+        "/api/projects/{project_id}/memory-proposals/{proposal_id}/approve"
+    )
+    def memory_proposal_approve(
+        project_id: str,
+        proposal_id: str,
+        req: ProposalApproveRequest,
+        request: Request,
+        principal=Depends(require_editor),
+    ):
+        try:
+            result = memory_consolidator.approve_proposal(
+                workspace_id=principal.workspace_id,
+                actor_id=principal.user_id,
+                project_id=project_id,
+                proposal_id=proposal_id,
+                memory_key=req.memory_key,
+                content=req.content,
+                note=req.note,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "记忆 proposal 不存在") from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except MemoryConflict as exc:
+            raise HTTPException(409, "记忆 proposal 并发冲突，请重试") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        memory = result.get("memory") or {}
+        audit(
+            request,
+            principal,
+            "memory.proposal.approve",
+            "memory_proposal",
+            proposal_id,
+            {
+                "project_id": project_id,
+                "memory_id": memory.get("id"),
+                "memory_key": memory.get("memory_key"),
+                "revision": memory.get("revision"),
+            },
+        )
+        return result
+
+    @router.post(
+        "/api/projects/{project_id}/memory-proposals/{proposal_id}/reject"
+    )
+    def memory_proposal_reject(
+        project_id: str,
+        proposal_id: str,
+        req: ProposalRejectRequest,
+        request: Request,
+        principal=Depends(require_editor),
+    ):
+        try:
+            proposal = memory_consolidator.reject_proposal(
+                workspace_id=principal.workspace_id,
+                actor_id=principal.user_id,
+                project_id=project_id,
+                proposal_id=proposal_id,
+                note=req.note,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "记忆 proposal 不存在") from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except MemoryConflict as exc:
+            raise HTTPException(409, "记忆 proposal 并发冲突，请重试") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        audit(
+            request,
+            principal,
+            "memory.proposal.reject",
+            "memory_proposal",
+            proposal_id,
+            {"project_id": project_id},
+        )
+        return proposal
 
     return router
