@@ -25,6 +25,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from worldforge.api.manager import RunManager
 from worldforge.benchmarks import run_benchmark
+from worldforge.context.history_snapshot import build_history_snapshot, history_from_job_payload
 from worldforge.context.project_api import build_project_memory_router
 from worldforge.context.project_job import (
     build_job_project_context,
@@ -709,6 +710,7 @@ async def _run_analysis_job(
     assets,
     job_id=None,
     project_context=None,
+    history_snapshot_meta=None,
 ):
     def ensure_active():
         if not job_id:
@@ -756,6 +758,9 @@ async def _run_analysis_job(
             human_feedback_gate=bool(quality_gate["approved"]),
             project_memory=memory_packet,
         )
+        context = dict(result.get("context") or {})
+        context.update(dict(history_snapshot_meta or {}))
+        result["context"] = context
         if job_id:
             message = product_store.complete_job_answer(
                 job_id,
@@ -821,16 +826,23 @@ async def _schedule_product_job(job, background_tasks: BackgroundTasks, principa
                 assets.append(product_store.get_asset(asset_id, workspace_id=claimed["workspace_id"]))
             except KeyError:
                 continue
+        history, history_meta = history_from_job_payload(
+            product_store,
+            conversation_id=claimed["conversation_id"],
+            workspace_id=claimed["workspace_id"],
+            payload=payload,
+        )
         try:
             await _run_analysis_job(
                 conversation_id=claimed["conversation_id"],
                 workspace_id=claimed["workspace_id"],
                 text=str(payload.get("text", "")),
                 provider_key=str(payload.get("provider", "auto")),
-                history=list(payload.get("history", [])),
+                history=history,
                 assets=assets,
                 job_id=claimed["id"],
                 project_context=dict(payload.get("project_context") or {}),
+                history_snapshot_meta=history_meta,
             )
         except Exception as exc:
             await _fail_product_job(claimed["id"], repr(exc), max_attempts=1)
@@ -856,6 +868,7 @@ async def conversation_message(
         raise HTTPException(409, "删除确认处理中，不能继续执行")
 
     history = product_store.list_messages(conversation_id, workspace_id=principal.workspace_id)
+    history_snapshot = build_history_snapshot(history)
     context_assets = product_store.list_assets(conversation_id, workspace_id=principal.workspace_id)
     context_by_id = {asset["id"]: asset for asset in context_assets}
     selected_asset_ids: list[str] = []
@@ -890,7 +903,7 @@ async def conversation_message(
     job_payload = {
         "text": req.content,
         "provider": req.provider,
-        "history": history,
+        "history_snapshot": history_snapshot,
         "asset_ids": context_asset_ids,
         "actor_id": principal.user_id,
         "project_context": project_context,
@@ -919,6 +932,7 @@ async def conversation_message(
         payload={
             "job_id": job["id"],
             "asset_count": len(context_asset_ids),
+            "history_snapshot_count": history_snapshot["count"],
             "project_id": (project_context or {}).get("project_id"),
             "project_memory_refs": len(
                 ((project_context or {}).get("memory_snapshot") or {}).get("memory_refs", [])
