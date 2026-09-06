@@ -25,6 +25,13 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from worldforge.api.manager import RunManager
 from worldforge.benchmarks import run_benchmark
+from worldforge.context.project_api import build_project_memory_router
+from worldforge.context.project_job import (
+    build_job_project_context,
+    materialize_job_project_memory,
+    record_job_memory_usage,
+)
+from worldforge.context.project_memory import ProjectMemoryStore
 from worldforge.envs import get_scenario, list_scenarios
 from worldforge.models import BenchmarkRequest, RunConfig
 from worldforge.observability import (
@@ -55,6 +62,10 @@ product_store = ConversationStore(
     database_url=settings.database_url,
     auto_create_schema=settings.auto_create_schema,
     seed_dev_identity=settings.auth_mode == "dev",
+)
+project_memory_store = ProjectMemoryStore(
+    product_store.engine,
+    auto_create_schema=settings.auto_create_schema,
 )
 storage = build_storage(settings, DATA_DIR / "objects")
 providers = ProviderRegistry()
@@ -223,6 +234,10 @@ class ChatRequest(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
     asset_ids: list[str] = Field(default_factory=list, max_length=50)
     provider: str = "auto"
+    build_ref: str | None = Field(default=None, max_length=160)
+    branch_ref: str | None = Field(default=None, max_length=200)
+    commit_ref: str | None = Field(default=None, max_length=160)
+    environment_ref: str | None = Field(default=None, max_length=160)
 
 
 class RegisterRequest(BaseModel):
@@ -693,6 +708,7 @@ async def _run_analysis_job(
     history,
     assets,
     job_id=None,
+    project_context=None,
 ):
     def ensure_active():
         if not job_id:
@@ -715,6 +731,18 @@ async def _run_analysis_job(
             )
 
         ensure_active()
+        memory_packet = materialize_job_project_memory(
+            project_memory_store,
+            workspace_id=workspace_id,
+            job_context=project_context,
+        )
+        record_job_memory_usage(
+            project_memory_store,
+            workspace_id=workspace_id,
+            conversation_id=conversation_id,
+            job_context=project_context,
+            packet=memory_packet,
+        )
         prepared = _materialize_assets(assets)
         quality_gate = product_store.feedback_gate(
             conversation_id, workspace_id=workspace_id
@@ -726,6 +754,7 @@ async def _run_analysis_job(
             sink=sink,
             history=history,
             human_feedback_gate=bool(quality_gate["approved"]),
+            project_memory=memory_packet,
         )
         if job_id:
             message = product_store.complete_job_answer(
@@ -801,6 +830,7 @@ async def _schedule_product_job(job, background_tasks: BackgroundTasks, principa
                 history=list(payload.get("history", [])),
                 assets=assets,
                 job_id=claimed["id"],
+                project_context=dict(payload.get("project_context") or {}),
             )
         except Exception as exc:
             await _fail_product_job(claimed["id"], repr(exc), max_attempts=1)
@@ -841,12 +871,29 @@ async def conversation_message(
         if asset["id"] not in selected_asset_ids:
             selected_asset_ids.append(asset["id"])
 
+    selected_assets = [context_by_id[item] for item in selected_asset_ids if item in context_by_id]
+    project_context = build_job_project_context(
+        project_memory_store,
+        workspace_id=principal.workspace_id,
+        actor_id=principal.user_id,
+        conversation_id=conversation_id,
+        query=req.content,
+        selected_assets=selected_assets,
+        requested_scope={
+            "build_ref": req.build_ref,
+            "branch_ref": req.branch_ref,
+            "commit_ref": req.commit_ref,
+            "environment_ref": req.environment_ref,
+        },
+    )
     context_asset_ids = list(dict.fromkeys(asset["id"] for asset in context_assets))
     job_payload = {
         "text": req.content,
         "provider": req.provider,
         "history": history,
         "asset_ids": context_asset_ids,
+        "actor_id": principal.user_id,
+        "project_context": project_context,
     }
     try:
         user_message, job = product_store.create_message_job(
@@ -869,7 +916,14 @@ async def conversation_message(
         user_id=principal.user_id,
         resource_type="conversation",
         resource_id=conversation_id,
-        payload={"job_id": job["id"], "asset_count": len(context_asset_ids)},
+        payload={
+            "job_id": job["id"],
+            "asset_count": len(context_asset_ids),
+            "project_id": (project_context or {}).get("project_id"),
+            "project_memory_refs": len(
+                ((project_context or {}).get("memory_snapshot") or {}).get("memory_refs", [])
+            ),
+        },
     )
 
     if settings.queue_mode == "external":
@@ -925,6 +979,14 @@ async def job_cancel(
 
 
 app.include_router(
+    build_project_memory_router(
+        memory_store=project_memory_store,
+        product_store=product_store,
+        require_principal=require_principal,
+        require_editor=require_editor,
+    )
+)
+app.include_router(
     build_control_router(
         store=product_store,
         storage=storage,
@@ -950,8 +1012,6 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str):
         await websocket.close(code=4401)
         return
 
-    # Subscribe before replay. Events that arrive during replay may appear in both
-    # paths, so event-id deduplication below closes the replay/subscribe race.
     queue = task_event_hub.subscribe(conversation_id)
     last_event_id = max(
         0, int(websocket.query_params.get("after_id", "0") or 0)
@@ -1068,7 +1128,6 @@ def runtime(principal: Principal = Depends(require_principal)):
         },
         "policy": manager.engine.policy_model.card_dict(),
     }
-
 
 
 @app.get("/api/diagnostics")
