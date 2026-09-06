@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import and_, select
 
 from worldforge.settings import settings
 
@@ -258,6 +259,56 @@ def build_project_memory_router(
                 include_nonactive=include_nonactive,
                 limit=limit,
             )
+        except KeyError as exc:
+            raise HTTPException(404, "项目不存在") from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+
+    @router.get("/api/projects/{project_id}/memory-heads")
+    def memory_head_list(
+        project_id: str,
+        include_nonactive: bool = True,
+        limit: int = Query(default=250, ge=1, le=1000),
+        principal=Depends(require_principal),
+    ):
+        """Governance view: return every current memory head across every identity scope.
+
+        This intentionally does not apply inference-time scope shadowing. A project-memory
+        management UI must be able to see build/branch/commit-specific heads that would be
+        hidden from an unrelated inference scope, including disputed/retracted heads.
+        """
+        try:
+            with memory_store.engine.connect() as connection:
+                memory_store._require_member(
+                    connection, principal.workspace_id, principal.user_id
+                )
+                memory_store._require_project(
+                    connection, principal.workspace_id, project_id
+                )
+                conditions = [
+                    memory_store.heads.c.workspace_id == principal.workspace_id,
+                    memory_store.heads.c.project_id == project_id,
+                    memory_store.items.c.workspace_id == principal.workspace_id,
+                    memory_store.items.c.project_id == project_id,
+                ]
+                if not include_nonactive:
+                    conditions.append(memory_store.heads.c.state == "active")
+                rows = connection.execute(
+                    select(memory_store.items)
+                    .select_from(
+                        memory_store.heads.join(
+                            memory_store.items,
+                            memory_store.heads.c.memory_id == memory_store.items.c.id,
+                        )
+                    )
+                    .where(and_(*conditions))
+                    .order_by(
+                        memory_store.items.c.pinned.desc(),
+                        memory_store.items.c.created_at.desc(),
+                    )
+                    .limit(max(1, min(1000, int(limit))))
+                ).all()
+            return [memory_store._decode_item(row) for row in rows]
         except KeyError as exc:
             raise HTTPException(404, "项目不存在") from exc
         except PermissionError as exc:
