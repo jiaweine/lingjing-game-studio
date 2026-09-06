@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import defaultdict
 
 from sqlalchemy import func, select
@@ -28,6 +29,7 @@ class TaskEventFanoutHub:
         batch_size: int = 1000,
         queue_size: int = 512,
         memory_ingestion_consumer=None,
+        memory_recovery_interval: float = 5.0,
     ) -> None:
         self.store = store
         self.poll_interval = poll_interval
@@ -42,6 +44,8 @@ class TaskEventFanoutHub:
             if memory_ingestion_consumer is not None
             else MemoryIngestionConsumer(store)
         )
+        self.memory_recovery_interval = max(.05, float(memory_recovery_interval))
+        self._next_memory_recovery = 0.0
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -49,6 +53,7 @@ class TaskEventFanoutHub:
         # Recover committed message.accepted events that may have survived an API crash before
         # their derived proposal was staged. This runs before the fanout cursor jumps to latest.
         await self._drain_memory_ingestion(max_batches=8)
+        self._next_memory_recovery = time.monotonic() + self.memory_recovery_interval
         self._cursor = await asyncio.to_thread(self._latest_id)
         self._task = asyncio.create_task(self._run(), name="task-event-fanout")
 
@@ -122,6 +127,14 @@ class TaskEventFanoutHub:
     async def _run(self) -> None:
         while True:
             self.poll_count += 1
+            now = time.monotonic()
+            if now >= self._next_memory_recovery:
+                # Periodic recovery is required even when no new task event arrives: a startup
+                # backlog larger than the bounded initial drain and failed receipts whose
+                # backoff expires later must not wait for another user message or process restart.
+                await self._drain_memory_ingestion(max_batches=1)
+                self._next_memory_recovery = time.monotonic() + self.memory_recovery_interval
+
             events = await asyncio.to_thread(self._fetch_after, self._cursor)
             if not events:
                 await asyncio.sleep(self.poll_interval)
