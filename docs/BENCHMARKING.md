@@ -116,7 +116,9 @@ python scripts/memory_benchmark.py
 | queued snapshot revocation | 排队时命中的 revision 后来被撤回时，旧 job 必须 invalidated，不能继续用旧正文，也不能自动换新 head |
 | restart persistence | 用同一数据库重新构造全新 Store 后，active Project Memory 必须继续可检索 |
 
-pytest 对这九项要求全部为 `1.0`，总分必须 `1.0`。这里的 **9/9 只表示 correctness floor 全部满足，不代表 SOTA memory accuracy**。
+pytest 对这九项要求全部为 `1.0`，总分必须 `1.0`。CI 还会单独运行 `scripts/memory_benchmark.py`，把每个 competency 的机器可读结果留在 workflow 日志中。
+
+这里的 **9/9 只表示 correctness floor 全部满足，不代表 SOTA memory accuracy**。
 
 下一阶段 MemoryBench 会继续增加：
 
@@ -126,6 +128,7 @@ pytest 对这九项要求全部为 `1.0`，总分必须 `1.0`。这里的 **9/9 
 - message-ingestion outbox 与取消任务场景；
 - multimodal provenance 与跨素材时间线；
 - provider-aware token / latency / cost；
+- proposal → existing memory identity 的 false-merge / false-split；
 - 模型问答层的 recall、update、abstention 和 workflow-learning accuracy。
 
 只有在这些 controlled protocol 下与强基线比较后，才有资格讨论 game-R&D memory SOTA。
@@ -136,19 +139,22 @@ pytest 对这九项要求全部为 `1.0`，总分必须 `1.0`。这里的 **9/9 
 
 - Python compile；
 - 完整 pytest（包含 MemoryBench correctness gate）；
-- JavaScript syntax；
+- standalone `Memory correctness benchmark`；
+- JavaScript syntax（`app.js` + `memory_panel.js`）；
 - Backend product E2E；
 - Browser product E2E；
+- **Memory governance browser E2E**：显式 Project 绑定、proposal 审批/拒绝、revision/state/history 和 workspace role 重新授权；
 - README / repository consistency；
 - GitHub README 真实浏览器图片加载与产品首页渲染检查。
 
 其中：
 
-- Browser E2E 证明产品交互闭环没有被算法改造破坏；
+- Browser product E2E 证明主产品交互闭环没有被算法改造破坏；
+- Memory governance browser E2E 证明用户真的可以完成长期记忆治理，而不是只有后端 API；
 - standalone Harness benchmark 证明 Harness generation 机制在干净进程中仍可成功；
 - MemoryBench 证明项目长期记忆的版本、治理、撤回和持久化基本语义没有回归。
 
-三者必须分别报告，不能揉成一个“综合性能分”。
+这些证据必须分别报告，不能揉成一个“综合性能分”。
 
 ## 7. 外部比较规则
 
