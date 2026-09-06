@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from worldforge.providers.anthropic import AnthropicProvider
+from worldforge.providers.base import BaseProvider, ProviderError
 from worldforge.providers.gemini import GeminiProvider
 from worldforge.providers.native_tokens import decide_native_token_count
-from worldforge.providers.base import ProviderError
 
 
 class _Response:
@@ -18,6 +16,15 @@ class _Response:
 
     def json(self):
         return self._payload
+
+
+async def _run_and_capture(provider, **kwargs):
+    """Read ContextVar telemetry inside the same task that performed the request."""
+    try:
+        answer = await provider.chat(**kwargs)
+    except ProviderError as exc:
+        return None, provider.request_telemetry(), exc
+    return answer, provider.request_telemetry(), None
 
 
 def test_native_token_auto_skips_without_trustworthy_limit():
@@ -92,15 +99,16 @@ def test_gemini_native_metadata_and_count_are_used(monkeypatch):
     )
 
     provider = GeminiProvider("secret", "gemini-test")
-    answer = asyncio.run(
-        provider.chat(
+    answer, telemetry, error = asyncio.run(
+        _run_and_capture(
+            provider,
             messages=[{"role": "user", "content": "测试 token"}],
             assets=[],
             max_tokens=50,
         )
     )
-    telemetry = provider.request_telemetry()
 
+    assert error is None
     assert answer == "gemini-ok"
     assert [method for method, _url in calls] == ["GET", "POST", "POST"]
     assert ":countTokens" in calls[1][1]
@@ -140,16 +148,19 @@ def test_gemini_native_count_blocks_generation_over_limit(monkeypatch):
     )
 
     provider = GeminiProvider("secret", "gemini-small")
-    with pytest.raises(ProviderError, match="21 > 20"):
-        asyncio.run(
-            provider.chat(
-                messages=[{"role": "user", "content": "too large"}],
-                assets=[],
-                max_tokens=5,
-            )
+    answer, telemetry, error = asyncio.run(
+        _run_and_capture(
+            provider,
+            messages=[{"role": "user", "content": "too large"}],
+            assets=[],
+            max_tokens=5,
         )
+    )
+    assert answer is None
+    assert isinstance(error, ProviderError)
+    assert "21 > 20" in str(error)
     assert len(calls) == 2
-    assert provider.request_telemetry()["native_token_count_status"] == "blocked-over-limit"
+    assert telemetry["native_token_count_status"] == "blocked-over-limit"
 
 
 def test_anthropic_native_count_fail_open_then_generates(monkeypatch):
@@ -183,15 +194,16 @@ def test_anthropic_native_count_fail_open_then_generates(monkeypatch):
     )
 
     provider = AnthropicProvider("secret", "claude-test")
-    answer = asyncio.run(
-        provider.chat(
+    answer, telemetry, error = asyncio.run(
+        _run_and_capture(
+            provider,
             messages=[{"role": "user", "content": "hello"}],
             assets=[],
             max_tokens=50,
         )
     )
-    telemetry = provider.request_telemetry()
 
+    assert error is None
     assert answer == "claude-ok"
     assert [method for method, _url in calls] == ["GET", "POST", "POST"]
     assert calls[1][1].endswith("/v1/messages/count_tokens")
@@ -228,17 +240,43 @@ def test_anthropic_model_limit_is_cached_across_requests(monkeypatch):
     )
 
     provider = AnthropicProvider("secret", "claude-cache-test")
-    for _ in range(2):
-        assert asyncio.run(
-            provider.chat(
-                messages=[{"role": "user", "content": "hello"}],
-                assets=[],
-                max_tokens=50,
-            )
-        ) == "ok"
 
+    async def run_twice():
+        first = await provider.chat(
+            messages=[{"role": "user", "content": "hello"}],
+            assets=[],
+            max_tokens=50,
+        )
+        second = await provider.chat(
+            messages=[{"role": "user", "content": "hello again"}],
+            assets=[],
+            max_tokens=50,
+        )
+        return first, second
+
+    first, second = asyncio.run(run_twice())
+    assert first == second == "ok"
     assert sum(1 for method, _url in calls if method == "GET") == 1
-    assert sum(1 for method, url in calls if method == "POST" and url.endswith("/count_tokens")) == 2
+    assert sum(
+        1
+        for method, url in calls
+        if method == "POST" and url.endswith("/count_tokens")
+    ) == 2
+
+
+def test_provider_request_telemetry_is_task_local():
+    provider = BaseProvider()
+
+    async def worker(label: str):
+        provider.reset_request_telemetry()
+        provider.update_request_telemetry(label=label)
+        await asyncio.sleep(0)
+        return provider.request_telemetry()["label"]
+
+    async def run_workers():
+        return await asyncio.gather(worker("alpha"), worker("beta"))
+
+    assert asyncio.run(run_workers()) == ["alpha", "beta"]
 
 
 def test_product_exports_native_token_telemetry_wrapper():
