@@ -8,6 +8,7 @@ from worldforge.context.claim_graph import build_claim_evidence_graph
 from worldforge.context.evidence_controller import EvidenceController
 from worldforge.context.media_derivatives import augment_model_assets
 from worldforge.context.preindex import PreindexScheduler
+from worldforge.context.project_packet import ProjectMemoryPacket
 from worldforge.context.retrieval_sidecar import (
     MultimodalRetrievalClient,
     MultimodalRetrievalResult,
@@ -45,9 +46,10 @@ class ProductAnalyzer(BaseProductAnalyzer):
     """Product analyzer with bounded long-horizon and multimodal context compilation.
 
     Raw messages/assets remain authoritative. ContextOS constrains model-facing context,
-    evidence budget, execution scope and confidence semantics. Derived retrieval/index caches
-    are disposable, and synthetic runtime is opt-in so it cannot masquerade as real project
-    verification in the default product path.
+    evidence budget, execution scope and confidence semantics. Project long-term memory is
+    accepted only as a pre-authorized frozen packet; this layer never queries or mutates the
+    memory database. Derived retrieval/index caches are disposable, and synthetic runtime is
+    opt-in so it cannot masquerade as real project verification in the default product path.
     """
 
     def __init__(self, engine, providers):
@@ -99,10 +101,16 @@ class ProductAnalyzer(BaseProductAnalyzer):
         sink,
         history=None,
         human_feedback_gate=False,
+        project_memory: ProjectMemoryPacket | dict[str, Any] | None = None,
     ):
         raw_history: list[dict[str, Any]] = list(history or [])
         raw_assets: list[dict[str, Any]] = list(assets or [])
         query = str(text)
+        memory_packet = (
+            project_memory
+            if isinstance(project_memory, ProjectMemoryPacket)
+            else ProjectMemoryPacket.from_dict(project_memory)
+        )
 
         packet = self.context_compiler.compile(query, raw_history)
         multimodal_packet = self.multimodal_compiler.compile(query, raw_assets)
@@ -175,7 +183,20 @@ class ProductAnalyzer(BaseProductAnalyzer):
                         "【系统编译的持久任务状态；不是新的用户消息】\n"
                         + packet.render_task_state()
                     ),
-                    "payload": {"system_derived": True},
+                    "payload": {"system_derived": True, "context_kind": "task_state"},
+                }
+            )
+        if memory_packet is not None:
+            compiled_history.append(
+                {
+                    "id": "context:project-memory",
+                    "role": "user",
+                    "content": memory_packet.render(),
+                    "payload": {
+                        "system_derived": True,
+                        "context_kind": "project_memory",
+                        "project_id": memory_packet.project_id,
+                    },
                 }
             )
         if raw_assets:
@@ -184,7 +205,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
                     "id": "context:evidence-controller",
                     "role": "user",
                     "content": evidence_assessment.render(evidence_plan),
-                    "payload": {"system_derived": True},
+                    "payload": {"system_derived": True, "context_kind": "evidence_control"},
                 }
             )
             compiled_history.append(
@@ -192,7 +213,7 @@ class ProductAnalyzer(BaseProductAnalyzer):
                     "id": "context:verification-contract",
                     "role": "user",
                     "content": verification_contract.render(),
-                    "payload": {"system_derived": True},
+                    "payload": {"system_derived": True, "context_kind": "verification"},
                 }
             )
 
@@ -238,6 +259,20 @@ class ProductAnalyzer(BaseProductAnalyzer):
         context.update(verification_contract.stats())
         context.update(claim_graph.stats())
         context.update(self.preindex_scheduler.stats())
+        if memory_packet is not None:
+            context.update(memory_packet.stats())
+        else:
+            context.update(
+                {
+                    "project_memory_mode": "none",
+                    "project_id": None,
+                    "project_memory_selected": 0,
+                    "project_memory_chars": 0,
+                    "project_memory_ids": [],
+                    "project_memory_scope": None,
+                    "project_memory_scope_conflict": False,
+                }
+            )
         context["preindex_scheduled_this_run"] = preindex_scheduled
         context["history_messages"] = len(raw_history)
         context["task_assets"] = len(raw_assets)
