@@ -1,0 +1,21 @@
+name: Memory Identity Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  identity-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+      - name: Memory identity benchmark
+        run: python scripts/memory_identity_benchmark.py
