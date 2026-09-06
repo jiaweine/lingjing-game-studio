@@ -94,7 +94,19 @@ with TestClient(app) as client:
     data = client.get(f"/api/conversations/{conversation_id}").json()
     assert len(data["messages"]) == 2
     assert data["messages"][-1]["role"] == "assistant"
-    assert len(data["messages"][-1]["payload"].get("evidence", [])) >= len(asset_ids) + 1
+    result = data["messages"][-1]["payload"]
+    evidence = list(result.get("evidence") or [])
+    assert evidence, "evidence controller must preserve at least one auditable evidence node"
+    context = dict(result.get("context") or {})
+    assert context.get("task_assets") == len(asset_ids)
+    graph = dict(result.get("claim_evidence_graph") or {})
+    assert graph.get("claims"), graph
+    assert graph.get("evidence"), graph
+    assert graph.get("requirements", {}).get(
+        "synthetic_runtime_counts_as_project_verification"
+    ) is False
+    # Evidence selection is relevance/budget driven; it must not mechanically emit one
+    # evidence row per uploaded asset. All task assets remain preserved in context instead.
     report["checks"]["execution_result"] = True
     report["events"] = [event["type"] for event in data["events"]]
     assert report["events"][-1] == "answer.ready"

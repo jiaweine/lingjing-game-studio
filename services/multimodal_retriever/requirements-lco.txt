@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+numpy>=2.0
+torch
+transformers>=4.51,<5
+accelerate>=1.1.0
+qwen-omni-utils

@@ -53,8 +53,12 @@ jobs:
         run: pytest -q
       - name: Harness self-evolution benchmark
         run: python scripts/harness_evolution_benchmark.py
+      - name: Memory correctness benchmark
+        run: python scripts/memory_benchmark.py
       - name: JavaScript syntax check
-        run: node --check frontend/app.js
+        run: |
+          node --check frontend/app.js
+          node --check frontend/memory_panel.js
       - name: Backend product E2E
         run: python scripts/product_backend_e2e.py
       - name: README and repository consistency
@@ -83,6 +87,7 @@ jobs:
           asset_prefix = f'https://github.com/{repository}/releases/download/readme-gallery-assets/'
           api = f'https://api.github.com/repos/{repository}'
           readme = Path('README.md').read_text(encoding='utf-8')
+          benchmark = Path('docs/BENCHMARKING.md').read_text(encoding='utf-8')
 
           for name in names:
               rel = f'docs/assets/readme/{name}.png'
@@ -95,8 +100,15 @@ jobs:
                   assert image.format == 'PNG', (name, image.format)
                   assert image.size == (3840, 2400), (name, image.size)
 
-          assert readme.count('```math\n') == 18, 'README must expose exactly 18 display equations'
-          assert r'\operatorname{' not in readme, 'GitHub MathJax rejects operatorname in this README'
+          # The v1 README is the product landing page. Detailed equations and the sealed
+          # benchmark protocol intentionally live under docs/ instead of the landing page.
+          assert '```math\n' not in readme, 'README should keep detailed equations in docs/'
+          assert r'\operatorname{' not in readme, 'README should not carry unsupported math macros'
+          assert 'docs/ARCHITECTURE.md' in readme
+          assert 'docs/BENCHMARKING.md' in readme
+          assert 'docs/RESEARCH_NOTES.md' in readme
+          assert 'sealed-heldout-game-harness-2026-08' in benchmark
+          assert 'paired-bootstrap LCB' in benchmark
           assert '](/docs/' not in readme, 'README must not use GitHub site-root image paths'
           assert '](./docs/assets/readme/' not in readme, 'README must not depend on GitHub /raw route rewriting'
           assert 'raw.githubusercontent.com/jiaweine/lingjing-game-studio/' not in readme, 'README must use stable release assets, not raw CDN links'
@@ -196,6 +208,8 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Browser product E2E
         run: python scripts/product_ui_e2e.py
+      - name: Memory governance browser E2E
+        run: python scripts/memory_ui_e2e.py
       - name: README browser visibility
         env:
           GH_REPOSITORY: ${{ github.repository }}
@@ -268,32 +282,22 @@ jobs:
               assert len(verified) == 9, len(verified)
               assert not image_failures, image_failures
 
-              math_deadline = time.monotonic() + 45
-              math_state = None
-              while time.monotonic() < math_deadline:
-                  math_state = page.evaluate('''() => {
-                      const renderers = Array.from(document.querySelectorAll('math-renderer'));
-                      const mathml = renderers.filter(node => node.querySelector('math')).length;
-                      const rawBlocks = Array.from(document.querySelectorAll('pre code')).filter(node =>
-                          (node.className || '').includes('language-math')
-                      ).length;
-                      const bodyText = document.body.innerText || '';
-                      return {
-                          renderers: renderers.length,
-                          mathml,
-                          rawBlocks,
-                          macroError: bodyText.includes('The following macros are not allowed') || bodyText.includes('ParseError')
-                      };
-                  }''')
-                  if math_state['mathml'] >= 18 and not math_state['macroError']:
-                      break
-                  page.wait_for_timeout(500)
-              assert math_state['renderers'] >= 18, math_state
-              assert math_state['mathml'] >= 18, math_state
-              assert math_state['rawBlocks'] == 0, math_state
-              assert not math_state['macroError'], math_state
+              render_state = page.evaluate('''() => {
+                  const renderers = Array.from(document.querySelectorAll('math-renderer'));
+                  const rawBlocks = Array.from(document.querySelectorAll('pre code')).filter(node =>
+                      (node.className || '').includes('language-math')
+                  ).length;
+                  const bodyText = document.body.innerText || '';
+                  return {
+                      renderers: renderers.length,
+                      rawBlocks,
+                      macroError: bodyText.includes('The following macros are not allowed') || bodyText.includes('ParseError')
+                  };
+              }''')
+              assert render_state['rawBlocks'] == 0, render_state
+              assert not render_state['macroError'], render_state
 
-              print(f'readme-browser-ok images={len(verified)} math={math_state} url={url}')
+              print(f'readme-browser-ok images={len(verified)} render={render_state} url={url}')
               browser.close()
           PY
       # README Gallery is refreshed separately by .github/workflows/readme-gallery.yml on main.

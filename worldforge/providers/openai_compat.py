@@ -9,12 +9,26 @@ import httpx
 
 from .base import BaseProvider, ProviderError, ProviderInfo
 
+_MAX_INLINE_MEDIA_BYTES = 24 * 1024 * 1024
+_MAX_INLINE_TOTAL_BYTES = 32 * 1024 * 1024
+
 
 def _data_url(path: str | Path, mime: str | None = None) -> str:
     source = Path(path)
     media_type = mime or mimetypes.guess_type(source.name)[0] or "application/octet-stream"
     encoded = base64.b64encode(source.read_bytes()).decode()
     return f"data:{media_type};base64,{encoded}"
+
+
+def _inline_size(asset: dict[str, Any]) -> int | None:
+    try:
+        path = Path(str(asset.get("path", "")))
+        if not path.is_file():
+            return None
+        size = path.stat().st_size
+        return size if size <= _MAX_INLINE_MEDIA_BYTES else None
+    except OSError:
+        return None
 
 
 class OpenAICompatProvider(BaseProvider):
@@ -64,39 +78,53 @@ class OpenAICompatProvider(BaseProvider):
 
         out = [dict(message) for message in messages]
         assets = assets or []
-        images = [
-            asset for asset in assets
-            if str(asset.get("mime", "")).startswith("image/")
-        ]
-        audio = [
-            asset for asset in assets
-            if str(asset.get("mime", "")).startswith("audio/")
-        ]
 
-        if out and out[-1].get("role") == "user" and (
-            (images and self.info.multimodal)
-            or (audio and self.info.supports_audio)
-        ):
+        if out and out[-1].get("role") == "user" and assets:
             content: list[dict[str, Any]] = [
                 {"type": "text", "text": str(out[-1].get("content", ""))}
             ]
-            if self.info.multimodal:
-                for asset in images[:10]:
-                    content.append({
+            total_bytes = 0
+            image_count = 0
+            video_count = 0
+            audio_count = 0
+
+            # Preserve upstream evidence priority instead of regrouping by modality.
+            # The ContextOS pack puts exact temporal evidence and high-value derivatives
+            # first. A global raw-byte budget bounds base64 expansion, gateway pressure and
+            # request memory even when several individually valid media files are present.
+            for asset in assets:
+                mime = str(asset.get("mime", ""))
+                size = _inline_size(asset)
+                if size is None or total_bytes + size > _MAX_INLINE_TOTAL_BYTES:
+                    continue
+
+                part: dict[str, Any] | None = None
+                if mime.startswith("image/") and self.info.multimodal and image_count < 10:
+                    part = {
                         "type": "image_url",
-                        "image_url": {
-                            "url": _data_url(asset["path"], asset.get("mime"))
-                        },
-                    })
-            if self.info.supports_audio:
-                for asset in audio[:3]:
-                    content.append({
+                        "image_url": {"url": _data_url(asset["path"], mime)},
+                    }
+                    image_count += 1
+                elif mime.startswith("video/") and self.info.supports_video and video_count < 2:
+                    part = {
+                        "type": "video_url",
+                        "video_url": {"url": _data_url(asset["path"], mime)},
+                        "fps": 1,
+                    }
+                    video_count += 1
+                elif mime.startswith("audio/") and self.info.supports_audio and audio_count < 3:
+                    part = {
                         "type": "audio_url",
-                        "audio_url": {
-                            "url": _data_url(asset["path"], asset.get("mime"))
-                        },
-                    })
-            out[-1] = {"role": "user", "content": content}
+                        "audio_url": {"url": _data_url(asset["path"], mime)},
+                    }
+                    audio_count += 1
+
+                if part is not None:
+                    content.append(part)
+                    total_bytes += size
+
+            if len(content) > 1:
+                out[-1] = {"role": "user", "content": content}
 
         headers = {"Content-Type": "application/json", **self.extra_headers}
         if self.api_key:
