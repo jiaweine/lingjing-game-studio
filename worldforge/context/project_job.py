@@ -59,6 +59,30 @@ def packet_from_job_context(raw: dict[str, Any] | None) -> ProjectMemoryPacket |
     return ProjectMemoryPacket.from_dict(data.get("memory_packet"))
 
 
+def validate_job_project_access(
+    store: ProjectMemoryStore,
+    *,
+    workspace_id: str,
+    job_context: dict[str, Any] | None,
+) -> ProjectMemoryPacket | None:
+    """Revalidate authorization while keeping the enqueue-time memory revision frozen."""
+    data = dict(job_context or {})
+    actor_id = str(data.get("actor_id") or "")
+    project_id = str(data.get("project_id") or "")
+    packet = packet_from_job_context(data)
+    if not actor_id or not project_id or packet is None:
+        return None
+    if packet.project_id != project_id:
+        raise PermissionError("job project memory snapshot identity mismatch")
+    # Membership/project status are live authorization controls; memory heads are not read.
+    store.get_project(
+        workspace_id=workspace_id,
+        actor_id=actor_id,
+        project_id=project_id,
+    )
+    return packet
+
+
 def record_job_memory_usage(
     store: ProjectMemoryStore,
     *,
@@ -71,7 +95,11 @@ def record_job_memory_usage(
     data = dict(job_context or {})
     actor_id = str(data.get("actor_id") or "")
     project_id = str(data.get("project_id") or "")
-    packet = packet_from_job_context(data)
+    packet = validate_job_project_access(
+        store,
+        workspace_id=workspace_id,
+        job_context=data,
+    )
     if not actor_id or not project_id or packet is None:
         return 0
     recorded = 0
