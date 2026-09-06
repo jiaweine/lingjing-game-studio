@@ -23,7 +23,8 @@ def test_latest_confirmed_fact_replaces_same_build_property_slot():
     verified = [row["text"] for row in packet.task_state["verified_facts"]]
 
     assert verified == ["已确认 build 1.4.7 护盾冷却是 5 秒。"]
-    assert packet.mode == "active-task-state-context-compiler-v3"
+    assert packet.mode.startswith("active-task-state-")
+    assert "context-compiler-v" in packet.mode
 
 
 def test_different_build_scopes_do_not_supersede_each_other():

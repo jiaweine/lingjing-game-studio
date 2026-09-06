@@ -1,4 +1,4 @@
-from .fast_compiler import ContextCompiler
+from .ranked_compiler import ContextCompiler
 from .compiler import ContextPacket
 from .multimodal import MultimodalContextCompiler, MultimodalPacket
 

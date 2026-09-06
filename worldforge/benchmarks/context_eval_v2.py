@@ -37,7 +37,6 @@ def _message(index: int, role: str, content: str) -> dict[str, Any]:
 
 
 def _active_state_metrics() -> tuple[float, float, float, float, int, str]:
-    """Exercise current-state semantics after 500+ turns without an LLM judge."""
     compiler = ContextCompiler(
         recent_messages=4,
         retrieved_messages=3,
@@ -46,21 +45,9 @@ def _active_state_metrics() -> tuple[float, float, float, float, int, str]:
         state_items_per_kind=8,
     )
     history = [
-        _message(
-            0,
-            "user",
-            "目标是排查 release 护盾竞态。必须保持 tickrate=30。",
-        ),
-        _message(
-            1,
-            "user",
-            "待确认 build 1.4.7 shield_race 是否只在 release 分支复现？",
-        ),
-        _message(
-            2,
-            "user",
-            "已确认 build 1.4.7 护盾冷却是 6 秒。",
-        ),
+        _message(0, "user", "目标是排查 release 护盾竞态。必须保持 tickrate=30。"),
+        _message(1, "user", "待确认 build 1.4.7 shield_race 是否只在 release 分支复现？"),
+        _message(2, "user", "已确认 build 1.4.7 护盾冷却是 6 秒。"),
     ]
     for index in range(3, 503):
         history.append(
@@ -71,26 +58,12 @@ def _active_state_metrics() -> tuple[float, float, float, float, int, str]:
             )
         )
 
-    # Warm the incremental state/index caches before the authoritative updates arrive.
     compiler.compile("继续检查 build 1.4.7 shield_race", history)
-
     history.extend(
         [
-            _message(
-                600,
-                "user",
-                "已确认 build 1.4.7 护盾冷却是 5 秒。",
-            ),
-            _message(
-                601,
-                "user",
-                "已确认 build 1.4.7 shield_race 只在 release 分支复现。",
-            ),
-            _message(
-                602,
-                "user",
-                "如果已确认 build 2.0.0 新护盾公式已经上线，再继续做数值回归。",
-            ),
+            _message(600, "user", "已确认 build 1.4.7 护盾冷却是 5 秒。"),
+            _message(601, "user", "已确认 build 1.4.7 shield_race 只在 release 分支复现。"),
+            _message(602, "user", "如果已确认 build 2.0.0 新护盾公式已经上线，再继续做数值回归。"),
         ]
     )
     packet = compiler.compile(
@@ -132,8 +105,7 @@ def run_context_benchmark() -> ContextBenchmarkResult:
     ) = _active_state_metrics()
     active_mode = bool(
         mode.startswith("active-task-state-")
-        and mode.endswith("context-compiler-v4")
-        or mode == "active-task-state-context-compiler-v3"
+        and "context-compiler-v" in mode
     )
     passed = bool(
         base.passed

@@ -16,9 +16,11 @@ class ScaleResult:
     selected_messages: int
     cold_candidate_messages: int
     hot_candidate_messages: int
+    natural_language_candidate_messages: int
     compression_ratio: float
     constraint_recall: bool
     far_identifier_recall: bool
+    natural_language_recall: bool
     current_state_correct: bool
     version_isolation: bool
     premise_awareness: bool
@@ -48,6 +50,7 @@ def _dense_history(count: int) -> list[dict[str, Any]]:
     ]
 
     far_index = max(50, count // 7)
+    natural_index = max(70, count // 11)
     update_one = max(100, count // 3)
     update_two = max(200, (count * 4) // 5)
 
@@ -67,6 +70,9 @@ def _dense_history(count: int) -> list[dict[str, Any]]:
                 "已确认证据标识 XR-914-ZETA 对应 build 1.4.7 的 render_deadlock，"
                 "只在 release/shield-race 分支采样到。"
             )
+            role = "user"
+        elif index == natural_index:
+            content = "已确认网络抖动之后，护盾回收阶段会重复注册回调，导致结算阶段出现双重触发。"
             role = "user"
         elif index == update_one:
             content = "已确认 build 1.4.7 shield cooldown 是 7 秒。"
@@ -134,6 +140,11 @@ def _run_scale(count: int) -> ScaleResult:
     hot = compiler.compile(query, hot_history)
     hot_ms = (time.perf_counter() - started) * 1000.0
 
+    natural = compiler.compile(
+        "网络抖动之后，护盾回收为什么会重复注册回调并造成双重触发？",
+        hot_history,
+    )
+
     state_text = cold.render_task_state()
     verified = _verified_text(cold)
     current_state = "build 1.4.7 shield cooldown 是 5 秒" in verified
@@ -154,9 +165,11 @@ def _run_scale(count: int) -> ScaleResult:
         selected_messages=len(cold.messages),
         cold_candidate_messages=cold.candidate_history_messages,
         hot_candidate_messages=hot.candidate_history_messages,
+        natural_language_candidate_messages=natural.candidate_history_messages,
         compression_ratio=round(1.0 - (len(cold.messages) / max(1, count)), 6),
         constraint_recall="tickrate=30" in state_text,
         far_identifier_recall=_contains(cold.messages, "XR-914-ZETA"),
+        natural_language_recall=_contains(natural.messages, "重复注册回调"),
         current_state_correct=current_state and stale_state_absent,
         version_isolation=version_isolation,
         premise_awareness=premise_awareness,
@@ -168,7 +181,7 @@ def _run_scale(count: int) -> ScaleResult:
 def main() -> None:
     results = [_run_scale(10_000), _run_scale(50_000)]
     output = {
-        "benchmark": "context-adversarial-scale-v1",
+        "benchmark": "context-adversarial-scale-v2",
         "results": [asdict(row) for row in results],
         "cold_growth_ratio_50k_over_10k": round(
             results[1].cold_ms / max(results[0].cold_ms, 0.001), 3
@@ -182,6 +195,7 @@ def main() -> None:
     for row in results:
         assert row.constraint_recall
         assert row.far_identifier_recall
+        assert row.natural_language_recall
         assert row.current_state_correct
         assert row.version_isolation
         assert row.premise_awareness
@@ -191,9 +205,6 @@ def main() -> None:
         assert row.compression_ratio >= 0.999
         assert row.hot_ms < 100.0, row
 
-    # Guard against accidental quadratic cold-path regressions without pretending
-    # shared CI runners provide a production SLA. 50k is 5x the 10k workload; an 8x
-    # allowance leaves substantial runner noise while still catching super-linear blowups.
     assert output["cold_growth_ratio_50k_over_10k"] < 8.0, output
     assert results[0].cold_ms < 2_000.0, results[0]
     assert results[1].cold_ms < 8_000.0, results[1]
