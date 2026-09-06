@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import time
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from worldforge.api.app import app
+
+
+@pytest.fixture
+def client():
+    # Lifespan owns the durable task-event fanout and memory-ingestion consumer.
+    with TestClient(app) as value:
+        yield value
 
 
 def _register(client: TestClient):
@@ -36,8 +45,35 @@ def _bind(client: TestClient, project_id: str, conversation_id: str):
     assert response.status_code == 200, response.text
 
 
-def test_pending_proposal_requires_approval_then_recalls_across_conversations():
-    client = TestClient(app)
+def _wait_for_proposals(
+    client: TestClient,
+    *,
+    project_id: str,
+    conversation_id: str | None = None,
+    status: str = "pending",
+    expected: int,
+    timeout: float = 2.0,
+) -> list[dict]:
+    deadline = time.monotonic() + timeout
+    last_rows: list[dict] = []
+    params: dict[str, str] = {"status": status}
+    if conversation_id:
+        params["conversation_id"] = conversation_id
+    while True:
+        response = client.get(
+            f"/api/projects/{project_id}/memory-proposals",
+            params=params,
+        )
+        assert response.status_code == 200, response.text
+        last_rows = response.json()
+        if len(last_rows) == expected:
+            return last_rows
+        if time.monotonic() >= deadline:
+            assert len(last_rows) == expected, last_rows
+        time.sleep(.02)
+
+
+def test_pending_proposal_requires_approval_then_recalls_across_conversations(client: TestClient):
     _register(client)
 
     project_response = client.post(
@@ -60,13 +96,12 @@ def test_pending_proposal_requires_approval_then_recalls_across_conversations():
     assert first.status_code == 200, first.text
     source_message_id = first.json()["message"]["id"]
 
-    pending_response = client.get(
-        f"/api/projects/{project['id']}/memory-proposals",
-        params={"status": "pending", "conversation_id": source_conversation["id"]},
+    pending = _wait_for_proposals(
+        client,
+        project_id=project["id"],
+        conversation_id=source_conversation["id"],
+        expected=1,
     )
-    assert pending_response.status_code == 200, pending_response.text
-    pending = pending_response.json()
-    assert len(pending) == 1
     proposal = pending[0]
     assert proposal["message_id"] == source_message_id
     assert proposal["kind"] == "constraint"
@@ -134,8 +169,7 @@ def test_pending_proposal_requires_approval_then_recalls_across_conversations():
     assert context["project_memory_selected"] >= 1
 
 
-def test_unbound_and_uncertain_user_text_do_not_create_proposals():
-    client = TestClient(app)
+def test_unbound_and_uncertain_user_text_do_not_create_proposals(client: TestClient):
     _register(client)
     project = client.post("/api/projects", json={"name": "Atlas"}).json()
 
@@ -145,10 +179,14 @@ def test_unbound_and_uncertain_user_text_do_not_create_proposals():
         json={"content": "发布前必须运行回归。", "provider": "demo"},
     )
     assert sent.status_code == 200
-    assert client.get(
-        f"/api/projects/{project['id']}/memory-proposals",
-        params={"status": "all"},
-    ).json() == []
+    # Unbound events are consumed and terminally ignored; they never acquire a project later.
+    assert _wait_for_proposals(
+        client,
+        project_id=project["id"],
+        status="all",
+        expected=0,
+        timeout=.4,
+    ) == []
 
     bound = _conversation(client, "Bound uncertain")
     _bind(client, project["id"], bound["id"])
@@ -160,9 +198,11 @@ def test_unbound_and_uncertain_user_text_do_not_create_proposals():
         },
     )
     assert uncertain.status_code == 200
-    proposals = client.get(
-        f"/api/projects/{project['id']}/memory-proposals",
-        params={"status": "all", "conversation_id": bound["id"]},
-    )
-    assert proposals.status_code == 200
-    assert proposals.json() == []
+    assert _wait_for_proposals(
+        client,
+        project_id=project["id"],
+        conversation_id=bound["id"],
+        status="all",
+        expected=0,
+        timeout=.4,
+    ) == []

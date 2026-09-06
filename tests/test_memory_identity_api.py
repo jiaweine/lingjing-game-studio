@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import time
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from worldforge.api.app import app
+
+
+@pytest.fixture
+def client():
+    # Entering TestClient starts FastAPI lifespan, including the durable task-event fanout
+    # and memory-ingestion outbox consumer. Proposal visibility is intentionally eventual.
+    with TestClient(app) as value:
+        yield value
 
 
 def _register(client: TestClient, prefix: str) -> None:
@@ -38,6 +48,29 @@ def _project_and_bound_conversation(client: TestClient) -> tuple[dict, dict]:
     return project.json(), conversation.json()
 
 
+def _wait_for_single_pending(
+    client: TestClient,
+    *,
+    project_id: str,
+    conversation_id: str,
+    timeout: float = 2.0,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    last_rows: list[dict] = []
+    while True:
+        proposals = client.get(
+            f"/api/projects/{project_id}/memory-proposals",
+            params={"status": "pending", "conversation_id": conversation_id},
+        )
+        assert proposals.status_code == 200, proposals.text
+        last_rows = proposals.json()
+        if len(last_rows) == 1:
+            return last_rows[0]
+        if time.monotonic() >= deadline:
+            assert len(last_rows) == 1, last_rows
+        time.sleep(.02)
+
+
 def _stage_proposal(
     client: TestClient,
     project_id: str,
@@ -57,18 +90,14 @@ def _stage_proposal(
         },
     )
     assert sent.status_code == 200, sent.text
-    proposals = client.get(
-        f"/api/projects/{project_id}/memory-proposals",
-        params={"status": "pending", "conversation_id": conversation_id},
+    return _wait_for_single_pending(
+        client,
+        project_id=project_id,
+        conversation_id=conversation_id,
     )
-    assert proposals.status_code == 200, proposals.text
-    rows = proposals.json()
-    assert len(rows) == 1
-    return rows[0]
 
 
-def test_identity_suggestion_is_read_only_and_excludes_retracted_decoy():
-    client = TestClient(app)
+def test_identity_suggestion_is_read_only_and_excludes_retracted_decoy(client: TestClient):
     _register(client, "identity-shadow")
     project, conversation = _project_and_bound_conversation(client)
 
@@ -159,8 +188,7 @@ def test_identity_suggestion_is_read_only_and_excludes_retracted_decoy():
     assert no_longer_pending.status_code == 409
 
 
-def test_identity_suggestion_abstains_on_different_named_entity():
-    client = TestClient(app)
+def test_identity_suggestion_abstains_on_different_named_entity(client: TestClient):
     _register(client, "identity-abstain")
     project, conversation = _project_and_bound_conversation(client)
 
