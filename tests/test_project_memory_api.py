@@ -70,6 +70,10 @@ def test_project_memory_is_frozen_as_refs_and_reaches_analyzer_context():
     job = client.get(f"/api/jobs/{job_id}")
     assert job.status_code == 200
     payload = job.json()["payload"]
+    assert "history" not in payload
+    assert set(payload["history_snapshot"]) == {
+        "mode", "count", "last_message_id", "digest"
+    }
     project_context = payload["project_context"]
     assert project_context["project_id"] == project["id"]
     assert project_context["scope"]["build_ref"] == "1.4.7"
@@ -81,7 +85,6 @@ def test_project_memory_is_frozen_as_refs_and_reaches_analyzer_context():
             "retrieval_score": refs[0]["retrieval_score"],
         }
     ]
-    # Governed long-term memory text must not be duplicated into queued job payloads.
     assert "build 1.4.7 的护盾冷却已确认是 4 秒" not in repr(project_context)
 
     state = client.get(f"/api/conversations/{conversation['id']}")
@@ -95,6 +98,8 @@ def test_project_memory_is_frozen_as_refs_and_reaches_analyzer_context():
     assert context["project_memory_ids"] == [memory["id"]]
     assert context["project_memory_scope"]["build_ref"] == "1.4.7"
     assert context["project_memory_invalidated_refs"] == 0
+    assert context["history_snapshot_valid"] is True
+    assert context["history_snapshot_invalidated"] is False
 
 
 def test_unbound_conversation_does_not_guess_project_memory():
@@ -132,6 +137,7 @@ def test_unbound_conversation_does_not_guess_project_memory():
     assert sent.status_code == 200
     job = client.get(f"/api/jobs/{sent.json()['job_id']}").json()
     assert job["payload"]["project_context"] is None
+    assert "history" not in job["payload"]
 
     state = client.get(f"/api/conversations/{conversation['id']}").json()
     assistant = [row for row in state["messages"] if row["role"] == "assistant"][-1]
