@@ -1,4 +1,5 @@
-from .compiler import ContextCompiler, ContextPacket
+from .active_compiler import ContextCompiler
+from .compiler import ContextPacket
 from .multimodal import MultimodalContextCompiler, MultimodalPacket
 
 __all__ = [
