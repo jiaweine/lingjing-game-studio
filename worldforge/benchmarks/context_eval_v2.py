@@ -130,6 +130,11 @@ def run_context_benchmark() -> ContextBenchmarkResult:
         turns,
         mode,
     ) = _active_state_metrics()
+    active_mode = bool(
+        mode.startswith("active-task-state-")
+        and mode.endswith("context-compiler-v4")
+        or mode == "active-task-state-context-compiler-v3"
+    )
     passed = bool(
         base.passed
         and current_state == 1.0
@@ -137,7 +142,7 @@ def run_context_benchmark() -> ContextBenchmarkResult:
         and premise_awareness == 1.0
         and cache_hit == 1.0
         and turns >= 500
-        and mode == "active-task-state-context-compiler-v3"
+        and active_mode
     )
     return ContextBenchmarkResult(
         constraint_recall=base.constraint_recall,
