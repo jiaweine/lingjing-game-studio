@@ -6,7 +6,7 @@
 
 1. **Runtime / 产品是否仍然可靠**：执行、验证、恢复、权限、队列和产品生命周期有没有回归；
 2. **Harness 是否真的还能自进化**：不是只会生成 candidate，而是能在独立 held-out credit 下晋升新的 generation；
-3. **长期记忆是否正确且可治理**：更新、版本隔离、撤回、未批准提议、队列快照和重启恢复是否满足明确不变量；
+3. **长期记忆是否正确且可治理**：更新、版本隔离、撤回、未批准提议、队列快照、消息摄取和重启恢复是否满足明确不变量；
 4. **Memory Identity 是否足够安全**：新 proposal 是否能在不错误合并不同实体/属性的前提下，识别可能属于同一个 `memory_key` 的 revision。
 
 这四类分数不能互相替代。benchmark 是工程验证，不是客户工作台营销榜单。没有 controlled protocol，不声称“性能超过某外部产品”。
@@ -41,13 +41,9 @@ Promotion 必须同时满足：
 - efficiency 在冻结容忍范围内；
 - operations 不超过冻结资源上限。
 
-### 当前独立进程结果
+### 当前独立进程的核心 sealed credit
 
 ```text
-candidate genomes                 36
-accepted candidates                4
-baseline generation                1
-promoted generation                3
 train objective gain         +0.004712
 sealed held-out gain         +0.000559
 paired-bootstrap LCB           0.000000
@@ -55,12 +51,11 @@ held-out quality               0.612886
 held-out safety                0.966518
 held-out efficiency            0.730917
 held-out operations               23.25
-winning lineage     memory mutation
-                    → elite refinement
-                    → trust-region minimum edit
 ```
 
-这组结果只证明：从干净进程、bootstrap Genome 出发，搜索器能够产生被 sealed judge 接受的下一代 Harness。增益很小，因此不能据此宣称通用 SOTA 或大幅性能领先。
+candidate 数、accepted candidate 数、promoted generation 和具体 winning lineage 属于当前搜索轨迹，会随着 Harness 搜索实现演进；CI workflow 日志是这些运行细节的事实来源，不把它们固定成长期文档常量。
+
+这组 sealed credit 只证明：从干净进程、bootstrap Genome 出发，搜索器能够产生被 sealed judge 接受的新 Harness。增益很小，因此不能据此宣称通用 SOTA 或大幅性能领先。
 
 ## 3. 为什么 held-out 必须 sealed
 
@@ -103,7 +98,7 @@ python scripts/memory_benchmark.py
 
 `Lingjing-MemoryBench v1` 当前不调用外部模型，也不使用 LLM judge。它先验证长期记忆的确定性系统语义；如果这些不变量都无法满足，再高的问答准确率也没有产品意义。
 
-当前九个 competency：
+当前十个 competency：
 
 | Competency | 必须满足的反例约束 |
 |---|---|
@@ -116,17 +111,46 @@ python scripts/memory_benchmark.py
 | provenance integrity | proposal 批准后必须保留 `user_confirmed + proposal/message` 来源，批准动作不能改写用户原文再冒充确认 |
 | queued snapshot revocation | 排队时命中的 revision 后来被撤回时，旧 job 必须 invalidated，不能继续用旧正文，也不能自动换新 head |
 | restart persistence | 用同一数据库重新构造全新 Store 后，active Project Memory 必须继续可检索 |
+| ingestion outbox cancellation | user message / analysis job / `message.accepted` 已提交后，即使 analysis job 在 worker 启动前被取消并发生进程重启，也必须 exactly-once 恢复一个 pending proposal；replay 不得重复 |
 
-pytest 对这九项要求全部为 `1.0`，总分必须 `1.0`。CI 还会单独运行 `scripts/memory_benchmark.py`，把每个 competency 的机器可读结果留在 workflow 日志中。
+pytest 对这十项要求全部为 `1.0`，总分必须 `1.0`。CI 还会单独运行 `scripts/memory_benchmark.py`，把每个 competency 的机器可读结果留在 workflow 日志中。
 
-这里的 **9/9 只表示 correctness floor 全部满足，不代表 SOTA memory accuracy**。
+当前独立进程已经通过 **10/10**，包括 `ingestion_outbox_cancellation = 1.0`。这里的 **10/10 只表示 correctness floor 全部满足，不代表 SOTA memory accuracy**。
+
+### Durable ingestion 与 execution 解耦
+
+Project Memory proposal 不再依赖 analysis worker 是否启动：
+
+```text
+committed user message
+    + analysis job
+    + message.accepted immutable task event
+                  ↓
+       durable ingestion consumer
+       receipt / lease / retry
+                  ↓
+       pending proposal only
+                  ↓
+       explicit human approval
+                  ↓
+       authoritative Project Memory
+```
+
+关键约束：
+
+- `message.accepted` 与 user message / job 在同一数据库事务提交，因此不会出现“消息成功但 ingestion intent 不存在”；
+- analysis job 的 cancel / retry / provider failure 不撤销已经提交的 ingestion intent；
+- receipt 使用 event id 做 delivery 幂等，proposal 自身再使用 source fingerprint 做第二层幂等；
+- stale processing lease 可恢复，failed receipt 有退避；
+- API 启动恢复旧 backlog，空闲期也周期性恢复，因此不依赖下一条用户消息才能继续消费；
+- unbound message 被 terminally ignored，之后不会根据相似文本或后来绑定关系猜一个 Project；
+- ingestion 只能生成 reviewable pending proposal，不能直接写 authoritative memory。
 
 下一阶段 MemoryBench 会继续增加：
 
 - 100+ / 500+ turn 的状态变化与 premise awareness；
 - contradiction / dispute / retract / delete 组合；
-- 多 worker / PostgreSQL 并发；
-- message-ingestion outbox 与取消任务场景；
+- 多 worker / PostgreSQL 并发与高 backlog 恢复；
 - multimodal provenance 与跨素材时间线；
 - provider-aware token / latency / cost；
 - 模型问答层的 recall、update、abstention 和 workflow-learning accuracy。
@@ -179,12 +203,13 @@ abstention rate             0.600
 
 只有在这些 controlled protocol 下与强基线比较后，才有资格讨论 game-R&D memory SOTA。
 
-## 7. Runtime / 产品回归
+## 7. Runtime / 产品 / deployment 回归
 
 除了 Harness promotion、MemoryBench 与 IdentityBench，CI 继续运行：
 
 - Python compile；
-- 完整 pytest（包含 MemoryBench / Identity safety regression）；
+- 完整 pytest（包含 MemoryBench / Identity safety / outbox recovery regression）；
+- 从空 SQLite 执行真实 `alembic upgrade head` 的 migration-chain regression，并验证 memory ingestion receipt schema 与 outbox event index；
 - standalone `Memory correctness benchmark`；
 - 独立 `Memory Identity Benchmark` workflow；
 - JavaScript syntax（`app.js` + `memory_panel.js` + `memory_identity_panel.js`）；
@@ -199,8 +224,9 @@ abstention rate             0.600
 - Browser product E2E 证明主产品交互闭环没有被算法改造破坏；
 - Memory governance browser E2E 证明用户真的可以完成长期记忆治理，并验证 identity suggestion 不会越过人工动作；
 - standalone Harness benchmark 证明 Harness generation 机制在干净进程中仍可成功；
-- MemoryBench 证明项目长期记忆的版本、治理、撤回和持久化基本语义没有回归；
-- IdentityBench 证明当前 deterministic case set 下建议器满足 false-merge safety floor。
+- MemoryBench 证明项目长期记忆的版本、治理、撤回、持久化和 ingestion cancellation 基本语义没有回归；
+- IdentityBench 证明当前 deterministic case set 下建议器满足 false-merge safety floor；
+- migration-chain regression 证明生产 schema migration 确实包含 proposal / receipt / outbox recovery 所需结构，而不是只依赖 dev/test `create_all`。
 
 这些证据必须分别报告，不能揉成一个“综合性能分”。
 
