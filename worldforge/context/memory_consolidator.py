@@ -35,7 +35,7 @@ from .project_memory import (
 from .project_packet import ProjectScopeSnapshot
 
 _EXTRACTOR_VERSION = "deterministic-user-memory-v2"
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])|\n+")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？；;])|(?<=[.!?])\s+|\n+")
 
 # Proposal extraction deliberately optimizes for precision over recall. Soft imperative
 # language such as "keep" / bare "use" is excluded because it commonly describes only the
