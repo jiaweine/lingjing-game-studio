@@ -33,17 +33,22 @@
 - **证据**：截图、关键帧、日志摘录等证据；
 - **交付**：复现卡、回归清单、风险清单、验证方案和证据包；
 - **素材**：当前任务的持续多模态上下文；
-- **记忆**：显式 Project 绑定、待确认 Memory Proposal、跨 build / branch / commit / environment 的当前 Memory Heads、revision history、provenance 与 active / disputed / retracted 治理；
+- **记忆**：显式 Project 绑定、待确认 Memory Proposal、跨 build / branch / commit / environment 的当前 Memory Heads、revision history、provenance、identity suggestion 与 active / disputed / retracted 治理；
 - **团队**：成员、邀请、负责人、质量门和产品指标等协作/治理信息。
 
 ## 项目记忆治理
 
-Project Memory 是跨任务连续性先验，不是本轮 Verifier 证据。前端因此把“系统提议记住什么”和“已经成为项目事实/约束什么”明确分开：
+Project Memory 是跨任务连续性先验，不是本轮 Verifier 证据。前端因此把“系统提议记住什么”“identity suggestion 建议归到哪里”和“已经成为项目事实/约束什么”明确分开：
 
 - Conversation 未绑定 Project 时显示显式未绑定状态；系统不会根据任务标题、工作空间或相似文本自动猜项目；
 - Editor 可以创建 Project 或显式绑定已有 Project；Viewer 只能读取；
 - 用户原文满足高精度 durable-memory 规则后，只生成 **pending proposal**；
 - pending proposal 在人工批准前不会进入 Project Memory truth store；
+- pending proposal 可以显式点击 **“检查现有 identity”**，调用 read-only shadow suggestion API；
+- identity suggestion 展示候选 `memory_key`、score、margin 与可解释 reasons；没有足够把握时系统会 abstain，而不是强行归链；
+- suggestion **不会自动修改 Memory key 输入框**；只有用户再次点击 **“采用建议 key”** 才把建议填入本地表单；
+- “采用建议 key”仍然不是批准。用户还必须单独点击 proposal 的批准动作，authoritative memory 才会生成新 revision；
+- Viewer 可以读取 identity suggestion，但没有 key 写入/approve/reject/state mutation 控件；服务端仍是最终权限边界；
 - 批准 proposal 时可以选择已有 `memory_key`，从而把“同一事实的新值”形成下一 revision，而不是生成近义重复 key；
 - 当前治理视图使用 scope-complete `memory-heads`，会显示 general 与 build / branch / commit / environment 专属 heads，也会显示 disputed / retracted heads；
 - 推理检索仍使用 scope shadowing，两种视图语义刻意分离；
@@ -52,7 +57,7 @@ Project Memory 是跨任务连续性先验，不是本轮 Verifier 证据。前�
 - active memory 可以标记 disputed 或 retracted；这些状态变化会生成新的 revision，而不是原地覆盖历史；
 - 工作空间成员角色可能在页面生命周期中改变，因此 Memory 面板每次刷新都会重新读取当前 principal，不缓存旧 workspace role。
 
-Memory UI 不提供“模型自动记住全部内容”的开关。自动 proposal 和 authoritative memory 是两个不同阶段，后者始终需要明确治理动作。
+Memory UI 不提供“模型自动记住全部内容”的开关。自动 proposal、identity suggestion 和 authoritative memory 是三个不同阶段；建议器没有 approve API，最终写入始终需要明确治理动作。
 
 ## 权限语义
 
@@ -104,7 +109,7 @@ python -m http.server 5173 --directory frontend
 http://127.0.0.1:5173/?api=http://127.0.0.1:8765
 ```
 
-主任务工作台由 `app.js` 管理；Project Memory 治理由独立的 `memory_panel.js` 管理。两者都使用同源 REST；生产环境应使用明确的 CORS origins、trusted hosts 和 TLS 入口。
+主任务工作台由 `app.js` 管理；Project Memory 治理由独立的 `memory_panel.js` 管理；Memory Identity suggestion 由独立的 `memory_identity_panel.js` 管理。identity 模块只读 suggestion API，并且源码不包含 proposal approve 调用。生产环境应使用明确的 CORS origins、trusted hosts 和 TLS 入口。
 
 ## 视觉与交互约束
 
@@ -130,6 +135,6 @@ Project Memory 治理闭环：
 python scripts/memory_ui_e2e.py
 ```
 
-覆盖第六个 Memory tab、未绑定时拒绝项目猜测、显式 Project 绑定、scope-complete heads、pending proposal 批准/拒绝、归入已有 key 形成新 revision、disputed/retracted 状态治理、revision history，以及 owner → viewer 角色变化后的重新授权与写控件移除。
+覆盖第六个 Memory tab、未绑定时拒绝项目猜测、显式 Project 绑定、scope-complete heads、pending proposal 批准/拒绝、归入已有 key 形成新 revision、disputed/retracted 状态治理、revision history、owner → viewer 角色变化后的重新授权，以及 identity suggestion 的四个关键保险丝：建议可见、建议不自动填、必须显式采用、Viewer 可读但无写权限。
 
 关键检查失败时脚本返回非零退出码。主产品截图使用 1920×1200 viewport 和 device scale 2，生成 3840×2400 PNG，并由 README Gallery workflow 再次校验。

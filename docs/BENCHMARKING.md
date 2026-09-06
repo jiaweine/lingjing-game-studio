@@ -2,13 +2,14 @@
 
 ## 1. 目的
 
-仓库内 benchmark 用于回答三类不同问题：
+仓库内 benchmark 用于回答四类不同问题：
 
 1. **Runtime / 产品是否仍然可靠**：执行、验证、恢复、权限、队列和产品生命周期有没有回归；
 2. **Harness 是否真的还能自进化**：不是只会生成 candidate，而是能在独立 held-out credit 下晋升新的 generation；
-3. **长期记忆是否正确且可治理**：更新、版本隔离、撤回、未批准提议、队列快照和重启恢复是否满足明确不变量。
+3. **长期记忆是否正确且可治理**：更新、版本隔离、撤回、未批准提议、队列快照和重启恢复是否满足明确不变量；
+4. **Memory Identity 是否足够安全**：新 proposal 是否能在不错误合并不同实体/属性的前提下，识别可能属于同一个 `memory_key` 的 revision。
 
-这三类分数不能互相替代。benchmark 是工程验证，不是客户工作台营销榜单。没有 controlled protocol，不声称“性能超过某外部产品”。
+这四类分数不能互相替代。benchmark 是工程验证，不是客户工作台营销榜单。没有 controlled protocol，不声称“性能超过某外部产品”。
 
 ## 2. Harness promotion benchmark
 
@@ -128,35 +129,82 @@ pytest 对这九项要求全部为 `1.0`，总分必须 `1.0`。CI 还会单独�
 - message-ingestion outbox 与取消任务场景；
 - multimodal provenance 与跨素材时间线；
 - provider-aware token / latency / cost；
-- proposal → existing memory identity 的 false-merge / false-split；
 - 模型问答层的 recall、update、abstention 和 workflow-learning accuracy。
+
+## 6. Lingjing-IdentityBench：revision identity safety floor
+
+独立命令：
+
+```bash
+python scripts/memory_identity_benchmark.py
+```
+
+`Lingjing-IdentityBench v1` 单独验证 proposal → existing `memory_key` 的 identity suggestion。它只评估**建议器**，不允许 benchmark 通过后直接获得 memory 写权限。
+
+当前设计故意把 false merge 看得比 false split 更危险：
+
+- **false merge**：把本来不同的实体或属性错误归到同一 `memory_key`，会污染 revision chain，因此必须为 `0`；
+- **false split**：本来属于同一 identity 却 abstain / 新建 key，主要增加人工治理成本，风险低于错误合并；
+- **abstention**：是合法安全输出。没有足够证据时宁可不建议，也不为了 recall 强行归链。
+
+当前 deterministic v1 case set 共 10 个 case，独立 workflow 当前结果：
+
+```text
+cases                         10
+positive cases                 4
+negative cases                 6
+recommendation precision   1.000
+positive recall             1.000
+false merge rate            0.000
+false split rate            0.000
+abstention rate             0.600
+```
+
+门槛：
+
+- `false_merge_rate == 0`；
+- recommendation precision `== 1.0`；
+- positive recall `>= 0.75`。
+
+这套 v1 case 覆盖同一属性数值更新、跨 build 同 identity、属性差异、命名实体冲突、候选接近时 abstain、kind mismatch 和 retracted head 排除等安全边界。当前 resolver 只输出 `candidate_memory_keys + scores + reasons + margin`；API 是 read-only shadow path，UI 也不会自动填 key。用户必须先显式“采用建议 key”，再单独执行 proposal 批准。
+
+**10/10、precision 1.0 和 false-merge 0 只代表当前 deterministic safety floor，不代表真实项目分布上的 SOTA。** 下一阶段要扩展：
+
+- 数百 / 数千个 hard-negative 与 paraphrase case；
+- cooldown / duration / amount / rate 等近邻属性；
+- 同前缀不同实体、别名、跨语言中英混合；
+- build / branch / environment 变化与 stale/disputed/retracted 组合；
+- risk-coverage / abstention calibration；
+- 与强 lexical、embedding、reranker / memory baseline 在相同 budget 下比较。
 
 只有在这些 controlled protocol 下与强基线比较后，才有资格讨论 game-R&D memory SOTA。
 
-## 6. Runtime / 产品回归
+## 7. Runtime / 产品回归
 
-除了 Harness promotion 与 MemoryBench，CI 继续运行：
+除了 Harness promotion、MemoryBench 与 IdentityBench，CI 继续运行：
 
 - Python compile；
-- 完整 pytest（包含 MemoryBench correctness gate）；
+- 完整 pytest（包含 MemoryBench / Identity safety regression）；
 - standalone `Memory correctness benchmark`；
-- JavaScript syntax（`app.js` + `memory_panel.js`）；
+- 独立 `Memory Identity Benchmark` workflow；
+- JavaScript syntax（`app.js` + `memory_panel.js` + `memory_identity_panel.js`）；
 - Backend product E2E；
 - Browser product E2E；
-- **Memory governance browser E2E**：显式 Project 绑定、proposal 审批/拒绝、revision/state/history 和 workspace role 重新授权；
+- **Memory governance browser E2E**：显式 Project 绑定、proposal 审批/拒绝、revision/state/history、workspace role 重新授权，以及 identity suggestion 可见 / 不自动填 / 显式采用 / viewer 只读；
 - README / repository consistency；
 - GitHub README 真实浏览器图片加载与产品首页渲染检查。
 
 其中：
 
 - Browser product E2E 证明主产品交互闭环没有被算法改造破坏；
-- Memory governance browser E2E 证明用户真的可以完成长期记忆治理，而不是只有后端 API；
+- Memory governance browser E2E 证明用户真的可以完成长期记忆治理，并验证 identity suggestion 不会越过人工动作；
 - standalone Harness benchmark 证明 Harness generation 机制在干净进程中仍可成功；
-- MemoryBench 证明项目长期记忆的版本、治理、撤回和持久化基本语义没有回归。
+- MemoryBench 证明项目长期记忆的版本、治理、撤回和持久化基本语义没有回归；
+- IdentityBench 证明当前 deterministic case set 下建议器满足 false-merge safety floor。
 
 这些证据必须分别报告，不能揉成一个“综合性能分”。
 
-## 7. 外部比较规则
+## 8. 外部比较规则
 
 如果与任何 Agent / Harness / workflow / memory 系统比较，至少冻结：
 
@@ -176,8 +224,8 @@ pytest 对这九项要求全部为 `1.0`，总分必须 `1.0`。CI 还会单独�
 
 Pi、DeerFlow、DeepSeek Agent 生态等可以作为 Harness engineering / integration reference，但不能在不同底座、不同预算或不同环境下拿 README 数字直接横向宣称性能领先。
 
-## 8. 产品指标不是 Runtime / Memory Benchmark
+## 9. 产品指标不是 Runtime / Memory Benchmark
 
 产品层另外通过 `product_events` 观察真实任务闭环，例如首次任务完成率、首次交付耗时、中断率、失败率、恢复率、继续执行率、人工介入率、证据打开率、结果采纳率和人工验证反馈率。
 
-这些指标回答“产品是否帮助研发任务完成”，不能和 shadow-arena Harness objective 或 MemoryBench correctness score 混成同一套分数。
+这些指标回答“产品是否帮助研发任务完成”，不能和 shadow-arena Harness objective、MemoryBench correctness score 或 IdentityBench safety score 混成同一套分数。
