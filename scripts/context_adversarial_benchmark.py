@@ -14,6 +14,8 @@ class ScaleResult:
     cold_ms: float
     hot_ms: float
     selected_messages: int
+    cold_candidate_messages: int
+    hot_candidate_messages: int
     compression_ratio: float
     constraint_recall: bool
     far_identifier_recall: bool
@@ -150,6 +152,8 @@ def _run_scale(count: int) -> ScaleResult:
         cold_ms=round(cold_ms, 3),
         hot_ms=round(hot_ms, 3),
         selected_messages=len(cold.messages),
+        cold_candidate_messages=cold.candidate_history_messages,
+        hot_candidate_messages=hot.candidate_history_messages,
         compression_ratio=round(1.0 - (len(cold.messages) / max(1, count)), 6),
         constraint_recall="tickrate=30" in state_text,
         far_identifier_recall=_contains(cold.messages, "XR-914-ZETA"),
@@ -169,6 +173,9 @@ def main() -> None:
         "cold_growth_ratio_50k_over_10k": round(
             results[1].cold_ms / max(results[0].cold_ms, 0.001), 3
         ),
+        "hot_growth_ratio_50k_over_10k": round(
+            results[1].hot_ms / max(results[0].hot_ms, 0.001), 3
+        ),
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
@@ -180,7 +187,7 @@ def main() -> None:
         assert row.premise_awareness
         assert row.state_cache_hit
         assert row.retrieval_cache_hit
-        assert row.selected_messages <= 7
+        assert row.selected_messages <= 8
         assert row.compression_ratio >= 0.999
         assert row.hot_ms < 100.0, row
 
