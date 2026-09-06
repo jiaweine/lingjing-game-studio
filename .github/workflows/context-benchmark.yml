@@ -23,3 +23,5 @@ jobs:
         run: python scripts/context_memory_benchmark.py --messages 5000
       - name: Context correctness benchmark
         run: python scripts/context_correctness_benchmark.py
+      - name: Context adversarial scale benchmark
+        run: python scripts/context_adversarial_benchmark.py
