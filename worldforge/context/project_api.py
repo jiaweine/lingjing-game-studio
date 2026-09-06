@@ -6,6 +6,8 @@ from typing import Any, Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from worldforge.settings import settings
+
 from .memory_consolidator import MemoryConsolidator
 from .project_memory import MemoryConflict, ProjectMemoryStore
 
@@ -67,11 +69,19 @@ class ProposalRejectRequest(BaseModel):
 def build_project_memory_router(
     *,
     memory_store: ProjectMemoryStore,
-    memory_consolidator: MemoryConsolidator,
     product_store,
     require_principal: Callable,
     require_editor: Callable,
+    memory_consolidator: MemoryConsolidator | None = None,
 ) -> APIRouter:
+    # Keep the existing app integration backward compatible. Development/test may create
+    # derived proposal schema alongside other auto-created tables; production keeps
+    # auto_create_schema=False and therefore requires the Alembic migration before rollout.
+    memory_consolidator = memory_consolidator or MemoryConsolidator(
+        memory_store.engine,
+        memory_store,
+        auto_create_schema=settings.auto_create_schema,
+    )
     router = APIRouter(tags=["project-memory"])
 
     def audit(
