@@ -53,8 +53,12 @@ jobs:
         run: pytest -q
       - name: Harness self-evolution benchmark
         run: python scripts/harness_evolution_benchmark.py
+      - name: Memory correctness benchmark
+        run: python scripts/memory_benchmark.py
       - name: JavaScript syntax check
-        run: node --check frontend/app.js
+        run: |
+          node --check frontend/app.js
+          node --check frontend/memory_panel.js
       - name: Backend product E2E
         run: python scripts/product_backend_e2e.py
       - name: README and repository consistency
@@ -204,6 +208,8 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Browser product E2E
         run: python scripts/product_ui_e2e.py
+      - name: Memory governance browser E2E
+        run: python scripts/memory_ui_e2e.py
       - name: README browser visibility
         env:
           GH_REPOSITORY: ${{ github.repository }}
