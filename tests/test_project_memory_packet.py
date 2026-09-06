@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from worldforge.context.project_job import (
+    build_job_project_context,
+    materialize_job_project_memory,
+)
 from worldforge.context.project_memory import ProjectMemoryStore
 from worldforge.context.project_packet import (
-    ProjectMemoryPacket,
     compile_project_memory_packet,
     resolve_project_scope,
 )
@@ -98,40 +101,45 @@ def test_explicit_scope_is_stable_and_exposes_asset_disagreement(tmp_path):
     assert scope.retrieval_kwargs()["build_ref"] == "1.4.7"
 
 
-def test_packet_freezes_memory_revision_across_later_head_updates(tmp_path):
-    memory, project, _conversation = _setup(tmp_path)
+def test_job_snapshot_contains_no_memory_content_and_invalidates_superseded_ref(tmp_path):
+    memory, project, conversation = _setup(tmp_path)
     first = _put(memory, project, content="默认护盾冷却 6 秒", source_id="m1")
-    scope = resolve_project_scope([])
-    packet = compile_project_memory_packet(
+    job_context = build_job_project_context(
         memory,
         workspace_id=DEMO_WORKSPACE_ID,
         actor_id=DEMO_USER_ID,
-        project_id=project["id"],
+        conversation_id=conversation["id"],
         query="护盾冷却",
-        scope=scope,
     )
-    assert packet.memories[0]["id"] == first["id"]
-    assert packet.memories[0]["revision"] == 1
+    assert job_context is not None
+    snapshot_text = repr(job_context)
+    assert "默认护盾冷却 6 秒" not in snapshot_text
+    refs = job_context["memory_snapshot"]["memory_refs"]
+    assert refs[0]["id"] == first["id"]
+    assert refs[0]["revision"] == 1
+
+    before = materialize_job_project_memory(
+        memory,
+        workspace_id=DEMO_WORKSPACE_ID,
+        job_context=job_context,
+    )
+    assert before is not None
+    assert before.memories[0]["id"] == first["id"]
+    assert before.memories[0]["content"] == "默认护盾冷却 6 秒"
 
     second = _put(memory, project, content="默认护盾冷却 5 秒", source_id="m2")
     assert second["revision"] == 2
 
-    restored = ProjectMemoryPacket.from_dict(packet.to_dict())
-    assert restored is not None
-    assert restored.memories[0]["id"] == first["id"]
-    assert restored.memories[0]["revision"] == 1
-    assert restored.memories[0]["content"] == "默认护盾冷却 6 秒"
-
-    newer = compile_project_memory_packet(
+    after = materialize_job_project_memory(
         memory,
         workspace_id=DEMO_WORKSPACE_ID,
-        actor_id=DEMO_USER_ID,
-        project_id=project["id"],
-        query="护盾冷却",
-        scope=scope,
+        job_context=job_context,
     )
-    assert newer.memories[0]["id"] == second["id"]
-    assert newer.memories[0]["revision"] == 2
+    assert after is not None
+    assert after.memories == ()
+    assert after.invalidated_refs == 1
+    # The old queued job must neither use stale v1 nor silently switch to v2.
+    assert second["id"] not in after.stats()["project_memory_ids"]
 
 
 def test_scope_without_identity_never_reads_build_specific_memory(tmp_path):
@@ -152,3 +160,43 @@ def test_scope_without_identity_never_reads_build_specific_memory(tmp_path):
         scope=resolve_project_scope([]),
     )
     assert scoped["id"] not in {row["id"] for row in packet.memories}
+
+
+def test_retracted_after_enqueue_invalidates_ref_instead_of_falling_back(tmp_path):
+    memory, project, conversation = _setup(tmp_path)
+    scoped = _put(
+        memory,
+        project,
+        content="build 1.4.7 护盾冷却 4 秒",
+        source_id="147",
+        build_ref="1.4.7",
+    )
+    job_context = build_job_project_context(
+        memory,
+        workspace_id=DEMO_WORKSPACE_ID,
+        actor_id=DEMO_USER_ID,
+        conversation_id=conversation["id"],
+        query="护盾冷却",
+        requested_scope={"build_ref": "1.4.7"},
+    )
+    assert job_context is not None
+    assert job_context["memory_snapshot"]["memory_refs"][0]["id"] == scoped["id"]
+
+    memory.set_memory_state(
+        workspace_id=DEMO_WORKSPACE_ID,
+        actor_id=DEMO_USER_ID,
+        project_id=project["id"],
+        memory_key="combat.shield.cooldown",
+        state="retracted",
+        build_ref="1.4.7",
+        source_type="user",
+        source_id="retract",
+    )
+    packet = materialize_job_project_memory(
+        memory,
+        workspace_id=DEMO_WORKSPACE_ID,
+        job_context=job_context,
+    )
+    assert packet is not None
+    assert packet.memories == ()
+    assert packet.invalidated_refs == 1
