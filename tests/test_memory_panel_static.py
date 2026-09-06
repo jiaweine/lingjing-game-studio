@@ -19,6 +19,12 @@ def test_memory_panel_is_loaded_before_main_app():
     assert html.index(memory_tag) < html.index(app_tag)
 
 
+def test_memory_panel_reauthorizes_workspace_role_on_every_refresh():
+    javascript = (ROOT / "frontend" / "memory_panel.js").read_text(encoding="utf-8")
+    assert 'memoryState.session = await memoryApi("/api/auth/me");' in javascript
+    assert 'if (!memoryState.session)' not in javascript
+
+
 def test_memory_panel_javascript_syntax_when_node_is_available():
     node = shutil.which("node")
     if not node:
