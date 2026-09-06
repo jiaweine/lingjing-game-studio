@@ -473,7 +473,12 @@ class MemoryConsolidator:
         content: str | None = None,
         note: str = "",
     ) -> dict[str, Any]:
-        """Atomically promote one reviewed proposal into an authoritative memory revision."""
+        """Atomically promote one reviewed proposal into an authoritative memory revision.
+
+        Approval confirms the exact proposed user-authored content. Editing semantic content
+        at approval time would make `source_type=user_confirmed` dishonest, so callers must
+        reject/re-propose or use the explicit memory-authoring API for corrected wording.
+        """
         now = time.time()
         try:
             with self.engine.begin() as connection:
@@ -515,8 +520,13 @@ class MemoryConsolidator:
                 if proposal["status"] != "pending":
                     raise ValueError("只有 pending proposal 可以批准")
 
+                proposed_content = str(proposal["content"]).strip()
+                if content is not None and str(content).strip() != proposed_content:
+                    raise ValueError(
+                        "proposal 正文不能在批准时改写；请拒绝后重新提议或显式创建记忆"
+                    )
                 key = _memory_key(memory_key or proposal["suggested_key"])
-                memory_content = str(content or proposal["content"]).strip()
+                memory_content = proposed_content
                 if not memory_content:
                     raise ValueError("memory content 不能为空")
                 if len(memory_content) > 20000:
