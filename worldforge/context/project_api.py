@@ -4,7 +4,7 @@ import uuid
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .project_memory import MemoryConflict, ProjectMemoryStore
 
@@ -16,11 +16,14 @@ class ProjectCreateRequest(BaseModel):
 
 
 class MemoryPutRequest(BaseModel):
+    """Explicit user-authored memory input; provenance/state are server-owned fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
     memory_key: str = Field(min_length=1, max_length=240)
     kind: str = Field(default="fact", max_length=48)
     content: str = Field(min_length=1, max_length=20000)
     value: dict[str, Any] = Field(default_factory=dict)
-    state: str = Field(default="active", max_length=32)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
     pinned: bool = False
@@ -31,12 +34,12 @@ class MemoryPutRequest(BaseModel):
     valid_from: float | None = None
     valid_to: float | None = None
     expires_at: float | None = None
-    source_type: str = Field(default="user_api", max_length=48)
-    source_id: str | None = Field(default=None, max_length=128)
     source_excerpt: str = Field(default="", max_length=4000)
 
 
 class MemoryStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     memory_key: str = Field(min_length=1, max_length=240)
     state: str = Field(max_length=32)
     build_ref: str | None = Field(default=None, max_length=160)
@@ -147,7 +150,11 @@ def build_project_memory_router(
         request: Request,
         principal=Depends(require_editor),
     ):
-        source_id = req.source_id or f"api:{getattr(request.state, 'request_id', uuid.uuid4().hex)}"
+        # External callers author the semantic content, but cannot forge verifier/system
+        # provenance or create a tombstone in the same operation. Governance state changes
+        # go through /memory-state and every API-originated revision is attributable to the
+        # authenticated user + request audit record.
+        source_id = f"api:{getattr(request.state, 'request_id', uuid.uuid4().hex)}"
         try:
             row = memory_store.put_memory(
                 workspace_id=principal.workspace_id,
@@ -157,7 +164,7 @@ def build_project_memory_router(
                 kind=req.kind,
                 content=req.content,
                 value=req.value,
-                state=req.state,
+                state="active",
                 confidence=req.confidence,
                 importance=req.importance,
                 pinned=req.pinned,
@@ -168,7 +175,7 @@ def build_project_memory_router(
                 valid_from=req.valid_from,
                 valid_to=req.valid_to,
                 expires_at=req.expires_at,
-                source_type=req.source_type,
+                source_type="user_api",
                 source_id=source_id,
                 source_excerpt=req.source_excerpt or req.content[:1000],
             )
@@ -186,7 +193,12 @@ def build_project_memory_router(
             "memory.put",
             "project_memory",
             row["id"],
-            {"project_id": project_id, "memory_key": row["memory_key"], "revision": row["revision"]},
+            {
+                "project_id": project_id,
+                "memory_key": row["memory_key"],
+                "revision": row["revision"],
+                "source_type": "user_api",
+            },
         )
         return row
 
