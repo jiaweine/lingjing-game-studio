@@ -37,6 +37,7 @@ async def run_worker():
                 history=list(payload.get("history", [])),
                 assets=assets,
                 job_id=job["id"],
+                project_context=dict(payload.get("project_context") or {}),
             )
         except Exception as exc:
             await _fail_product_job(job["id"], repr(exc))
