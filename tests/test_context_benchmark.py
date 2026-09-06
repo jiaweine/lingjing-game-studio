@@ -17,4 +17,5 @@ def test_context_benchmark_meets_mechanism_thresholds():
     assert result.premise_awareness == 1.0
     assert result.incremental_state_cache == 1.0
     assert result.long_horizon_turns >= 500
+    assert result.provider_token_budget_safety == 1.0
     assert result.passed is True
