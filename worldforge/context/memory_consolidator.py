@@ -17,6 +17,7 @@ from sqlalchemy import (
     and_,
     insert,
     select,
+    text as sql_text,
     update,
 )
 from sqlalchemy.engine import Engine
@@ -252,6 +253,28 @@ class MemoryConsolidator:
         if mapping is None:
             raise PermissionError("会话未绑定到该项目")
 
+    def _require_authoritative_user_message(
+        self,
+        connection,
+        *,
+        conversation_id: str,
+        message_id: str,
+        content: str,
+    ) -> None:
+        source = connection.execute(
+            sql_text(
+                "SELECT role, content FROM messages "
+                "WHERE id = :message_id AND conversation_id = :conversation_id LIMIT 1"
+            ),
+            {"message_id": message_id, "conversation_id": conversation_id},
+        ).first()
+        if source is None:
+            raise KeyError(message_id)
+        if str(source[0]) != "user":
+            raise ValueError("长期记忆 proposal 只能来自权威 user message")
+        if str(source[1]) != str(content):
+            raise ValueError("proposal content 必须与权威 user message 完全一致")
+
     def propose_user_message(
         self,
         *,
@@ -264,12 +287,7 @@ class MemoryConsolidator:
         scope: ProjectScopeSnapshot,
         max_retries: int = 4,
     ) -> list[dict[str, Any]]:
-        """Derive conservative proposals from an authoritative user message.
-
-        The caller is intentionally required to pass a user-message id; there is no generic
-        model-output ingestion path. Duplicate extraction is idempotent and concurrent unique
-        conflicts retry so one duplicate cannot roll back unrelated new candidates forever.
-        """
+        """Derive conservative proposals from an authoritative persisted user message."""
         candidates: list[dict[str, Any]] = []
         for sentence in _sentences(str(content)[:12000]):
             kind = _proposal_kind(sentence)
@@ -303,6 +321,12 @@ class MemoryConsolidator:
                         workspace_id=workspace_id,
                         project_id=project_id,
                         conversation_id=conversation_id,
+                    )
+                    self._require_authoritative_user_message(
+                        connection,
+                        conversation_id=conversation_id,
+                        message_id=message_id,
+                        content=content,
                     )
                     existing = {
                         str(row[0])
@@ -639,9 +663,6 @@ class MemoryConsolidator:
                 "memory": self.project_store._decode_item(memory_row),
             }
         except IntegrityError as exc:
-            # PostgreSQL row locks serialize normal approvals. The fallback is for SQLite or
-            # a concurrent unique-head race: if another reviewer already committed the same
-            # proposal, return that authoritative result; otherwise surface a conflict.
             approved = self._approved_result(
                 workspace_id=workspace_id,
                 actor_id=actor_id,
