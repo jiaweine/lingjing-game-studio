@@ -33,28 +33,84 @@ from .project_memory import (
 )
 from .project_packet import ProjectScopeSnapshot
 
-_EXTRACTOR_VERSION = "deterministic-user-memory-v1"
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;\n])")
+_EXTRACTOR_VERSION = "deterministic-user-memory-v2"
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])|\n+")
+
+# Proposal extraction deliberately optimizes for precision over recall. Soft imperative
+# language such as "keep" / bare "use" is excluded because it commonly describes only the
+# current task rather than a durable project rule.
 _CONSTRAINT_MARKERS = (
-    "必须", "不要", "不能", "禁止", "务必", "保持", "只允许", "不得",
-    "must", "do not", "don't", "never", "keep ", "only allow",
+    "必须",
+    "禁止",
+    "务必",
+    "只允许",
+    "不得",
+    "must",
+    "do not",
+    "don't",
+    "never",
+    "only allow",
+    "is required",
 )
 _DECISION_MARKERS = (
-    "决定", "确定", "采用", "改为", "改成", "选择", "锁定", "定为",
-    "decided", "choose", "chosen", "switch to", "we will use", "use ",
+    "决定",
+    "确定采用",
+    "确定改为",
+    "确定改成",
+    "选择",
+    "锁定为",
+    "定为",
+    "decided",
+    "we chose",
+    "we've chosen",
+    "switch to",
+    "we will use",
 )
 _VERIFIED_MARKERS = (
-    "已经确认", "已确认", "确认过", "已经验证", "已验证", "验证通过",
-    "confirmed", "verified", "validated",
+    "已经确认",
+    "已确认",
+    "确认过",
+    "已经验证",
+    "已验证",
+    "验证通过",
+    "confirmed",
+    "verified",
+    "validated",
 )
 _UNCERTAIN_MARKERS = (
-    "待确认", "待验证", "未确认", "未验证", "尚未确认", "尚未验证",
-    "不确定", "可能", "也许", "猜测", "假设", "疑似",
-    "unconfirmed", "unverified", "uncertain", "maybe", "possibly", "hypothesis",
+    "待确认",
+    "待验证",
+    "未确认",
+    "未验证",
+    "尚未确认",
+    "尚未验证",
+    "不确定",
+    "可能",
+    "也许",
+    "猜测",
+    "假设",
+    "疑似",
+    "unconfirmed",
+    "unverified",
+    "uncertain",
+    "maybe",
+    "possibly",
+    "hypothesis",
 )
 _QUESTION_PREFIXES = (
-    "是否", "是不是", "能否", "可否", "要不要", "需不需要", "有没有",
-    "should ", "could ", "can ", "is it ", "are we ", "do we ",
+    "是否",
+    "是不是",
+    "能否",
+    "可否",
+    "要不要",
+    "需不需要",
+    "有没有",
+    "should ",
+    "could ",
+    "can ",
+    "is it ",
+    "are we ",
+    "do we ",
 )
 
 
@@ -63,13 +119,13 @@ def _normalize(text: str) -> str:
 
 
 def _sentences(text: str) -> list[str]:
-    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    value = str(text or "").strip()
     if not value:
         return []
     return [
-        part.strip()
+        re.sub(r"\s+", " ", part).strip()
         for part in _SENTENCE_SPLIT_RE.split(value)
-        if part.strip()
+        if re.sub(r"\s+", " ", part).strip()
     ][:40]
 
 
@@ -95,7 +151,7 @@ def _proposal_kind(sentence: str) -> str | None:
     if _contains(normalized, _UNCERTAIN_MARKERS):
         return None
     # Explicit confirmation wins over decision/constraint wording because it records a
-    # user-asserted fact. This is still user memory, never project-verifier evidence.
+    # user-asserted fact. It remains user-confirmed memory, never verifier evidence.
     if _contains(normalized, _VERIFIED_MARKERS):
         return "fact"
     if _contains(normalized, _DECISION_MARKERS):
@@ -124,7 +180,7 @@ def _suggested_key(kind: str, content: str) -> str:
 
 
 class MemoryConsolidator:
-    """Persist reviewable memory proposals; never auto-promote model/user text to memory."""
+    """Persist reviewable user-memory proposals; never auto-promote text to memory."""
 
     def __init__(
         self,
@@ -174,6 +230,28 @@ class MemoryConsolidator:
     def _dict(row: Any) -> dict[str, Any]:
         return dict(row._mapping if hasattr(row, "_mapping") else row)
 
+    def _require_bound_conversation(
+        self,
+        connection,
+        *,
+        workspace_id: str,
+        project_id: str,
+        conversation_id: str,
+    ) -> None:
+        mapping = connection.execute(
+            select(self.project_store.project_conversations).where(
+                and_(
+                    self.project_store.project_conversations.c.workspace_id
+                    == workspace_id,
+                    self.project_store.project_conversations.c.project_id == project_id,
+                    self.project_store.project_conversations.c.conversation_id
+                    == conversation_id,
+                )
+            )
+        ).first()
+        if mapping is None:
+            raise PermissionError("会话未绑定到该项目")
+
     def propose_user_message(
         self,
         *,
@@ -184,7 +262,14 @@ class MemoryConsolidator:
         message_id: str,
         content: str,
         scope: ProjectScopeSnapshot,
+        max_retries: int = 4,
     ) -> list[dict[str, Any]]:
+        """Derive conservative proposals from an authoritative user message.
+
+        The caller is intentionally required to pass a user-message id; there is no generic
+        model-output ingestion path. Duplicate extraction is idempotent and concurrent unique
+        conflicts retry so one duplicate cannot roll back unrelated new candidates forever.
+        """
         candidates: list[dict[str, Any]] = []
         for sentence in _sentences(str(content)[:12000]):
             kind = _proposal_kind(sentence)
@@ -202,66 +287,66 @@ class MemoryConsolidator:
         if not candidates:
             return []
 
-        now = time.time()
-        try:
-            with self.engine.begin() as connection:
-                self.project_store._require_member(connection, workspace_id, actor_id)
-                self.project_store._require_project(connection, workspace_id, project_id)
-                mapping = connection.execute(
-                    select(self.project_store.project_conversations).where(
-                        and_(
-                            self.project_store.project_conversations.c.workspace_id
-                            == workspace_id,
-                            self.project_store.project_conversations.c.project_id
-                            == project_id,
-                            self.project_store.project_conversations.c.conversation_id
-                            == conversation_id,
-                        )
+        last_error: Exception | None = None
+        for _attempt in range(max(1, int(max_retries))):
+            try:
+                now = time.time()
+                with self.engine.begin() as connection:
+                    self.project_store._require_member(
+                        connection, workspace_id, actor_id
                     )
-                ).first()
-                if mapping is None:
-                    raise PermissionError("会话未绑定到该项目")
-
-                existing = {
-                    str(row[0])
-                    for row in connection.execute(
-                        select(self.proposals.c.fingerprint).where(
-                            and_(
-                                self.proposals.c.project_id == project_id,
-                                self.proposals.c.message_id == message_id,
+                    self.project_store._require_project(
+                        connection, workspace_id, project_id
+                    )
+                    self._require_bound_conversation(
+                        connection,
+                        workspace_id=workspace_id,
+                        project_id=project_id,
+                        conversation_id=conversation_id,
+                    )
+                    existing = {
+                        str(row[0])
+                        for row in connection.execute(
+                            select(self.proposals.c.fingerprint).where(
+                                and_(
+                                    self.proposals.c.project_id == project_id,
+                                    self.proposals.c.message_id == message_id,
+                                )
+                            )
+                        ).all()
+                    }
+                    for candidate in candidates:
+                        if candidate["fingerprint"] in existing:
+                            continue
+                        connection.execute(
+                            insert(self.proposals).values(
+                                id=_id("proposal"),
+                                workspace_id=workspace_id,
+                                project_id=project_id,
+                                conversation_id=conversation_id,
+                                message_id=message_id,
+                                fingerprint=candidate["fingerprint"],
+                                suggested_key=candidate["suggested_key"],
+                                kind=candidate["kind"],
+                                content=candidate["content"],
+                                build_ref=scope.build_ref,
+                                branch_ref=scope.branch_ref,
+                                commit_ref=scope.commit_ref,
+                                environment_ref=scope.environment_ref,
+                                extractor_version=_EXTRACTOR_VERSION,
+                                status="pending",
+                                created_by=actor_id,
+                                created_at=now,
+                                review_note="",
                             )
                         )
-                    ).all()
-                }
-                for candidate in candidates:
-                    if candidate["fingerprint"] in existing:
-                        continue
-                    connection.execute(
-                        insert(self.proposals).values(
-                            id=_id("proposal"),
-                            workspace_id=workspace_id,
-                            project_id=project_id,
-                            conversation_id=conversation_id,
-                            message_id=message_id,
-                            fingerprint=candidate["fingerprint"],
-                            suggested_key=candidate["suggested_key"],
-                            kind=candidate["kind"],
-                            content=candidate["content"],
-                            build_ref=scope.build_ref,
-                            branch_ref=scope.branch_ref,
-                            commit_ref=scope.commit_ref,
-                            environment_ref=scope.environment_ref,
-                            extractor_version=_EXTRACTOR_VERSION,
-                            status="pending",
-                            created_by=actor_id,
-                            created_at=now,
-                            review_note="",
-                        )
-                    )
-        except IntegrityError:
-            # Concurrent duplicate extraction is harmless. The unique source fingerprint is
-            # authoritative; re-read below instead of retrying writes inside a failed txn.
-            pass
+                break
+            except IntegrityError as exc:
+                last_error = exc
+                continue
+        else:
+            raise MemoryConflict("memory proposal dedupe CAS failed") from last_error
+
         return self.list_proposals(
             workspace_id=workspace_id,
             actor_id=actor_id,
@@ -309,6 +394,50 @@ class MemoryConsolidator:
             ).all()
         return [self._dict(row) for row in rows]
 
+    def _approved_result(
+        self,
+        *,
+        workspace_id: str,
+        actor_id: str,
+        project_id: str,
+        proposal_id: str,
+    ) -> dict[str, Any] | None:
+        with self.engine.connect() as connection:
+            self.project_store._require_member(connection, workspace_id, actor_id)
+            self.project_store._require_project(connection, workspace_id, project_id)
+            proposal_row = connection.execute(
+                select(self.proposals).where(
+                    and_(
+                        self.proposals.c.id == proposal_id,
+                        self.proposals.c.workspace_id == workspace_id,
+                        self.proposals.c.project_id == project_id,
+                    )
+                )
+            ).first()
+            if proposal_row is None:
+                raise KeyError(proposal_id)
+            proposal = self._dict(proposal_row)
+            if proposal["status"] != "approved":
+                return None
+            memory_id = proposal.get("approved_memory_id")
+            memory_row = (
+                connection.execute(
+                    select(self.project_store.items).where(
+                        self.project_store.items.c.id == memory_id
+                    )
+                ).first()
+                if memory_id
+                else None
+            )
+            return {
+                "proposal": proposal,
+                "memory": (
+                    self.project_store._decode_item(memory_row)
+                    if memory_row is not None
+                    else None
+                ),
+            }
+
     def approve_proposal(
         self,
         *,
@@ -322,188 +451,206 @@ class MemoryConsolidator:
     ) -> dict[str, Any]:
         """Atomically promote one reviewed proposal into an authoritative memory revision."""
         now = time.time()
-        with self.engine.begin() as connection:
-            self.project_store._require_member(connection, workspace_id, actor_id)
-            self.project_store._require_project(connection, workspace_id, project_id)
-            proposal_row = connection.execute(
-                select(self.proposals)
-                .where(
-                    and_(
-                        self.proposals.c.id == proposal_id,
-                        self.proposals.c.workspace_id == workspace_id,
-                        self.proposals.c.project_id == project_id,
-                    )
-                )
-                .with_for_update()
-            ).first()
-            if proposal_row is None:
-                raise KeyError(proposal_id)
-            proposal = self._dict(proposal_row)
-            if proposal["status"] == "approved":
-                memory_id = proposal.get("approved_memory_id")
-                memory_row = (
-                    connection.execute(
-                        select(self.project_store.items).where(
-                            self.project_store.items.c.id == memory_id
+        try:
+            with self.engine.begin() as connection:
+                self.project_store._require_member(connection, workspace_id, actor_id)
+                self.project_store._require_project(connection, workspace_id, project_id)
+                proposal_row = connection.execute(
+                    select(self.proposals)
+                    .where(
+                        and_(
+                            self.proposals.c.id == proposal_id,
+                            self.proposals.c.workspace_id == workspace_id,
+                            self.proposals.c.project_id == project_id,
                         )
-                    ).first()
-                    if memory_id
-                    else None
-                )
-                return {
-                    "proposal": proposal,
-                    "memory": (
-                        self.project_store._decode_item(memory_row)
-                        if memory_row is not None
-                        else None
-                    ),
-                }
-            if proposal["status"] != "pending":
-                raise ValueError("只有 pending proposal 可以批准")
-
-            key = _memory_key(memory_key or proposal["suggested_key"])
-            memory_content = str(content or proposal["content"]).strip()
-            if not memory_content:
-                raise ValueError("memory content 不能为空")
-            if len(memory_content) > 20000:
-                raise ValueError("memory content 过长")
-            kind = str(proposal["kind"]).strip().lower()
-            if kind not in _MEMORY_KINDS:
-                raise ValueError(f"不支持的 memory kind: {kind}")
-            build_ref, branch_ref, commit_ref, environment_ref = _clean_scope(
-                proposal.get("build_ref"),
-                proposal.get("branch_ref"),
-                proposal.get("commit_ref"),
-                proposal.get("environment_ref"),
-            )
-            scope_key = _scope_key(
-                build_ref, branch_ref, commit_ref, environment_ref
-            )
-
-            head_row = connection.execute(
-                select(self.project_store.heads)
-                .where(
-                    and_(
-                        self.project_store.heads.c.project_id == project_id,
-                        self.project_store.heads.c.memory_key == key,
-                        self.project_store.heads.c.scope_key == scope_key,
                     )
+                    .with_for_update()
+                ).first()
+                if proposal_row is None:
+                    raise KeyError(proposal_id)
+                proposal = self._dict(proposal_row)
+                if proposal["status"] == "approved":
+                    memory_id = proposal.get("approved_memory_id")
+                    memory_row = (
+                        connection.execute(
+                            select(self.project_store.items).where(
+                                self.project_store.items.c.id == memory_id
+                            )
+                        ).first()
+                        if memory_id
+                        else None
+                    )
+                    return {
+                        "proposal": proposal,
+                        "memory": (
+                            self.project_store._decode_item(memory_row)
+                            if memory_row is not None
+                            else None
+                        ),
+                    }
+                if proposal["status"] != "pending":
+                    raise ValueError("只有 pending proposal 可以批准")
+
+                key = _memory_key(memory_key or proposal["suggested_key"])
+                memory_content = str(content or proposal["content"]).strip()
+                if not memory_content:
+                    raise ValueError("memory content 不能为空")
+                if len(memory_content) > 20000:
+                    raise ValueError("memory content 过长")
+                kind = str(proposal["kind"]).strip().lower()
+                if kind not in _MEMORY_KINDS:
+                    raise ValueError(f"不支持的 memory kind: {kind}")
+                build_ref, branch_ref, commit_ref, environment_ref = _clean_scope(
+                    proposal.get("build_ref"),
+                    proposal.get("branch_ref"),
+                    proposal.get("commit_ref"),
+                    proposal.get("environment_ref"),
                 )
-                .with_for_update()
-            ).first()
-            head = self._dict(head_row) if head_row else None
-            revision = int(head["revision"]) + 1 if head else 1
-            memory_id = _id("memory")
-            supersedes_id = str(head["memory_id"]) if head else None
-            importance = {
-                "constraint": 0.90,
-                "decision": 0.85,
-                "fact": 0.80,
-            }.get(kind, 0.70)
-            connection.execute(
-                insert(self.project_store.items).values(
-                    id=memory_id,
-                    workspace_id=workspace_id,
-                    project_id=project_id,
-                    memory_key=key,
-                    scope_key=scope_key,
-                    revision=revision,
-                    kind=kind,
-                    content=memory_content,
-                    value_json=json.dumps(
-                        {
-                            "proposal_id": proposal_id,
-                            "message_id": proposal["message_id"],
-                            "reviewed_by": actor_id,
-                        },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                    state="active",
-                    confidence=1.0,
-                    importance=importance,
-                    pinned=0,
-                    build_ref=build_ref,
-                    branch_ref=branch_ref,
-                    commit_ref=commit_ref,
-                    environment_ref=environment_ref,
-                    valid_from=None,
-                    valid_to=None,
-                    expires_at=None,
-                    source_type="user_confirmed",
-                    source_id=f"proposal:{proposal_id}"[:128],
-                    source_excerpt=str(proposal["content"])[:4000],
-                    supersedes_id=supersedes_id,
-                    created_by=actor_id,
-                    created_at=now,
+                scope_key = _scope_key(
+                    build_ref, branch_ref, commit_ref, environment_ref
                 )
-            )
-            if head:
-                result = connection.execute(
-                    update(self.project_store.heads)
+
+                head_row = connection.execute(
+                    select(self.project_store.heads)
                     .where(
                         and_(
                             self.project_store.heads.c.project_id == project_id,
                             self.project_store.heads.c.memory_key == key,
                             self.project_store.heads.c.scope_key == scope_key,
-                            self.project_store.heads.c.revision == int(head["revision"]),
-                            self.project_store.heads.c.memory_id == head["memory_id"],
                         )
                     )
-                    .values(
-                        workspace_id=workspace_id,
-                        memory_id=memory_id,
-                        revision=revision,
-                        state="active",
-                        updated_at=now,
-                    )
-                )
-                if result.rowcount != 1:
-                    raise MemoryConflict(f"{key}@{scope_key}")
-            else:
+                    .with_for_update()
+                ).first()
+                head = self._dict(head_row) if head_row else None
+                revision = int(head["revision"]) + 1 if head else 1
+                memory_id = _id("memory")
+                supersedes_id = str(head["memory_id"]) if head else None
+                importance = {
+                    "constraint": 0.90,
+                    "decision": 0.85,
+                    "fact": 0.80,
+                }.get(kind, 0.70)
                 connection.execute(
-                    insert(self.project_store.heads).values(
+                    insert(self.project_store.items).values(
+                        id=memory_id,
                         workspace_id=workspace_id,
                         project_id=project_id,
                         memory_key=key,
                         scope_key=scope_key,
-                        memory_id=memory_id,
                         revision=revision,
+                        kind=kind,
+                        content=memory_content,
+                        value_json=json.dumps(
+                            {
+                                "proposal_id": proposal_id,
+                                "message_id": proposal["message_id"],
+                                "reviewed_by": actor_id,
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
                         state="active",
-                        updated_at=now,
+                        confidence=1.0,
+                        importance=importance,
+                        pinned=0,
+                        build_ref=build_ref,
+                        branch_ref=branch_ref,
+                        commit_ref=commit_ref,
+                        environment_ref=environment_ref,
+                        valid_from=None,
+                        valid_to=None,
+                        expires_at=None,
+                        source_type="user_confirmed",
+                        source_id=f"proposal:{proposal_id}"[:128],
+                        source_excerpt=str(proposal["content"])[:4000],
+                        supersedes_id=supersedes_id,
+                        created_by=actor_id,
+                        created_at=now,
                     )
                 )
+                if head:
+                    result = connection.execute(
+                        update(self.project_store.heads)
+                        .where(
+                            and_(
+                                self.project_store.heads.c.project_id == project_id,
+                                self.project_store.heads.c.memory_key == key,
+                                self.project_store.heads.c.scope_key == scope_key,
+                                self.project_store.heads.c.revision
+                                == int(head["revision"]),
+                                self.project_store.heads.c.memory_id
+                                == head["memory_id"],
+                            )
+                        )
+                        .values(
+                            workspace_id=workspace_id,
+                            memory_id=memory_id,
+                            revision=revision,
+                            state="active",
+                            updated_at=now,
+                        )
+                    )
+                    if result.rowcount != 1:
+                        raise MemoryConflict(f"{key}@{scope_key}")
+                else:
+                    connection.execute(
+                        insert(self.project_store.heads).values(
+                            workspace_id=workspace_id,
+                            project_id=project_id,
+                            memory_key=key,
+                            scope_key=scope_key,
+                            memory_id=memory_id,
+                            revision=revision,
+                            state="active",
+                            updated_at=now,
+                        )
+                    )
 
-            proposal_update = connection.execute(
-                update(self.proposals)
-                .where(
-                    and_(
-                        self.proposals.c.id == proposal_id,
-                        self.proposals.c.status == "pending",
+                proposal_update = connection.execute(
+                    update(self.proposals)
+                    .where(
+                        and_(
+                            self.proposals.c.id == proposal_id,
+                            self.proposals.c.status == "pending",
+                        )
+                    )
+                    .values(
+                        status="approved",
+                        reviewed_by=actor_id,
+                        reviewed_at=now,
+                        approved_memory_id=memory_id,
+                        review_note=str(note or "")[:4000],
                     )
                 )
-                .values(
-                    status="approved",
-                    reviewed_by=actor_id,
-                    reviewed_at=now,
-                    approved_memory_id=memory_id,
-                    review_note=str(note or "")[:4000],
-                )
+                if proposal_update.rowcount != 1:
+                    raise MemoryConflict(f"proposal:{proposal_id}")
+                memory_row = connection.execute(
+                    select(self.project_store.items).where(
+                        self.project_store.items.c.id == memory_id
+                    )
+                ).first()
+                reviewed = connection.execute(
+                    select(self.proposals).where(
+                        self.proposals.c.id == proposal_id
+                    )
+                ).first()
+            return {
+                "proposal": self._dict(reviewed),
+                "memory": self.project_store._decode_item(memory_row),
+            }
+        except IntegrityError as exc:
+            # PostgreSQL row locks serialize normal approvals. The fallback is for SQLite or
+            # a concurrent unique-head race: if another reviewer already committed the same
+            # proposal, return that authoritative result; otherwise surface a conflict.
+            approved = self._approved_result(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                project_id=project_id,
+                proposal_id=proposal_id,
             )
-            if proposal_update.rowcount != 1:
-                raise MemoryConflict(f"proposal:{proposal_id}")
-            memory_row = connection.execute(
-                select(self.project_store.items).where(
-                    self.project_store.items.c.id == memory_id
-                )
-            ).first()
-            reviewed = connection.execute(
-                select(self.proposals).where(self.proposals.c.id == proposal_id)
-            ).first()
-        return {
-            "proposal": self._dict(reviewed),
-            "memory": self.project_store._decode_item(memory_row),
-        }
+            if approved is not None:
+                return approved
+            raise MemoryConflict(f"proposal:{proposal_id}") from exc
 
     def reject_proposal(
         self,
