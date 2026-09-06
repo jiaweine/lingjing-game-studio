@@ -19,3 +19,5 @@ jobs:
         run: pip install -r requirements.txt
       - name: Memory identity benchmark
         run: python scripts/memory_identity_benchmark.py
+      - name: Memory identity UI syntax
+        run: node --check frontend/memory_identity_panel.js

@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
 OUT.mkdir(exist_ok=True)
 MEMORY_JS = (ROOT / "frontend" / "memory_panel.js").read_text(encoding="utf-8")
+IDENTITY_JS = (ROOT / "frontend" / "memory_identity_panel.js").read_text(encoding="utf-8")
 
 MOCK = r'''
 <script>
@@ -47,6 +48,24 @@ window.fetch=async function(url,opt={}){
   if(bind&&method==='POST'){S.project=S.projects.find(row=>row.id===bind[1]);return response({project_id:S.project.id,conversation_id:'cv-e2e'});}
   if(p==='/api/projects/project-atlas/memory-heads'&&method==='GET') return response(S.heads);
   if(p==='/api/projects/project-atlas/memory-proposals'&&method==='GET') return response(S.proposals.filter(row=>row.status==='pending'));
+  const identity=p.match(/^\/api\/projects\/project-atlas\/memory-proposals\/([^/]+)\/identity-suggestions$/);
+  if(identity&&method==='GET'){
+    const proposal=S.proposals.find(row=>row.id===identity[1]);
+    if(!proposal||proposal.status!=='pending') return response({detail:'proposal unavailable'},409);
+    if(proposal.id==='proposal-update') return response({
+      proposal_id:proposal.id,proposal_suggested_key:proposal.suggested_key,read_only:true,
+      candidate_heads_evaluated:2,candidate_heads_truncated:false,mode:'deterministic-memory-identity-v1',
+      proposal_kind:'fact',abstained:false,recommended_key:'combat.shield.cooldown',best_score:.861,
+      score_margin:.861,threshold:.72,margin_threshold:.1,
+      candidates:[{memory_key:'combat.shield.cooldown',score:.861,recommended:true,reasons:['strong-stable-token-overlap','same-value-stripped-skeleton','scope:exact'],best_head_id:'mem-shield-147-r1',best_revision:1,scope_relation:'exact'}]
+    });
+    return response({
+      proposal_id:proposal.id,proposal_suggested_key:proposal.suggested_key,read_only:true,
+      candidate_heads_evaluated:1,candidate_heads_truncated:false,mode:'deterministic-memory-identity-v1',
+      proposal_kind:proposal.kind,abstained:true,recommended_key:null,best_score:.42,score_margin:.42,
+      threshold:.72,margin_threshold:.1,candidates:[]
+    });
+  }
   const approve=p.match(/^\/api\/projects\/project-atlas\/memory-proposals\/([^/]+)\/approve$/);
   if(approve&&method==='POST'){
     const proposal=S.proposals.find(row=>row.id===approve[1]),body=JSON.parse(opt.body||'{}');
@@ -84,7 +103,7 @@ window.fetch=async function(url,opt={}){
 HTML = f'''<!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><style>
-:root{{--line:#dfe4ec;--ink:#172033;--ink-2:#4f5c70;--ink-3:#7b8798;--accent:#315de8;--panel-soft:#f7f9fc;--success:#148a65;--success-soft:#e3f4ec;--warning:#b8781b;--warning-soft:#fff4de;--danger:#c84c55;--danger-soft:#fdebed}}
+:root{{--line:#dfe4ec;--ink:#172033;--ink-2:#4f5c70;--ink-3:#7b8798;--accent:#315de8;--accent-soft:#eef2ff;--panel-soft:#f7f9fc;--success:#148a65;--success-soft:#e3f4ec;--warning:#b8781b;--warning-soft:#fff4de;--danger:#c84c55;--danger-soft:#fdebed}}
 .right-tabs{{display:flex;gap:4px}}.right-tab{{padding:8px;border:0}}.right-tab.active{{font-weight:700}}.right-panel{{display:none}}.right-panel.active{{display:block}}#toast{{position:fixed;bottom:10px;left:10px}}#toast.show{{display:block}}
 </style></head>
 <body>
@@ -109,6 +128,7 @@ HTML = f'''<!doctype html>
 <div id="toast"></div>
 {MOCK}
 <script>{MEMORY_JS}</script>
+<script>{IDENTITY_JS}</script>
 </body></html>'''
 
 report = {"checks": {}, "errors": []}
@@ -133,6 +153,7 @@ with sync_playwright() as playwright:
 
     page.click("#memoryBindBtn")
     page.wait_for_function("document.querySelector('#memoryPanelBody').textContent.includes('Atlas') && document.querySelectorAll('.memory-proposal').length===2")
+    page.wait_for_function("document.querySelectorAll('[data-memory-identity-check]').length===2")
     report["checks"]["explicit_project_binding"] = True
     report["checks"]["scope_complete_heads"] = (
         "build=1.4.7" in page.locator("#memoryPanelBody").inner_text()
@@ -141,7 +162,17 @@ with sync_playwright() as playwright:
     )
 
     update = page.locator('.memory-proposal[data-proposal-id="proposal-update"]')
-    update.locator('[data-proposal-key="proposal-update"]').fill("combat.shield.cooldown")
+    key_input = update.locator('[data-proposal-key="proposal-update"]')
+    original_key = key_input.input_value()
+    assert original_key == "proposal.fact.abc123"
+    update.locator('[data-memory-identity-check="proposal-update"]').click()
+    page.wait_for_function("document.querySelector('.memory-proposal[data-proposal-id=\"proposal-update\"] [data-memory-identity-result]').textContent.includes('combat.shield.cooldown')")
+    report["checks"]["identity_suggestion_visible"] = True
+    report["checks"]["identity_does_not_autofill"] = key_input.input_value() == original_key
+    update.locator('[data-memory-identity-adopt="proposal-update"]').click()
+    page.wait_for_function("document.querySelector('[data-proposal-key=\"proposal-update\"]').value==='combat.shield.cooldown'")
+    report["checks"]["identity_requires_explicit_adopt"] = True
+
     update.locator('[data-memory-approve="proposal-update"]').click()
     page.wait_for_function("document.querySelector('#memoryPanelBody').textContent.includes('已确认 build 1.4.7 护盾冷却是 5 秒') && document.querySelector('#memoryPanelBody').textContent.includes('rev 2')")
     report["checks"]["approve_into_existing_revision_chain"] = True
@@ -175,12 +206,16 @@ with sync_playwright() as playwright:
     """)
     page.click("#memoryRefreshBtn")
     page.wait_for_function("document.querySelector('#memoryPanelBody').textContent.includes('只读成员可以查看 proposal')")
+    page.wait_for_function("document.querySelectorAll('[data-memory-identity-check]').length===1")
     report["checks"]["workspace_role_reauthorized"] = (
         page.locator('[data-memory-approve]').count() == 0
         and page.locator('[data-memory-reject]').count() == 0
         and page.locator('[data-memory-state]').count() == 0
         and page.locator('.memory-proposal[data-proposal-id="proposal-viewer"]').count() == 1
     )
+    report["checks"]["viewer_can_read_identity_suggestion"] = page.locator(
+        '.memory-proposal[data-proposal-id="proposal-viewer"] [data-memory-identity-check]'
+    ).count() == 1
 
     browser.close()
 
