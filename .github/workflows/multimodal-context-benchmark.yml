@@ -23,3 +23,5 @@ jobs:
         run: python scripts/multimodal_context_benchmark.py
       - name: Multimodal quality protocol smoke
         run: python scripts/multimodal_quality_benchmark.py --require-zero-contamination
+      - name: Multimodal quality matrix protocol smoke
+        run: python scripts/multimodal_quality_matrix.py --require-zero-contamination

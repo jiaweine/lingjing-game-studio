@@ -18,7 +18,8 @@ It does **not** claim semantic retrieval quality.
 product coordinator's real lexical fallback. This only verifies that the evaluator, scope
 filter, metrics and output schema work. Its results are not quality evidence.
 
-A live run uses a JSON dataset with real media paths and a running retrieval coordinator:
+A live single-backend run uses a JSON dataset with real media paths and a running retrieval
+coordinator:
 
 ```bash
 python scripts/multimodal_quality_benchmark.py \
@@ -27,6 +28,26 @@ python scripts/multimodal_quality_benchmark.py \
   --require-zero-contamination \
   --require-semantic-backend
 ```
+
+For controlled backend comparison, use the matrix runner. Every row receives the same dataset,
+case order, top-K, scope filter and scoring code. Each endpoint should represent a frozen
+retrieval deployment, for example lexical baseline vs WeMM vs a future WeMM+reranker vs
+WeMM+LCO audio specialist:
+
+```bash
+python scripts/multimodal_quality_matrix.py \
+  --dataset /shared/bench/game-rd-mm-v1.json \
+  --backend wemm=http://127.0.0.1:8910 \
+  --backend wemm-rerank=http://127.0.0.1:8920 \
+  --backend wemm-lco=http://127.0.0.1:8930 \
+  --require-zero-contamination \
+  --require-semantic-backend
+```
+
+The matrix always includes `baseline`, which is the product coordinator with semantic workers
+disabled. It reports raw results per backend plus metric deltas versus that baseline. Endpoint
+labels describe deployment variants only; the runner does not assume that a named reranker or
+audio specialist actually exists behind an endpoint.
 
 The dataset schema is intentionally small:
 
@@ -78,6 +99,10 @@ The v1 evaluator reports:
 - a `worker_lane_seconds_proxy` derived from coordinator visual/audio worker latencies;
 - backend mix and whether a non-lexical semantic backend was actually observed.
 
+The matrix additionally reports deltas against the deterministic lexical baseline for the same
+metrics. A lower latency/cost delta is better, while a higher recall/MRR/temporal delta is
+better; contamination must remain zero rather than being traded for recall.
+
 `worker_lane_seconds_proxy` is not claimed to be exact GPU kernel time. It includes worker
 request latency and is only a cost proxy until worker-level CUDA timing is added.
 
@@ -85,15 +110,11 @@ The benchmark intentionally does **not** yet report provider media tokens or end
 Those belong to a later generator/provider benchmark where the selected evidence is actually
 sent to the model and the task answer is scored under a frozen model/budget.
 
-## Comparison ladder
+## Evidence labels
 
-The intended controlled comparison is:
+- Built-in smoke: `synthetic-protocol-smoke-not-quality-evidence` and `none-protocol-smoke`.
+- A single live endpoint plus external dataset: `measured-live-retrieval-only`.
+- A live matrix plus external dataset: `controlled-live-retrieval-comparison-only`.
 
-1. product lexical/deterministic fallback;
-2. WeMM visual/video/text retrieval;
-3. WeMM plus a reranker, if/when a reranker is added;
-4. WeMM plus LCO acoustic specialist for audio-intent cases.
-
-All rows must use the same cases, top-K, scope filter, media files, timeout and scoring code.
-Do not compare a synthetic smoke score with a GPU live score, and do not call either one
-external SOTA evidence without a controlled external baseline.
+None of these labels means external SOTA. A SOTA claim requires a controlled external baseline,
+frozen model/media/budgets, held-out cases, and reproducible evaluation artifacts.
