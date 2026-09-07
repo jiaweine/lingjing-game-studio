@@ -2,6 +2,49 @@
 
 This directory defines the evidence contract for the first real multimodal retrieval quality study. It intentionally does **not** contain a fabricated benchmark score or a synthetic corpus presented as production evidence.
 
+This repository does not ship a real held-out game-R&D corpus. The images under `docs/assets/readme/` are product documentation screenshots, not eligible benchmark data.
+
+## Prepare a real annotation workspace
+
+Keep the real corpus outside the public repository by default:
+
+```text
+/path/to/game-rd-mm-v1/
+  assets/
+    session-001/...
+    session-002/...
+```
+
+Scaffold the workspace from raw files:
+
+```bash
+python scripts/scaffold_multimodal_corpus.py \
+  --corpus-root /path/to/game-rd-mm-v1
+```
+
+The scaffold step only inventories objective file properties:
+
+- corpus-relative path;
+- MIME and modality;
+- byte size;
+- SHA-256 content digest;
+- duplicate-content groups;
+- a stable asset id derived from path plus content digest.
+
+It does **not** invent queries, relevance labels, temporal intervals, source groups, build/scope exclusions, annotator counts or adjudication. The generated `workspace.json` starts with zero cases and `heldout_policy.development_excluded=false`.
+
+Use `case.template.json` as the authoring shape. Each case references `candidate_asset_ids` from the asset catalog. `forbidden_asset_ids` is only for candidate assets that are invalid by project/build scope; semantic hard negatives that are valid in scope stay candidates but are not forbidden.
+
+After independent human annotation and adjudication, set `heldout_policy.development_excluded=true` only when that exclusion has actually been verified. Then freeze:
+
+```bash
+python scripts/freeze_multimodal_corpus.py \
+  --workspace /path/to/game-rd-mm-v1/workspace.json \
+  --frozen-at 2026-09-07T10:00:00Z
+```
+
+Freeze is fail-closed. It recompiles the benchmark manifest from the asset catalog, materializes scope flags from the human case labels, re-hashes every referenced file, runs the existing strict corpus validator, and refuses to write `manifest.json` unless the full `game-rd-mm-v1` quality protocol passes. A successful freeze only means **corpus-protocol eligible**; it is not model-quality evidence.
+
 ## What qualifies as measured quality evidence
 
 Measured evidence requires **both** a strict corpus and a strict run.
@@ -32,36 +75,30 @@ These are evidence-quality floors, not claims that 100 cases or three repeats ar
 
 ## Annotation unit
 
-Each case contains:
+The authoring workspace keeps the asset catalog separate from case labels. Each case contains:
 
 - `id`: stable case id;
-- `query`: the user-style retrieval request;
+- `query`: the human-authored user-style retrieval request;
 - `source_group`: capture/session/project grouping used to audit dataset diversity;
 - `target_modalities`: one or more of `text`, `image`, `video`, `audio`;
 - `annotation.annotator_count` and `annotation.adjudicated`;
-- `assets`: candidate evidence, including `path`, `sha256`, MIME, modality metadata and scope flag;
+- `candidate_asset_ids`: ids from the scaffolded asset catalog;
 - `relevant`: one or more gold asset ids, optionally with `[start, end]` for temporal evidence;
-- `forbidden_asset_ids`: assets that must never be returned because project/build scope excludes them;
+- `forbidden_asset_ids`: candidate assets that must never be returned because project/build scope excludes them;
 - optional per-case `top_k`.
 
-Semantic hard negatives that are valid in the current scope belong in `assets` but **not** in `forbidden_asset_ids`. The latter is reserved for evidence that is invalid by scope, so the contamination metric retains a precise meaning.
+The freeze compiler turns candidate ids into the inline `assets` structure consumed by the benchmark. Semantic hard negatives that are valid in the current scope belong in `candidate_asset_ids` but **not** in `forbidden_asset_ids`.
 
 ## Freeze procedure
 
-1. Collect and annotate the corpus without viewing retrieval results from the systems being compared.
-2. Adjudicate disagreements.
-3. Assign stable `source_group` values and confirm development/test separation.
-4. Store media under corpus-relative paths and record SHA-256 for every referenced asset.
-5. Set the top-level fields:
-   - `name = game-rd-mm-v1`
-   - `protocol_version = 1.0`
-   - `annotation_guideline_version = game-rd-mm-v1-annotation-1`
-   - `evidence_class = human-annotated-heldout`
-   - `split = heldout`
-   - `frozen = true`
-   - `frozen_at = <ISO-8601 timestamp>`
-   - `heldout_policy.development_excluded = true`
-6. Run:
+1. Collect the corpus without viewing retrieval results from the systems being compared.
+2. Run the scaffold tool to hash and inventory the raw files.
+3. Assign stable source groups and determine development/held-out separation before tuning on held-out labels.
+4. Independently author queries and relevance/scope/temporal labels.
+5. Adjudicate disagreements and record at least two annotators per case.
+6. Verify `heldout_policy.development_excluded=true` only when true.
+7. Run `scripts/freeze_multimodal_corpus.py` with an explicit ISO-8601 freeze timestamp.
+8. Independently re-run:
 
 ```bash
 python scripts/validate_multimodal_corpus.py \
