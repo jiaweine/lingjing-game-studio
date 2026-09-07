@@ -6,9 +6,10 @@ import json
 import mimetypes
 from pathlib import Path
 import re
+import tempfile
 from typing import Any, Iterable
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 
 from worldforge.product.store import ConversationStore
 from worldforge.storage import ObjectStorage
@@ -47,6 +48,17 @@ def _canonical_digest(payload: Any) -> str:
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _clean_ids(values: Iterable[str] | None) -> list[str]:
@@ -163,6 +175,36 @@ def select_product_assets(
     return [selected[key] for key in sorted(selected)]
 
 
+def _validate_existing_managed_cohort(
+    managed_root: Path,
+    *,
+    expected_hashes: dict[str, str],
+) -> None:
+    if not managed_root.exists():
+        return
+    if not managed_root.is_dir() or managed_root.is_symlink():
+        raise ValueError(f"managed export path is not a normal directory: {managed_root}")
+    actual_files: dict[str, Path] = {}
+    for path in managed_root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(f"managed export directory contains a symlink: {path}")
+        if path.is_file():
+            actual_files[path.relative_to(managed_root).as_posix()] = path
+    if set(actual_files) != set(expected_hashes):
+        extra = sorted(set(actual_files) - set(expected_hashes))[:3]
+        missing = sorted(set(expected_hashes) - set(actual_files))[:3]
+        raise ValueError(
+            "managed export directory belongs to a different cohort; "
+            f"extra={extra} missing={missing}; use a fresh corpus root"
+        )
+    for relative, expected in expected_hashes.items():
+        if _sha256_file(actual_files[relative]) != expected:
+            raise ValueError(
+                f"managed export directory contains changed bytes for {relative!r}; "
+                "use a fresh corpus root"
+            )
+
+
 def stage_product_assets(
     store: ConversationStore,
     storage: ObjectStorage,
@@ -193,10 +235,8 @@ def stage_product_assets(
         asset_ids=asset_ids,
         all_workspace_assets=all_workspace_assets,
     )
-    exported: list[dict[str, Any]] = []
+    eligible: list[tuple[dict[str, Any], str]] = []
     skipped: list[dict[str, str]] = []
-    modality_counts = {kind: 0 for kind in sorted(_ALLOWED_KINDS)}
-
     for row in rows:
         kind = _asset_kind(row)
         if kind is None:
@@ -213,93 +253,106 @@ def stage_product_assets(
                 f"asset {row.get('id')!r} uses storage backend {backend!r}, "
                 f"but exporter is configured for {getattr(storage, 'name', None)!r}"
             )
-        object_key = str(row.get("path") or "").strip()
-        if not object_key:
+        if not str(row.get("path") or "").strip():
             raise ValueError(f"asset {row.get('id')!r} has no storage object key")
-        data = storage.get_bytes(object_key)
-        if int(row.get("size") or 0) != len(data):
-            raise ValueError(
-                f"asset {row.get('id')!r} size mismatch: db={row.get('size')} bytes={len(data)}"
-            )
-        sha256 = _sha256_bytes(data)
-        filename = _safe_filename(
-            str(row.get("id") or "asset"),
-            str(row.get("name") or "source"),
-            str(row.get("mime") or "application/octet-stream"),
-            kind,
-        )
-        destination = (managed_root / filename).resolve()
-        try:
-            destination.relative_to(managed_root)
-        except ValueError as exc:
-            raise ValueError("staged asset path escaped managed asset directory") from exc
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists():
-            existing = destination.read_bytes()
-            if _sha256_bytes(existing) != sha256:
+        eligible.append((row, kind))
+
+    exported: list[dict[str, Any]] = []
+    modality_counts = {kind: 0 for kind in sorted(_ALLOWED_KINDS)}
+    expected_hashes: dict[str, str] = {}
+
+    with tempfile.TemporaryDirectory(prefix=".lingjing-export-", dir=root) as tmp:
+        prepared_root = Path(tmp) / "managed"
+        prepared_root.mkdir(parents=True, exist_ok=True)
+        for row, kind in eligible:
+            backend = str(row.get("storage_backend") or "").strip()
+            object_key = str(row.get("path") or "").strip()
+            data = storage.get_bytes(object_key)
+            if int(row.get("size") or 0) != len(data):
                 raise ValueError(
-                    f"refusing to overwrite changed staged asset: {destination}"
+                    f"asset {row.get('id')!r} size mismatch: db={row.get('size')} bytes={len(data)}"
                 )
-        else:
-            temp_path = destination.with_suffix(destination.suffix + ".tmp")
-            temp_path.write_bytes(data)
-            temp_path.replace(destination)
-
-        meta = dict(row.get("meta") or {})
-        relative_path = destination.relative_to(root).as_posix()
-        exported.append(
-            {
-                "source_asset_id": str(row.get("id") or ""),
-                "source_workspace_id": str(row.get("workspace_id") or workspace_id),
-                "source_conversation_id": (
-                    str(row.get("conversation_id")) if row.get("conversation_id") else None
-                ),
-                "storage_backend": backend,
-                "source_object_key": object_key,
-                "original_name": str(row.get("name") or ""),
-                "mime": str(row.get("mime") or "application/octet-stream"),
-                "kind": kind,
-                "size": len(data),
-                "sha256": sha256,
-                "staged_path": relative_path,
-                "source_created_at": float(row.get("created_at") or 0.0),
-                "objective_meta": _objective_meta(meta),
-            }
-        )
-        modality_counts[kind] += 1
-
-    selection = {
-        "all_workspace_assets": bool(all_workspace_assets),
-        "conversation_ids": _clean_ids(conversation_ids),
-        "asset_ids": _clean_ids(asset_ids),
-    }
-    inventory: dict[str, Any] = {
-        "schema_version": SOURCE_INVENTORY_VERSION,
-        "source": "lingjing-product-store",
-        "workspace_id": str(workspace_id),
-        "managed_asset_dir": Path(managed_asset_dir).as_posix().rstrip("/"),
-        "selection": selection,
-        "assets": exported,
-        "skipped": skipped,
-        "annotation_labels_emitted": False,
-        "evidence_claim": "none-source-staging-only",
-    }
-    inventory["source_inventory_digest"] = _canonical_digest(inventory)
-
-    if inventory_path.exists() and not force_inventory:
-        existing = json.loads(inventory_path.read_text(encoding="utf-8"))
-        if existing != inventory:
-            raise ValueError(
-                f"refusing to replace a different source inventory: {inventory_path}; "
-                "use a fresh corpus root or force_inventory=true"
+            sha256 = _sha256_bytes(data)
+            filename = _safe_filename(
+                str(row.get("id") or "asset"),
+                str(row.get("name") or "source"),
+                str(row.get("mime") or "application/octet-stream"),
+                kind,
             )
-    else:
-        temp_inventory = inventory_path.with_suffix(inventory_path.suffix + ".tmp")
-        temp_inventory.write_text(
-            json.dumps(inventory, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+            if filename in expected_hashes:
+                raise ValueError(f"staged filename collision for {filename!r}")
+            prepared = (prepared_root / filename).resolve()
+            try:
+                prepared.relative_to(prepared_root.resolve())
+            except ValueError as exc:
+                raise ValueError("staged asset path escaped managed asset directory") from exc
+            prepared.write_bytes(data)
+            expected_hashes[filename] = sha256
+
+            meta = dict(row.get("meta") or {})
+            relative_path = (Path(managed_asset_dir) / filename).as_posix()
+            exported.append(
+                {
+                    "source_asset_id": str(row.get("id") or ""),
+                    "source_workspace_id": str(row.get("workspace_id") or workspace_id),
+                    "source_conversation_id": (
+                        str(row.get("conversation_id")) if row.get("conversation_id") else None
+                    ),
+                    "storage_backend": backend,
+                    "source_object_key": object_key,
+                    "original_name": str(row.get("name") or ""),
+                    "mime": str(row.get("mime") or "application/octet-stream"),
+                    "kind": kind,
+                    "size": len(data),
+                    "sha256": sha256,
+                    "staged_path": relative_path,
+                    "source_created_at": float(row.get("created_at") or 0.0),
+                    "objective_meta": _objective_meta(meta),
+                }
+            )
+            modality_counts[kind] += 1
+
+        selection = {
+            "all_workspace_assets": bool(all_workspace_assets),
+            "conversation_ids": _clean_ids(conversation_ids),
+            "asset_ids": _clean_ids(asset_ids),
+        }
+        inventory: dict[str, Any] = {
+            "schema_version": SOURCE_INVENTORY_VERSION,
+            "source": "lingjing-product-store",
+            "workspace_id": str(workspace_id),
+            "managed_asset_dir": Path(managed_asset_dir).as_posix().rstrip("/"),
+            "selection": selection,
+            "assets": exported,
+            "skipped": skipped,
+            "annotation_labels_emitted": False,
+            "evidence_claim": "none-source-staging-only",
+        }
+        inventory["source_inventory_digest"] = _canonical_digest(inventory)
+
+        if inventory_path.exists() and not force_inventory:
+            existing_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+            if existing_inventory != inventory:
+                raise ValueError(
+                    f"refusing to replace a different source inventory: {inventory_path}; "
+                    "use a fresh corpus root or force_inventory=true"
+                )
+
+        _validate_existing_managed_cohort(
+            managed_root,
+            expected_hashes=expected_hashes,
         )
-        temp_inventory.replace(inventory_path)
+        if not managed_root.exists():
+            managed_root.parent.mkdir(parents=True, exist_ok=True)
+            prepared_root.replace(managed_root)
+
+        if not inventory_path.exists() or force_inventory:
+            temp_inventory = inventory_path.with_suffix(inventory_path.suffix + ".tmp")
+            temp_inventory.write_text(
+                json.dumps(inventory, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            temp_inventory.replace(inventory_path)
 
     report = {
         "workspace_id": str(workspace_id),
@@ -311,6 +364,7 @@ def stage_product_assets(
         "inventory": str(inventory_path),
         "source_inventory_digest": inventory["source_inventory_digest"],
         "annotation_labels_emitted": False,
+        "staging_commit_semantics": "cohort-atomic-managed-directory",
         "evidence_claim": "none-source-staging-only",
     }
     return inventory, report
