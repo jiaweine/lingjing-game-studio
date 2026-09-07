@@ -140,7 +140,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "quality_claim": (
             "controlled-live-comparison-on-frozen-heldout-corpus"
             if quality_eligible and bool(backend_specs)
-            else "none-unvalidated-or-protocol-smoke"
+            else (
+                "none-unvalidated-external-dataset"
+                if args.dataset
+                else "none-protocol-smoke"
+            )
         ),
     }
     if corpus_validation is not None:

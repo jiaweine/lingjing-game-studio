@@ -235,7 +235,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     result["quality_claim"] = (
         "measured-live-retrieval-on-frozen-heldout-corpus"
         if endpoint and quality_eligible
-        else "none-unvalidated-or-protocol-smoke"
+        else (
+            "none-unvalidated-external-dataset"
+            if args.dataset
+            else "none-protocol-smoke"
+        )
     )
     return result
 
