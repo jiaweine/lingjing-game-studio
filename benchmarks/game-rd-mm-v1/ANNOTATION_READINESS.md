@@ -18,15 +18,18 @@ evidence_claim = none-annotation-readiness-audit
 
 A green readiness report is still not a frozen corpus and is not retrieval/model quality evidence.
 
-## Three different readiness states
+## Independent readiness dimensions
 
-The report deliberately separates three concepts that should not be collapsed into one boolean:
+The report deliberately separates concepts that should not be collapsed into one boolean:
 
-1. `workspace_validation.authoring_freeze_ready` — every authored case is structurally complete enough for the workspace compiler and `heldout_policy.development_excluded=true` has been explicitly set.
-2. `coverage.protocol_coverage_ready` — aggregate counts reach the frozen v1 floors: 100 cases, 20 source groups, at least 20 target cases per modality, 20 temporal cases and 25 scope-negative cases.
-3. `coverage.ready_for_strict_freeze_attempt` — authoring is complete **and** aggregate coverage is sufficient. This only means it is worth attempting the existing strict freeze command; freeze still re-hashes files and runs the authoritative corpus validator.
+1. `coverage.annotation_complete` — all current cases contain the required human fields, at least two annotators and adjudication. This is independent of whether the held-out split has been sealed.
+2. `coverage.development_excluded` — the operator has explicitly verified `heldout_policy.development_excluded=true`.
+3. `coverage.protocol_coverage_ready` — aggregate counts reach the frozen v1 floors: 100 cases, 20 source groups, at least 20 target cases per modality, 20 temporal cases and 25 scope-negative cases.
+4. `coverage.case_semantics_valid` — a draft-compiled manifest has no structural/case errors under the authoritative strict corpus validator. This catches issues such as a temporal gold interval beyond media duration or a target modality with no matching relevant asset before freeze.
+5. `workspace_validation.authoring_freeze_ready` — the existing workspace validator has no structural errors or authoring/split blockers.
+6. `coverage.ready_for_strict_freeze_attempt` — all of the relevant authoring, split, quantity and strict case-semantic checks above are ready. This only means it is worth attempting the existing strict freeze command; freeze still re-hashes files and applies every quality blocker.
 
-`coverage.annotation_complete` separately exposes whether all current cases have the required human fields, at least two annotators and adjudication.
+The audit's `strict_case_semantic_preflight` compiles the current workspace as an **annotation draft**, invokes the same `validate_corpus` implementation used by freeze, and consumes only its `errors`. Expected draft blockers such as `frozen=false`, missing file verification and aggregate quality floors remain represented by the separate readiness dimensions instead of being misclassified as case errors.
 
 ## Deficits
 
@@ -52,7 +55,9 @@ This is a planning aid, not an instruction to synthetically manufacture cases to
 - forbidden/scope-label consistency;
 - annotator count;
 - adjudication;
-- temporal interval validity.
+- basic temporal interval validity.
+
+The stricter case-semantic preflight then checks the compiled candidate/relevant/scope relationships against the authoritative corpus validator, including media-duration bounds and target-modality compatibility.
 
 The report also shows candidate references, relevance labels, forbidden references and in-scope semantic hard-negative candidates. These are descriptive counts only.
 
@@ -81,7 +86,7 @@ If duplicate content crosses source groups, resolve the collection/split design 
 The CLI can be used as a human workflow gate:
 
 ```bash
-# Fails with exit 2 until all current cases are fully annotated/adjudicated.
+# Fails with exit 2 until all current cases have complete human annotation fields.
 python scripts/multimodal_annotation_readiness.py \
   --workspace /path/to/game-rd-mm-v1/workspace.json \
   --require-annotation-complete
@@ -91,7 +96,7 @@ python scripts/multimodal_annotation_readiness.py \
   --workspace /path/to/game-rd-mm-v1/workspace.json \
   --require-protocol-coverage
 
-# Fails with exit 4 until both authoring and aggregate coverage are ready for strict freeze.
+# Fails with exit 4 until annotation, split, quantity and strict case semantics are ready.
 python scripts/multimodal_annotation_readiness.py \
   --workspace /path/to/game-rd-mm-v1/workspace.json \
   --require-ready-for-freeze
