@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from worldforge.benchmarks.multimodal_product_export import attach_source_inventory
 from worldforge.benchmarks.multimodal_workspace import new_workspace, validate_workspace
 
 
@@ -26,12 +27,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus-root", required=True)
     parser.add_argument("--asset-dir", default="assets")
+    parser.add_argument("--source-inventory", default="source_inventory.json")
     parser.add_argument("--output", default="workspace.json")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     corpus_root = Path(args.corpus_root).resolve()
     workspace = new_workspace(corpus_root, asset_dir=args.asset_dir)
+    workspace = attach_source_inventory(
+        workspace,
+        corpus_root=corpus_root,
+        inventory_name=args.source_inventory,
+    )
     validation = validate_workspace(workspace)
     output = Path(args.output)
     if not output.is_absolute():
@@ -49,6 +56,7 @@ def main() -> None:
         "assets": validation["assets"],
         "cases": validation["cases"],
         "asset_catalog_report": workspace["asset_catalog_report"],
+        "source_inventory": workspace.get("source_inventory"),
         "freeze_ready": validation["freeze_ready"],
         "evidence_claim": "none-annotation-workspace",
         "next_step": (
