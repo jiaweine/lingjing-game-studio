@@ -21,6 +21,8 @@ jobs:
         run: pip install -r requirements.txt
       - name: Held-out corpus protocol contract
         run: python scripts/validate_multimodal_corpus.py --protocol-only
+      - name: Lingjing product-asset staging smoke
+        run: python scripts/multimodal_product_asset_export_smoke.py
       - name: Real-corpus workspace scaffold smoke
         run: |
           tmp="$(mktemp -d)"
