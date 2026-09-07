@@ -13,6 +13,31 @@ There are two independent gates before a run may carry a measured quality label:
 
 A corpus can therefore be valid while a particular experiment run is still ineligible for a quality claim. This prevents a one-off endpoint call from inheriting the credibility of a carefully frozen dataset.
 
+## Real-corpus authoring
+
+The repository intentionally does not contain a real held-out game-R&D corpus. Product gallery screenshots under `docs/assets/readme/` are documentation assets and must not be reused as held-out quality evidence.
+
+For a real corpus root with raw files under `assets/`, run:
+
+```bash
+python scripts/scaffold_multimodal_corpus.py \
+  --corpus-root /shared/bench/game-rd-mm-v1
+```
+
+The scaffold produces `workspace.json` with a deterministic asset catalog. It computes corpus-relative paths, MIME/modality, byte size and SHA-256, and audits duplicate content. It does **not** generate benchmark labels or infer build/scope truth.
+
+Human annotators then add cases using asset ids from the catalog. Retrieval output must not be used to manufacture held-out queries or relevance labels. After independent annotation, adjudication and a verified development exclusion, freeze the workspace:
+
+```bash
+python scripts/freeze_multimodal_corpus.py \
+  --workspace /shared/bench/game-rd-mm-v1/workspace.json \
+  --frozen-at 2026-09-07T10:00:00Z
+```
+
+Freeze recompiles the existing benchmark manifest, materializes scope eligibility from human `forbidden_asset_ids`, re-hashes all referenced files and runs the strict corpus validator. It fails without writing a quality-eligible manifest if any structural, annotation, diversity, modality, temporal, scope-negative or file-integrity requirement is missing.
+
+The generated workspace and real media should normally remain outside the public repository. `benchmarks/game-rd-mm-v1/.gitignore` ignores local `assets/`, `workspace.json`, `manifest.json` and result `artifacts/` by default.
+
 ## Protocol smoke
 
 `python scripts/multimodal_quality_benchmark.py` runs a synthetic protocol smoke against the product coordinator's real lexical fallback. It verifies evaluator wiring, scope filtering, metrics, repeat aggregation and the result schema. Its results are not quality evidence.
@@ -105,6 +130,8 @@ The benchmark intentionally does **not** yet report provider media tokens, exact
 
 ## Evidence labels
 
+- Asset inventory / annotation workspace: `none-asset-inventory-only` / `none-annotation-workspace`.
+- Successful corpus freeze: `corpus-protocol-eligible-not-model-quality`.
 - Built-in smoke: `synthetic-protocol-smoke-not-quality-evidence` plus `none-protocol-smoke`.
 - External dataset that fails the frozen corpus gate: `none-unvalidated-external-dataset`.
 - Strict corpus but incomplete live-run provenance/repeat/semantic/contamination gate: `none-incomplete-live-run-provenance`.
