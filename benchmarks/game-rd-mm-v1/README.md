@@ -1,15 +1,12 @@
 # game-rd-mm-v1 held-out corpus protocol
 
-This directory defines the evidence contract for the first real multimodal retrieval quality study.
-It intentionally does **not** contain a fabricated benchmark score or a synthetic corpus presented
-as production evidence.
+This directory defines the evidence contract for the first real multimodal retrieval quality study. It intentionally does **not** contain a fabricated benchmark score or a synthetic corpus presented as production evidence.
 
 ## What qualifies as measured quality evidence
 
-A run may use the `measured-live-retrieval-on-frozen-heldout-corpus` label only when the corpus
-validator reports `strict_quality_eligible=true` and the benchmark talks to a live sidecar backend.
+Measured evidence requires **both** a strict corpus and a strict run.
 
-The frozen v1 floor is:
+The corpus validator must report `strict_quality_eligible=true`. The frozen v1 corpus floor is:
 
 - at least 100 human-annotated held-out cases;
 - at least 20 distinct `source_group` values;
@@ -22,8 +19,16 @@ The frozen v1 floor is:
 - the benchmark verifies every referenced file against its digest before a quality claim is allowed;
 - the manifest declares `heldout_policy.development_excluded=true`.
 
-These are evidence-quality floors, not claims that 100 cases are statistically sufficient for a
-general SOTA conclusion.
+The experiment run must additionally:
+
+- talk to at least one live semantic backend;
+- identify every live deployment with an immutable operator-supplied deployment id;
+- execute at least one full-corpus warmup and three measured full-corpus repeats;
+- observe a semantic backend in every measured repeat;
+- keep scope/build contamination exactly zero;
+- emit the frozen corpus digest, benchmark-code revision, repeat protocol and result digest.
+
+These are evidence-quality floors, not claims that 100 cases or three repeats are statistically sufficient for a general SOTA conclusion.
 
 ## Annotation unit
 
@@ -39,9 +44,7 @@ Each case contains:
 - `forbidden_asset_ids`: assets that must never be returned because project/build scope excludes them;
 - optional per-case `top_k`.
 
-Semantic hard negatives that are valid in the current scope belong in `assets` but **not** in
-`forbidden_asset_ids`. The latter is reserved for evidence that is invalid by scope, so the
-contamination metric retains a precise meaning.
+Semantic hard negatives that are valid in the current scope belong in `assets` but **not** in `forbidden_asset_ids`. The latter is reserved for evidence that is invalid by scope, so the contamination metric retains a precise meaning.
 
 ## Freeze procedure
 
@@ -67,8 +70,7 @@ python scripts/validate_multimodal_corpus.py \
   --require-quality-eligible
 ```
 
-Record the emitted `corpus_digest` with experiment outputs. Any annotation or manifest change creates
-a new digest and must be treated as a new corpus revision.
+Record the emitted `corpus_digest` with experiment outputs. Any annotation or manifest change creates a new digest and must be treated as a new corpus revision.
 
 ## Controlled comparison
 
@@ -78,16 +80,22 @@ With a frozen corpus and live coordinator endpoints:
 python scripts/multimodal_quality_matrix.py \
   --dataset /path/to/game-rd-mm-v1/manifest.json \
   --backend wemm=http://127.0.0.1:8910 \
+  --deployment 'wemm=retriever@sha256:...;wemm=<model-revision>' \
   --backend wemm-rerank=http://127.0.0.1:8920 \
+  --deployment 'wemm-rerank=retriever@sha256:...;wemm=<revision>;reranker=<revision>' \
   --backend wemm-lco=http://127.0.0.1:8930 \
+  --deployment 'wemm-lco=retriever@sha256:...;wemm=<revision>;lco=<revision>' \
+  --warmup-repeats 1 \
+  --repeats 3 \
+  --output artifacts/game-rd-mm-v1-matrix.json \
   --require-zero-contamination \
   --require-semantic-backend \
-  --require-quality-eligible-corpus
+  --require-quality-eligible-corpus \
+  --require-measured-quality-run
 ```
 
-The matrix freezes the same cases, Top-K policy and scorer across backends and reports deltas for
-Recall@K, MRR, temporal IoU/hit rate, scope contamination, returned-media bytes, p50/p95 latency and
-worker-lane time proxy.
+The matrix keeps the same cases, Top-K policy and scorer across backends. Backend execution order is rotated deterministically between full-corpus passes so one deployment is not always measured first. Headline metrics aggregate all measured repeats rather than choosing a favorable run.
 
-No live endpoint and no frozen external corpus means protocol smoke only. Those runs are useful CI
-coverage but are not retrieval-quality evidence.
+The result artifact records the corpus digest, exact benchmark-code revision, immutable deployment ids, warmup/repeat counts, cache-state semantics and a canonical result digest. Store that JSON next to any plots or tables derived from it.
+
+No live endpoint and no frozen external corpus means protocol smoke only. Those runs are useful CI coverage but are not retrieval-quality evidence.

@@ -15,10 +15,16 @@ if str(ROOT) not in sys.path:
 import httpx
 
 from worldforge.benchmarks.multimodal_corpus import (
+    canonical_corpus_digest,
     resolve_dataset_paths,
     validate_corpus,
 )
-from worldforge.benchmarks.multimodal_quality_eval import evaluate_dataset
+from worldforge.benchmarks.multimodal_run import (
+    attach_run_manifest,
+    evaluate_repeated,
+    measured_run_protocol_eligible,
+    write_result_json,
+)
 
 
 def _asset(
@@ -202,6 +208,32 @@ def prepare_external_dataset(
     return resolve_dataset_paths(raw, base_dir=dataset_path.parent), report
 
 
+def _live_run_blockers(
+    *,
+    endpoint: str,
+    deployment_id: str,
+    measured_repeats: int,
+    warmup_repeats: int,
+    semantic_seen_all_repeats: bool,
+    forbidden_hits: int,
+) -> list[str]:
+    blockers = []
+    if not endpoint:
+        blockers.append("live endpoint is required")
+    if not deployment_id:
+        blockers.append("immutable deployment id is required")
+    if not measured_run_protocol_eligible(
+        measured_repeats=measured_repeats,
+        warmup_repeats=warmup_repeats,
+    ):
+        blockers.append("requires >=3 measured repeats and >=1 full-corpus warmup")
+    if not semantic_seen_all_repeats:
+        blockers.append("semantic backend must be observed in every measured repeat")
+    if forbidden_hits != 0:
+        blockers.append("scope/build contamination must remain exactly zero")
+    return blockers
+
+
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
     corpus_validation = None
     if args.dataset:
@@ -213,33 +245,66 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         dataset = _load_dataset(None)
 
     endpoint = (args.endpoint or os.getenv("LINGJING_MM_BENCH_ENDPOINT", "")).strip()
-    ranker = (
-        live_ranker(endpoint, args.timeout)
-        if endpoint
-        else product_lexical_rank
-    )
-    result = await evaluate_dataset(
+    deployment_id = str(args.deployment_id or "").strip()
+    ranker = live_ranker(endpoint, args.timeout) if endpoint else product_lexical_rank
+    result = await evaluate_repeated(
         dataset,
         ranker,
         default_top_k=args.top_k,
         temporal_iou_threshold=args.temporal_iou_threshold,
+        measured_repeats=args.repeats,
+        warmup_repeats=args.warmup_repeats,
     )
     result["mode"] = "live-sidecar" if endpoint else "product-lexical-fallback"
     result["external_dataset"] = bool(args.dataset)
+    result["deployment_id"] = deployment_id or (
+        "unspecified-live-deployment" if endpoint else "product-lexical-fallback"
+    )
     if corpus_validation is not None:
         result["corpus_validation"] = corpus_validation
 
-    quality_eligible = bool(
+    corpus_quality_eligible = bool(
         corpus_validation and corpus_validation.get("strict_quality_eligible")
     )
-    result["quality_claim"] = (
-        "measured-live-retrieval-on-frozen-heldout-corpus"
-        if endpoint and quality_eligible
-        else (
-            "none-unvalidated-external-dataset"
-            if args.dataset
-            else "none-protocol-smoke"
-        )
+    run_blockers = _live_run_blockers(
+        endpoint=endpoint,
+        deployment_id=deployment_id,
+        measured_repeats=args.repeats,
+        warmup_repeats=args.warmup_repeats,
+        semantic_seen_all_repeats=bool(
+            result.get("live_semantic_backend_seen_all_repeats")
+        ),
+        forbidden_hits=int(result.get("forbidden_hits") or 0),
+    )
+    measured_run_eligible = bool(corpus_quality_eligible and not run_blockers)
+    result["measured_run_eligible"] = measured_run_eligible
+    result["measured_run_blockers"] = run_blockers if args.dataset else []
+
+    if not args.dataset:
+        quality_claim = "none-protocol-smoke"
+    elif not corpus_quality_eligible:
+        quality_claim = "none-unvalidated-external-dataset"
+    elif measured_run_eligible:
+        quality_claim = "measured-live-retrieval-on-frozen-heldout-corpus"
+    else:
+        quality_claim = "none-incomplete-live-run-provenance"
+    result["quality_claim"] = quality_claim
+
+    dataset_digest = (
+        str(corpus_validation.get("corpus_digest") or "")
+        if corpus_validation
+        else canonical_corpus_digest(dataset)
+    )
+    attach_run_manifest(
+        result,
+        root=ROOT,
+        dataset_digest=dataset_digest,
+        measured_repeats=args.repeats,
+        warmup_repeats=args.warmup_repeats,
+        schedule="single-backend-full-corpus-sequential-v1",
+        deployment_ids={
+            result["mode"]: str(result["deployment_id"]),
+        },
     )
     return result
 
@@ -248,26 +313,46 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset")
     parser.add_argument("--endpoint")
+    parser.add_argument(
+        "--deployment-id",
+        help="immutable live deployment revision (for example image digest + model revision)",
+    )
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--temporal-iou-threshold", type=float, default=0.3)
+    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--warmup-repeats", type=int, default=0)
+    parser.add_argument("--output", help="optional JSON result artifact path")
     parser.add_argument("--require-zero-contamination", action="store_true")
     parser.add_argument("--require-semantic-backend", action="store_true")
     parser.add_argument("--require-quality-eligible-corpus", action="store_true")
+    parser.add_argument("--require-measured-quality-run", action="store_true")
     parser.add_argument("--skip-file-hash-verification", action="store_true")
     args = parser.parse_args()
+    if args.repeats < 1:
+        parser.error("--repeats must be >= 1")
+    if args.warmup_repeats < 0:
+        parser.error("--warmup-repeats must be >= 0")
 
     result = asyncio.run(_run(args))
+    write_result_json(result, args.output)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
     if args.require_zero_contamination and result["forbidden_hits"] != 0:
         raise SystemExit("build contamination detected")
-    if args.require_semantic_backend and not result["live_semantic_backend_seen"]:
-        raise SystemExit("semantic backend was not observed")
+    if args.require_semantic_backend and not result.get(
+        "live_semantic_backend_seen_all_repeats"
+    ):
+        raise SystemExit("semantic backend was not observed in every measured repeat")
     if args.require_quality_eligible_corpus:
         report = dict(result.get("corpus_validation") or {})
         if not report.get("strict_quality_eligible"):
             raise SystemExit("corpus is not eligible for measured quality claims")
+    if args.require_measured_quality_run and not result.get("measured_run_eligible"):
+        raise SystemExit(
+            "run is not eligible for measured quality claims: "
+            + "; ".join(result.get("measured_run_blockers") or [])
+        )
 
 
 if __name__ == "__main__":

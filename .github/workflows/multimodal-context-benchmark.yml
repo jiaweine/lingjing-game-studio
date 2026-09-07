@@ -23,7 +23,7 @@ jobs:
         run: python scripts/validate_multimodal_corpus.py --protocol-only
       - name: All-modal scope and provenance benchmark
         run: python scripts/multimodal_context_benchmark.py
-      - name: Multimodal quality protocol smoke
-        run: python scripts/multimodal_quality_benchmark.py --require-zero-contamination
-      - name: Multimodal quality matrix protocol smoke
-        run: python scripts/multimodal_quality_matrix.py --require-zero-contamination
+      - name: Multimodal quality repeat-aggregation smoke
+        run: python scripts/multimodal_quality_benchmark.py --repeats 2 --require-zero-contamination
+      - name: Multimodal quality matrix rotation smoke
+        run: python scripts/multimodal_quality_matrix.py --repeats 2 --require-zero-contamination
