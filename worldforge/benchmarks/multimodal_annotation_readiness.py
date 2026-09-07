@@ -4,8 +4,12 @@ from collections import Counter, defaultdict
 import copy
 from typing import Any
 
-from worldforge.benchmarks.multimodal_corpus import QUALITY_PROTOCOL
-from worldforge.benchmarks.multimodal_workspace import validate_workspace, workspace_digest
+from worldforge.benchmarks.multimodal_corpus import QUALITY_PROTOCOL, validate_corpus
+from worldforge.benchmarks.multimodal_workspace import (
+    compile_workspace,
+    validate_workspace,
+    workspace_digest,
+)
 
 
 _ALLOWED_MODALITIES = {"text", "image", "video", "audio"}
@@ -152,10 +156,47 @@ def _case_annotation_state(
     }
 
 
+def _strict_case_semantic_preflight(
+    workspace: dict[str, Any],
+    *,
+    structurally_valid: bool,
+) -> dict[str, Any]:
+    if not structurally_valid:
+        return {
+            "ran": False,
+            "valid": False,
+            "errors": ["workspace structural errors must be fixed before strict case preflight"],
+        }
+    try:
+        preview = compile_workspace(workspace, freeze=False)
+        strict = validate_corpus(preview, verify_files=False)
+    except Exception as exc:
+        return {
+            "ran": True,
+            "valid": False,
+            "errors": [f"preflight failed: {type(exc).__name__}: {exc}"],
+        }
+    errors = list(strict.get("errors") or [])
+    return {
+        "ran": True,
+        "valid": not errors,
+        "errors": errors,
+        "note": (
+            "only strict corpus structural/case errors are used here; expected draft/frozen/"
+            "coverage/file-verification quality blockers are handled by separate readiness fields"
+        ),
+    }
+
+
 def annotation_readiness_report(workspace: dict[str, Any]) -> dict[str, Any]:
     payload = copy.deepcopy(dict(workspace or {}))
     requirements = dict(QUALITY_PROTOCOL["quality_evidence_requirements"])
     workspace_validation = validate_workspace(payload)
+    structurally_valid = bool(workspace_validation["structurally_valid"])
+    strict_preflight = _strict_case_semantic_preflight(
+        payload,
+        structurally_valid=structurally_valid,
+    )
     catalog = [dict(row or {}) for row in list(payload.get("asset_catalog") or [])]
     cases = [dict(row or {}) for row in list(payload.get("cases") or [])]
     known_asset_ids = {
@@ -299,7 +340,7 @@ def annotation_readiness_report(workspace: dict[str, Any]) -> dict[str, Any]:
     annotation_complete = (
         bool(cases)
         and fully_annotated_cases == len(cases)
-        and bool(workspace_validation["structurally_valid"])
+        and structurally_valid
     )
 
     warnings: list[dict[str, Any]] = []
@@ -337,6 +378,13 @@ def annotation_readiness_report(workspace: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    ready_for_strict_freeze_attempt = (
+        protocol_coverage_ready
+        and annotation_complete
+        and heldout_excluded
+        and bool(workspace_validation["freeze_ready"])
+        and bool(strict_preflight["valid"])
+    )
     return {
         "protocol": QUALITY_PROTOCOL["name"],
         "protocol_version": QUALITY_PROTOCOL["protocol_version"],
@@ -347,11 +395,12 @@ def annotation_readiness_report(workspace: dict[str, Any]) -> dict[str, Any]:
         ),
         "requirements": requirements,
         "workspace_validation": {
-            "structurally_valid": bool(workspace_validation["structurally_valid"]),
+            "structurally_valid": structurally_valid,
             "authoring_freeze_ready": bool(workspace_validation["freeze_ready"]),
             "errors": list(workspace_validation["errors"]),
             "freeze_blockers": list(workspace_validation["freeze_blockers"]),
         },
+        "strict_case_semantic_preflight": strict_preflight,
         "assets": {
             "total": len(catalog),
             "unique_content_hashes": len(asset_hash_paths),
@@ -389,12 +438,9 @@ def annotation_readiness_report(workspace: dict[str, Any]) -> dict[str, Any]:
             "deficits": deficits,
             "protocol_coverage_ready": protocol_coverage_ready,
             "annotation_complete": annotation_complete,
+            "case_semantics_valid": bool(strict_preflight["valid"]),
             "development_excluded": heldout_excluded,
-            "ready_for_strict_freeze_attempt": (
-                protocol_coverage_ready
-                and annotation_complete
-                and bool(workspace_validation["freeze_ready"])
-            ),
+            "ready_for_strict_freeze_attempt": ready_for_strict_freeze_attempt,
         },
         "leakage_audit": {
             "cross_source_group_duplicate_content": cross_source_group_duplicate_content,
