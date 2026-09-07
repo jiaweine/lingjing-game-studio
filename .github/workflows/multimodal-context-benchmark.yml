@@ -19,6 +19,8 @@ jobs:
           cache: pip
       - name: Install application dependencies
         run: pip install -r requirements.txt
+      - name: Held-out corpus protocol contract
+        run: python scripts/validate_multimodal_corpus.py --protocol-only
       - name: All-modal scope and provenance benchmark
         run: python scripts/multimodal_context_benchmark.py
       - name: Multimodal quality protocol smoke

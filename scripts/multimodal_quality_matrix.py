@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 from scripts.multimodal_quality_benchmark import (
     _load_dataset,
     live_ranker,
+    prepare_external_dataset,
     product_lexical_rank,
 )
 from worldforge.benchmarks.multimodal_quality_eval import evaluate_dataset
@@ -81,7 +82,15 @@ async def evaluate_backend(
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
-    dataset = _load_dataset(args.dataset)
+    corpus_validation = None
+    if args.dataset:
+        dataset, corpus_validation = prepare_external_dataset(
+            args.dataset,
+            verify_files=not args.skip_file_hash_verification,
+        )
+    else:
+        dataset = _load_dataset(None)
+
     backend_specs = list(args.backend or [])
     seen_names: set[str] = set()
     for name, _endpoint in backend_specs:
@@ -117,22 +126,26 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
 
-    external_dataset = bool(args.dataset)
-    live_comparison = bool(backend_specs)
-    return {
+    quality_eligible = bool(
+        corpus_validation and corpus_validation.get("strict_quality_eligible")
+    )
+    result = {
         "benchmark": "lingjing-multimodal-quality-matrix-v1",
         "dataset": str(dataset.get("name") or "unnamed"),
         "evidence_class": str(dataset.get("evidence_class") or "unspecified"),
-        "external_dataset": external_dataset,
+        "external_dataset": bool(args.dataset),
         "backend_order": [row["label"] for row in runs],
         "runs": runs,
         "comparisons": comparisons,
         "quality_claim": (
-            "controlled-live-retrieval-comparison-only"
-            if external_dataset and live_comparison
-            else "none-protocol-smoke"
+            "controlled-live-comparison-on-frozen-heldout-corpus"
+            if quality_eligible and bool(backend_specs)
+            else "none-unvalidated-or-protocol-smoke"
         ),
     }
+    if corpus_validation is not None:
+        result["corpus_validation"] = corpus_validation
+    return result
 
 
 def main() -> None:
@@ -150,6 +163,8 @@ def main() -> None:
     parser.add_argument("--temporal-iou-threshold", type=float, default=0.3)
     parser.add_argument("--require-zero-contamination", action="store_true")
     parser.add_argument("--require-semantic-backend", action="store_true")
+    parser.add_argument("--require-quality-eligible-corpus", action="store_true")
+    parser.add_argument("--skip-file-hash-verification", action="store_true")
     args = parser.parse_args()
 
     result = asyncio.run(_run(args))
@@ -176,6 +191,10 @@ def main() -> None:
             raise SystemExit(
                 "semantic backend was not observed: " + ", ".join(missing)
             )
+    if args.require_quality_eligible_corpus:
+        report = dict(result.get("corpus_validation") or {})
+        if not report.get("strict_quality_eligible"):
+            raise SystemExit("corpus is not eligible for measured quality claims")
 
 
 if __name__ == "__main__":

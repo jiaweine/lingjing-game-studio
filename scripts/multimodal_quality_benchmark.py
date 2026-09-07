@@ -14,6 +14,10 @@ if str(ROOT) not in sys.path:
 
 import httpx
 
+from worldforge.benchmarks.multimodal_corpus import (
+    resolve_dataset_paths,
+    validate_corpus,
+)
 from worldforge.benchmarks.multimodal_quality_eval import evaluate_dataset
 
 
@@ -180,8 +184,34 @@ def _load_dataset(path: str | None) -> dict[str, Any]:
     return dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
+def prepare_external_dataset(
+    path: str,
+    *,
+    verify_files: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    dataset_path = Path(path).resolve()
+    raw = _load_dataset(str(dataset_path))
+    report = validate_corpus(
+        raw,
+        base_dir=dataset_path.parent,
+        verify_files=verify_files,
+    )
+    if not report["structurally_valid"]:
+        details = "; ".join(report["errors"][:5])
+        raise SystemExit(f"invalid multimodal corpus: {details}")
+    return resolve_dataset_paths(raw, base_dir=dataset_path.parent), report
+
+
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
-    dataset = _load_dataset(args.dataset)
+    corpus_validation = None
+    if args.dataset:
+        dataset, corpus_validation = prepare_external_dataset(
+            args.dataset,
+            verify_files=not args.skip_file_hash_verification,
+        )
+    else:
+        dataset = _load_dataset(None)
+
     endpoint = (args.endpoint or os.getenv("LINGJING_MM_BENCH_ENDPOINT", "")).strip()
     ranker = (
         live_ranker(endpoint, args.timeout)
@@ -196,10 +226,16 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     )
     result["mode"] = "live-sidecar" if endpoint else "product-lexical-fallback"
     result["external_dataset"] = bool(args.dataset)
+    if corpus_validation is not None:
+        result["corpus_validation"] = corpus_validation
+
+    quality_eligible = bool(
+        corpus_validation and corpus_validation.get("strict_quality_eligible")
+    )
     result["quality_claim"] = (
-        "measured-live-retrieval-only"
-        if endpoint and args.dataset
-        else "none-protocol-smoke"
+        "measured-live-retrieval-on-frozen-heldout-corpus"
+        if endpoint and quality_eligible
+        else "none-unvalidated-or-protocol-smoke"
     )
     return result
 
@@ -213,6 +249,8 @@ def main() -> None:
     parser.add_argument("--temporal-iou-threshold", type=float, default=0.3)
     parser.add_argument("--require-zero-contamination", action="store_true")
     parser.add_argument("--require-semantic-backend", action="store_true")
+    parser.add_argument("--require-quality-eligible-corpus", action="store_true")
+    parser.add_argument("--skip-file-hash-verification", action="store_true")
     args = parser.parse_args()
 
     result = asyncio.run(_run(args))
@@ -222,6 +260,10 @@ def main() -> None:
         raise SystemExit("build contamination detected")
     if args.require_semantic_backend and not result["live_semantic_backend_seen"]:
         raise SystemExit("semantic backend was not observed")
+    if args.require_quality_eligible_corpus:
+        report = dict(result.get("corpus_validation") or {})
+        if not report.get("strict_quality_eligible"):
+            raise SystemExit("corpus is not eligible for measured quality claims")
 
 
 if __name__ == "__main__":
