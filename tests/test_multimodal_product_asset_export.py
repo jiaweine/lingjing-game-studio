@@ -70,6 +70,7 @@ def test_product_export_stages_bytes_without_creating_labels_and_preserves_prove
     assert report["selected_product_assets"] == 1
     assert report["staged_assets"] == 1
     assert report["annotation_labels_emitted"] is False
+    assert report["staging_commit_semantics"] == "cohort-atomic-managed-directory"
     assert report["evidence_claim"] == "none-source-staging-only"
     assert inventory["annotation_labels_emitted"] is False
     assert "cases" not in inventory
@@ -112,7 +113,7 @@ def test_scaffold_rejects_managed_export_file_hash_drift(tmp_path: Path):
         attach_source_inventory(new_workspace(corpus_root), corpus_root=corpus_root)
 
 
-def test_export_refuses_storage_backend_mismatch(tmp_path: Path):
+def test_export_refuses_storage_backend_mismatch_without_partial_managed_cohort(tmp_path: Path):
     store, _storage, conversation, _asset, _payload = _fixture(tmp_path)
     object_key = f"{DEMO_WORKSPACE_ID}/assets/source/remote.wav"
     store.add_asset(
@@ -126,14 +127,54 @@ def test_export_refuses_storage_backend_mismatch(tmp_path: Path):
         storage_backend="s3",
     )
     local_storage = LocalObjectStorage(tmp_path / "objects")
+    corpus_root = tmp_path / "corpus"
 
     with pytest.raises(ValueError, match="storage backend"):
         stage_product_assets(
             store,
             local_storage,
-            corpus_root=tmp_path / "corpus",
+            corpus_root=corpus_root,
             workspace_id=DEMO_WORKSPACE_ID,
             conversation_ids=[conversation["id"]],
+        )
+
+    assert not (corpus_root / "assets" / "lingjing").exists()
+    assert not (corpus_root / "source_inventory.json").exists()
+
+
+def test_export_refuses_to_reuse_managed_directory_for_a_different_cohort(tmp_path: Path):
+    store, storage, conversation, first_asset, _payload = _fixture(tmp_path)
+    corpus_root = tmp_path / "corpus"
+    stage_product_assets(
+        store,
+        storage,
+        corpus_root=corpus_root,
+        workspace_id=DEMO_WORKSPACE_ID,
+        asset_ids=[first_asset["id"]],
+    )
+
+    second = b"second capture"
+    second_key = f"{DEMO_WORKSPACE_ID}/assets/source/second.log"
+    storage.put_bytes(second_key, second, "text/plain")
+    second_asset = store.add_asset(
+        conversation["id"],
+        name="second.log",
+        mime="text/plain",
+        path=second_key,
+        size=len(second),
+        meta={"kind": "text", "build_ref": "1.4.8"},
+        workspace_id=DEMO_WORKSPACE_ID,
+        storage_backend="local",
+    )
+
+    with pytest.raises(ValueError, match="different cohort"):
+        stage_product_assets(
+            store,
+            storage,
+            corpus_root=corpus_root,
+            workspace_id=DEMO_WORKSPACE_ID,
+            asset_ids=[first_asset["id"], second_asset["id"]],
+            force_inventory=True,
         )
 
 
@@ -168,6 +209,7 @@ def test_export_cli_and_scaffold_cli_form_unlabeled_staging_pipeline(tmp_path: P
     assert exported.returncode == 0, exported.stderr or exported.stdout
     export_report = json.loads(exported.stdout)
     assert export_report["annotation_labels_emitted"] is False
+    assert export_report["staging_commit_semantics"] == "cohort-atomic-managed-directory"
 
     scaffolded = subprocess.run(
         [
