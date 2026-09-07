@@ -4,6 +4,40 @@ This directory defines the evidence contract for the first real multimodal retri
 
 This repository does not ship a real held-out game-R&D corpus. The images under `docs/assets/readme/` are product documentation screenshots, not eligible benchmark data.
 
+## Stage existing Lingjing product assets without labels
+
+If the real source media already exists in a Lingjing product workspace, export a deliberately selected conversation or asset cohort into a private corpus root before annotation:
+
+```bash
+python scripts/export_multimodal_product_assets.py \
+  --corpus-root /path/to/game-rd-mm-v1 \
+  --workspace-id workspace-demo \
+  --conversation-id cv-... \
+  --storage-backend local \
+  --object-root /path/to/lingjing/objects
+```
+
+The exporter is read-oriented with respect to the Lingjing product store and object storage. It requires an explicit selection: one or more `--conversation-id`, one or more `--asset-id`, or the deliberately broad `--all-workspace-assets`. Cross-workspace ids are rejected. The configured object-storage backend must match each selected asset row.
+
+For each benchmark-addressable text/image/video/audio asset, staging verifies the DB byte count against the object bytes, writes the source bytes under `assets/lingjing/`, computes SHA-256, and emits `source_inventory.json`. Unsupported product assets are reported rather than silently turned into benchmark cases.
+
+`source_inventory.json` contains source locators and objective metadata only: Lingjing asset/workspace/conversation ids, original object key/name/MIME/size, content digest, media probe fields, and any declared build/branch/commit/environment metadata already present on the source asset. It explicitly carries `annotation_labels_emitted=false` and `evidence_claim=none-source-staging-only`.
+
+The exporter does **not** infer query text, relevance, temporal gold intervals, source groups, wrong-build labels, annotators, adjudication, or `scope_eligible`. A source asset may carry declared `build_ref`/`branch_ref`/`commit_ref`/`environment_ref`; whether that asset is forbidden for a particular benchmark case remains a human case-level judgment.
+
+For S3-backed Lingjing deployments, use `--storage-backend s3` with the existing `S3_BUCKET`, `S3_REGION`, `S3_ENDPOINT_URL`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` environment configuration. The exporter still reads through the configured object-storage abstraction and applies the same byte/hash/inventory rules.
+
+After staging, run the normal scaffold command. When `source_inventory.json` is present, scaffold verifies its canonical digest, managed-directory membership, per-file SHA/size, and the absence of benchmark label fields before carrying allowed objective provenance into the asset catalog:
+
+```bash
+python scripts/scaffold_multimodal_corpus.py \
+  --corpus-root /path/to/game-rd-mm-v1
+```
+
+The managed export directory is fail-closed: a staged file whose hash changed, an inventory entry whose file disappeared, or an extra unmanaged file under `assets/lingjing/` causes scaffold to stop rather than silently changing the cohort. Use a fresh corpus root for a different held-out source selection.
+
+The real media, `source_inventory.json`, authoring workspace, frozen manifest and benchmark result artifacts are ignored by the repository-local `.gitignore` by default.
+
 ## Prepare a real annotation workspace
 
 Keep the real corpus outside the public repository by default:
@@ -30,6 +64,8 @@ The scaffold step only inventories objective file properties:
 - SHA-256 content digest;
 - duplicate-content groups;
 - a stable asset id derived from path plus content digest.
+
+When a validated Lingjing `source_inventory.json` is present, the scaffold additionally carries its objective source provenance and declared scope metadata into the catalog. That does not create any case label or scope eligibility decision.
 
 It does **not** invent queries, relevance labels, temporal intervals, source groups, build/scope exclusions, annotator counts or adjudication. The generated `workspace.json` starts with zero cases and `heldout_policy.development_excluded=false`.
 
@@ -92,13 +128,14 @@ The freeze compiler turns candidate ids into the inline `assets` structure consu
 ## Freeze procedure
 
 1. Collect the corpus without viewing retrieval results from the systems being compared.
-2. Run the scaffold tool to hash and inventory the raw files.
-3. Assign stable source groups and determine development/held-out separation before tuning on held-out labels.
-4. Independently author queries and relevance/scope/temporal labels.
-5. Adjudicate disagreements and record at least two annotators per case.
-6. Verify `heldout_policy.development_excluded=true` only when true.
-7. Run `scripts/freeze_multimodal_corpus.py` with an explicit ISO-8601 freeze timestamp.
-8. Independently re-run:
+2. If source media already lives in Lingjing, stage an explicitly selected cohort with `export_multimodal_product_assets.py`; otherwise place raw media under `assets/` directly.
+3. Run the scaffold tool to hash/inventory raw files and validate any Lingjing source inventory.
+4. Assign stable source groups and determine development/held-out separation before tuning on held-out labels.
+5. Independently author queries and relevance/scope/temporal labels.
+6. Adjudicate disagreements and record at least two annotators per case.
+7. Verify `heldout_policy.development_excluded=true` only when true.
+8. Run `scripts/freeze_multimodal_corpus.py` with an explicit ISO-8601 freeze timestamp.
+9. Independently re-run:
 
 ```bash
 python scripts/validate_multimodal_corpus.py \
