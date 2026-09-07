@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from worldforge.benchmarks.multimodal_quality_eval import evaluate_dataset
+
+
+def _asset(
+    asset_id: str,
+    name: str,
+    mime: str,
+    *,
+    kind: str,
+    build: str | None = None,
+    eligible: bool = True,
+    size: int = 0,
+    duration: float | None = None,
+    has_audio: bool | None = None,
+) -> dict[str, Any]:
+    meta: dict[str, Any] = {
+        "kind": kind,
+        "_context": {"scope_eligible": eligible},
+    }
+    if build:
+        meta["build"] = build
+    if duration is not None:
+        meta["duration"] = duration
+    if has_audio is not None:
+        meta["has_audio"] = has_audio
+    return {
+        "id": asset_id,
+        "name": name,
+        "mime": mime,
+        "path": "",
+        "size": size,
+        "meta": meta,
+    }
+
+
+def protocol_smoke_dataset() -> dict[str, Any]:
+    return {
+        "name": "protocol-smoke-v1",
+        "evidence_class": "synthetic-protocol-smoke-not-quality-evidence",
+        "cases": [
+            {
+                "id": "build-isolation",
+                "query": "检查 build 1.4.7 shield_race release screenshot",
+                "assets": [
+                    _asset(
+                        "current-image",
+                        "build-1.4.7-shield_race-release.png",
+                        "image/png",
+                        kind="image",
+                        build="1.4.7",
+                        size=4096,
+                    ),
+                    _asset(
+                        "stale-image",
+                        "build-2.0.0-shield_race-release.png",
+                        "image/png",
+                        kind="image",
+                        build="2.0.0",
+                        eligible=False,
+                        size=4096,
+                    ),
+                    _asset(
+                        "general-notes",
+                        "project-notes.txt",
+                        "text/plain",
+                        kind="text",
+                    ),
+                ],
+                "relevant": [{"asset_id": "current-image"}],
+                "forbidden_asset_ids": ["stale-image"],
+                "top_k": 3,
+            },
+            {
+                "id": "audio-routing",
+                "query": "release game audio duplicate sound",
+                "assets": [
+                    _asset(
+                        "release-audio",
+                        "release-game-audio-duplicate-sound.wav",
+                        "audio/wav",
+                        kind="audio",
+                        build="1.4.7",
+                        size=8192,
+                    ),
+                    _asset(
+                        "other-audio",
+                        "ambient-music.wav",
+                        "audio/wav",
+                        kind="audio",
+                        build="1.4.7",
+                        size=8192,
+                    ),
+                ],
+                "relevant": [{"asset_id": "release-audio"}],
+                "top_k": 2,
+            },
+            {
+                "id": "temporal-protocol",
+                "query": "60 秒附近 release boss run video",
+                "assets": [
+                    _asset(
+                        "boss-video",
+                        "release-boss-run-video.mp4",
+                        "video/mp4",
+                        kind="video",
+                        build="1.4.7",
+                        size=16384,
+                        duration=100.0,
+                        has_audio=True,
+                    )
+                ],
+                "relevant": [
+                    {"asset_id": "boss-video", "start": 55.0, "end": 65.0}
+                ],
+                "top_k": 1,
+            },
+        ],
+    }
+
+
+async def product_lexical_rank(
+    query: str, assets: list[dict[str, Any]], top_k: int
+) -> dict[str, Any]:
+    from services.multimodal_retriever import app as coordinator
+
+    class _DisabledWorker:
+        enabled = False
+        compute_budget_ms = None
+
+        async def score(self, *, query, items, backend_hint):
+            return coordinator.WorkerResult(backend_hint, [], 0.0, "disabled")
+
+    visual, audio = coordinator.VISUAL_WORKER, coordinator.AUDIO_WORKER
+    coordinator.VISUAL_WORKER = _DisabledWorker()
+    coordinator.AUDIO_WORKER = _DisabledWorker()
+    try:
+        request = coordinator.RankRequest(query=query, top_k=top_k, assets=assets)
+        return await coordinator.rank(request)
+    finally:
+        coordinator.VISUAL_WORKER = visual
+        coordinator.AUDIO_WORKER = audio
+
+
+def live_ranker(endpoint: str, timeout_seconds: float):
+    endpoint = endpoint.strip().rstrip("/")
+
+    async def _rank(
+        query: str, assets: list[dict[str, Any]], top_k: int
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.post(
+                f"{endpoint}/v1/rank",
+                json={"query": query, "top_k": top_k, "assets": assets},
+            )
+        response.raise_for_status()
+        return dict(response.json() or {})
+
+    return _rank
+
+
+def _load_dataset(path: str | None) -> dict[str, Any]:
+    if not path:
+        return protocol_smoke_dataset()
+    return dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+async def _run(args: argparse.Namespace) -> dict[str, Any]:
+    dataset = _load_dataset(args.dataset)
+    endpoint = (args.endpoint or os.getenv("LINGJING_MM_BENCH_ENDPOINT", "")).strip()
+    ranker = (
+        live_ranker(endpoint, args.timeout)
+        if endpoint
+        else product_lexical_rank
+    )
+    result = await evaluate_dataset(
+        dataset,
+        ranker,
+        default_top_k=args.top_k,
+        temporal_iou_threshold=args.temporal_iou_threshold,
+    )
+    result["mode"] = "live-sidecar" if endpoint else "product-lexical-fallback"
+    result["external_dataset"] = bool(args.dataset)
+    result["quality_claim"] = (
+        "measured-live-retrieval-only"
+        if endpoint and args.dataset
+        else "none-protocol-smoke"
+    )
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset")
+    parser.add_argument("--endpoint")
+    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--temporal-iou-threshold", type=float, default=0.3)
+    parser.add_argument("--require-zero-contamination", action="store_true")
+    parser.add_argument("--require-semantic-backend", action="store_true")
+    args = parser.parse_args()
+
+    result = asyncio.run(_run(args))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    if args.require_zero_contamination and result["forbidden_hits"] != 0:
+        raise SystemExit("build contamination detected")
+    if args.require_semantic_backend and not result["live_semantic_backend_seen"]:
+        raise SystemExit("semantic backend was not observed")
+
+
+if __name__ == "__main__":
+    main()

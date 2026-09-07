@@ -21,3 +21,5 @@ jobs:
         run: pip install -r requirements.txt
       - name: All-modal scope and provenance benchmark
         run: python scripts/multimodal_context_benchmark.py
+      - name: Multimodal quality protocol smoke
+        run: python scripts/multimodal_quality_benchmark.py --require-zero-contamination
