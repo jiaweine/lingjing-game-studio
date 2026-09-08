@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, inspect, text
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_alembic_upgrade_head_includes_memory_ingestion_schema_and_event_index(tmp_path):
+def test_alembic_upgrade_head_includes_memory_ingestion_and_game_adapter_schema(tmp_path):
     database = tmp_path / "migration-chain.db"
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
@@ -23,6 +23,7 @@ def test_alembic_upgrade_head_includes_memory_ingestion_schema_and_event_index(t
     tables = set(inspector.get_table_names())
     assert "context_memory_proposals" in tables
     assert "context_memory_ingestion_receipts" in tables
+    assert "game_adapter_ticket_replays" in tables
 
     receipt_columns = {row["name"] for row in inspector.get_columns("context_memory_ingestion_receipts")}
     assert {
@@ -53,6 +54,15 @@ def test_alembic_upgrade_head_includes_memory_ingestion_schema_and_event_index(t
     task_event_indexes = {row["name"] for row in inspector.get_indexes("task_events")}
     assert "ix_task_events_type_id" in task_event_indexes
 
+    replay_columns = {row["name"] for row in inspector.get_columns("game_adapter_ticket_replays")}
+    assert {"ticket_id", "nonce", "expires_at", "consumed_at"} <= replay_columns
+    replay_indexes = {row["name"] for row in inspector.get_indexes("game_adapter_ticket_replays")}
+    assert "ix_game_adapter_ticket_replays_expires_at" in replay_indexes
+    replay_unique_constraints = {
+        row["name"] for row in inspector.get_unique_constraints("game_adapter_ticket_replays")
+    }
+    assert "uq_game_adapter_ticket_replays_nonce" in replay_unique_constraints
+
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "20260907_0006"
+    assert revision == "20260909_0007"
