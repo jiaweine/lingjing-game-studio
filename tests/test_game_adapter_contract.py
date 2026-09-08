@@ -15,21 +15,36 @@ from worldforge.integrations.game_adapter import (
 )
 
 
-def _request(gateway, adapter, *, now=1000.0, action_id="act-1", scope=None):
+def _request(
+    gateway,
+    adapter,
+    *,
+    now=1000.0,
+    action_id="act-1",
+    scope=None,
+    action=None,
+    dry_run=True,
+    evidence_requests=("logs", "screenshot"),
+):
     scope = dict(scope or {"build_ref": "1.4.7", "branch_ref": "release"})
+    action = dict(action or {"kind": "inspect", "target": "boss"})
+    evidence_requests = tuple(evidence_requests)
     ticket = gateway.issue_ticket(
         adapter_id=adapter._capabilities.adapter_id,
         action_id=action_id,
+        action=action,
         scope=scope,
+        dry_run=dry_run,
+        evidence_requests=evidence_requests,
         ttl_seconds=30,
         now=now,
     )
     return GameAdapterRequest(
         action_id=action_id,
-        action={"kind": "inspect", "target": "boss"},
+        action=action,
         scope=scope,
-        evidence_requests=("logs", "screenshot"),
-        dry_run=True,
+        evidence_requests=evidence_requests,
+        dry_run=dry_run,
         ticket=ticket,
     )
 
@@ -62,6 +77,42 @@ def test_adapter_ticket_is_scope_bound_and_tampering_is_rejected_before_dispatch
     tampered = replace(request, scope={"build_ref": "2.0.0", "branch_ref": "release"})
 
     with pytest.raises(GameAdapterError, match="scope mismatch"):
+        asyncio.run(gateway.execute(adapter, tampered, now=1001.0))
+    assert adapter.calls == 0
+
+
+def test_adapter_ticket_binds_exact_action_payload_before_dispatch():
+    gateway = FrozenKernelGameAdapterGateway("0123456789abcdef0123456789abcdef")
+    adapter = SyntheticContractAdapter()
+    request = _request(gateway, adapter, action_id="action-bound")
+    tampered = replace(
+        request,
+        action={"kind": "inspect", "target": "admin-console", "mutating": True},
+    )
+
+    with pytest.raises(GameAdapterError, match="request mismatch"):
+        asyncio.run(gateway.execute(adapter, tampered, now=1001.0))
+    assert adapter.calls == 0
+
+
+def test_adapter_ticket_prevents_dry_run_escalation_before_capability_check():
+    gateway = FrozenKernelGameAdapterGateway("0123456789abcdef0123456789abcdef")
+    adapter = SyntheticContractAdapter()
+    request = _request(gateway, adapter, action_id="dry-run-bound", dry_run=True)
+    escalated = replace(request, dry_run=False)
+
+    with pytest.raises(GameAdapterError, match="request mismatch"):
+        asyncio.run(gateway.execute(adapter, escalated, now=1001.0))
+    assert adapter.calls == 0
+
+
+def test_adapter_ticket_binds_evidence_request_set_and_order():
+    gateway = FrozenKernelGameAdapterGateway("0123456789abcdef0123456789abcdef")
+    adapter = SyntheticContractAdapter()
+    request = _request(gateway, adapter, action_id="evidence-bound")
+    tampered = replace(request, evidence_requests=("screenshot", "logs", "video"))
+
+    with pytest.raises(GameAdapterError, match="request mismatch"):
         asyncio.run(gateway.execute(adapter, tampered, now=1001.0))
     assert adapter.calls == 0
 
@@ -132,8 +183,13 @@ def test_adapter_requires_kernel_ticket_and_mutation_capability():
     with pytest.raises(GameAdapterError, match="requires a Frozen Kernel ticket"):
         asyncio.run(gateway.execute(adapter, no_ticket))
 
-    request = _request(gateway, adapter, action_id="mutating")
-    mutating = replace(request, dry_run=False)
+    request = _request(
+        gateway,
+        adapter,
+        action_id="mutating",
+        action={"kind": "mutate", "target": "boss"},
+        dry_run=False,
+    )
     with pytest.raises(GameAdapterError, match="mutating action capability"):
-        asyncio.run(gateway.execute(adapter, mutating, now=1001.0))
+        asyncio.run(gateway.execute(adapter, request, now=1001.0))
     assert adapter.calls == 0
