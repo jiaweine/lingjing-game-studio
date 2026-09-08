@@ -30,3 +30,5 @@ jobs:
             --events 40 \
             --workers 4 \
             --require-complete
+      - name: Long-horizon model evaluation protocol smoke
+        run: python scripts/long_horizon_model_benchmark.py
