@@ -36,17 +36,21 @@ logger = logging.getLogger("worldforge.context.memory_ingestion")
 class MemoryIngestionConsumer:
     """Consume durable ``message.accepted`` events into reviewable memory proposals.
 
-    The product transaction already commits the authoritative user message, analysis job,
-    and ``message.accepted`` task event with one timestamp. The task event is therefore the
-    durable outbox intent; this consumer adds a separate receipt/lease state so analysis-job
-    cancellation, API restarts, and duplicate delivery cannot silently lose or duplicate
-    proposal staging.
+    New events carry a minimal immutable ingestion locator (job id, actor id, project id and
+    frozen scope) in the same transaction as the authoritative user message. The consumer does
+    not need the analysis job row to survive after commit. Historical events that predate this
+    locator retain the original same-transaction timestamp lookup as a compatibility fallback.
+
+    The task event is the durable outbox intent; this consumer adds a separate receipt/lease
+    state so analysis-job cancellation, API restarts, and duplicate delivery cannot silently
+    lose or duplicate proposal staging.
 
     The consumer never writes authoritative Project Memory. Its only derived output is the
     existing ``pending`` proposal table, which still requires an explicit later approval.
     """
 
     EVENT_TYPE = "message.accepted"
+    LOCATOR_VERSION = 2
 
     def __init__(
         self,
@@ -257,18 +261,12 @@ class MemoryIngestionConsumer:
                 )
             )
 
-    def _source_for_event(
+    def _authoritative_message(
         self,
-        event: dict[str, Any],
-    ) -> tuple[str, str, str, str, ProjectScopeSnapshot]:
-        payload = self._payload(event.get("payload"))
-        message_id = str(payload.get("message_id") or "").strip()
-        if not message_id:
-            raise ValueError("message.accepted event missing message_id")
-        workspace_id = str(event.get("workspace_id") or "")
-        conversation_id = str(event.get("conversation_id") or "")
-        created_at = float(event.get("created_at") or 0.0)
-
+        *,
+        message_id: str,
+        conversation_id: str,
+    ) -> tuple[str, float]:
         with self.engine.connect() as connection:
             message = connection.execute(
                 select(
@@ -282,16 +280,60 @@ class MemoryIngestionConsumer:
                     )
                 )
             ).first()
-            if message is None:
-                raise KeyError("authoritative source message no longer exists")
-            if str(message.role) != "user":
-                raise ValueError("message.accepted source must be a user message")
+        if message is None:
+            raise KeyError("authoritative source message no longer exists")
+        if str(message.role) != "user":
+            raise ValueError("message.accepted source must be a user message")
+        return str(message.content), float(message.created_at or 0.0)
 
-            # create_message_job() commits message, analysis job and message.accepted using
-            # one timestamp. Exact equality is the primary immutable linkage; the tiny
-            # fallback protects database float round-tripping without allowing a broad
-            # "latest job" substitution that could drift to a later user turn.
-            jobs = self.product_store.jobs
+    def _source_from_v2_locator(
+        self,
+        *,
+        payload: dict[str, Any],
+        message_id: str,
+        content: str,
+    ) -> tuple[str, str, str, str, ProjectScopeSnapshot] | None:
+        raw_locator = payload.get("ingestion_locator")
+        if not isinstance(raw_locator, dict):
+            return None
+        locator = dict(raw_locator)
+        try:
+            version = int(locator.get("version") or 0)
+        except (TypeError, ValueError):
+            raise ValueError("invalid message.accepted ingestion locator version")
+        if version != self.LOCATOR_VERSION:
+            raise ValueError(f"unsupported message.accepted ingestion locator version: {version}")
+
+        job_id = str(locator.get("job_id") or "").strip()
+        if not job_id:
+            raise ValueError("message.accepted v2 locator missing job_id")
+        actor_id = str(locator.get("actor_id") or "").strip()
+        project_actor = str(locator.get("project_actor_id") or "").strip()
+        if actor_id and project_actor and actor_id != project_actor:
+            raise PermissionError("ingestion actor mismatch in frozen v2 locator")
+        project_id = str(locator.get("project_id") or "").strip()
+        if not actor_id or not project_id:
+            raise RuntimeError("unbound-message")
+        scope = ProjectScopeSnapshot.from_dict(locator.get("scope"))
+        return message_id, content, actor_id, project_id, scope
+
+    def _source_from_legacy_timestamp(
+        self,
+        *,
+        event: dict[str, Any],
+        message_id: str,
+        content: str,
+    ) -> tuple[str, str, str, str, ProjectScopeSnapshot]:
+        workspace_id = str(event.get("workspace_id") or "")
+        conversation_id = str(event.get("conversation_id") or "")
+        created_at = float(event.get("created_at") or 0.0)
+
+        # Historical create_message_job() committed message, analysis job and
+        # message.accepted using one timestamp. Exact equality remains the primary legacy
+        # linkage; the tiny fallback only protects database float round-tripping and never
+        # substitutes a broad "latest job" lookup that could drift to a later user turn.
+        jobs = self.product_store.jobs
+        with self.engine.connect() as connection:
             job = connection.execute(
                 select(jobs.c.id, jobs.c.payload, jobs.c.created_at)
                 .where(
@@ -319,7 +361,7 @@ class MemoryIngestionConsumer:
                     .limit(1)
                 ).first()
         if job is None:
-            raise LookupError("frozen analysis job envelope unavailable for message.accepted")
+            raise LookupError("frozen analysis job envelope unavailable for legacy message.accepted")
 
         job_payload = self._payload(job.payload)
         project_context = dict(job_payload.get("project_context") or {})
@@ -333,7 +375,34 @@ class MemoryIngestionConsumer:
         if not actor_id or not project_id:
             raise RuntimeError("unbound-message")
         scope = ProjectScopeSnapshot.from_dict(project_context.get("scope"))
-        return message_id, str(message.content), actor_id, project_id, scope
+        return message_id, content, actor_id, project_id, scope
+
+    def _source_for_event(
+        self,
+        event: dict[str, Any],
+    ) -> tuple[str, str, str, str, ProjectScopeSnapshot]:
+        payload = self._payload(event.get("payload"))
+        message_id = str(payload.get("message_id") or "").strip()
+        if not message_id:
+            raise ValueError("message.accepted event missing message_id")
+        conversation_id = str(event.get("conversation_id") or "")
+        content, _message_created_at = self._authoritative_message(
+            message_id=message_id,
+            conversation_id=conversation_id,
+        )
+
+        v2 = self._source_from_v2_locator(
+            payload=payload,
+            message_id=message_id,
+            content=content,
+        )
+        if v2 is not None:
+            return v2
+        return self._source_from_legacy_timestamp(
+            event=event,
+            message_id=message_id,
+            content=content,
+        )
 
     def process_event(
         self,
