@@ -576,12 +576,29 @@ class ConversationStore:
                 .where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id))
                 .values(**values)
             )
+            project_context = dict(job_payload.get("project_context") or {})
+            actor_id = str(job_payload.get("actor_id") or "").strip()
+            project_actor_id = str(project_context.get("actor_id") or "").strip()
+            event_payload = {
+                "message_id": message_id,
+                "asset_count": len(job_payload.get("asset_ids", asset_ids)),
+                "ingestion_locator": {
+                    "version": 2,
+                    "job_id": job_id,
+                    "actor_id": (actor_id or project_actor_id or None),
+                    "project_actor_id": (project_actor_id or None),
+                    "project_id": (
+                        str(project_context.get("project_id") or "").strip() or None
+                    ),
+                    "scope": dict(project_context.get("scope") or {}),
+                },
+            }
             connection.execute(
                 insert(self.task_events).values(
                     workspace_id=workspace_id,
                     conversation_id=conversation_id,
                     type="message.accepted",
-                    payload=json.dumps({"message_id": message_id, "asset_count": len(job_payload.get("asset_ids", asset_ids))}, ensure_ascii=False),
+                    payload=json.dumps(event_payload, ensure_ascii=False),
                     created_at=now,
                 )
             )
