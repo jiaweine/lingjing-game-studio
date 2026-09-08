@@ -6,10 +6,14 @@ import hashlib
 import hmac
 import json
 import secrets
+from threading import Lock
 import time
 from typing import Any, Protocol
 
 import httpx
+from sqlalchemy import Column, Float, Index, MetaData, String, Table, UniqueConstraint, delete, insert
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 
 class GameAdapterError(RuntimeError):
@@ -118,6 +122,119 @@ class GameAdapter(Protocol):
     async def execute(self, request: GameAdapterRequest) -> RawAdapterResult: ...
 
 
+class GameAdapterReplayStore(Protocol):
+    """Atomic one-shot ticket consumption shared by one or more kernel gateways."""
+
+    async def consume(
+        self,
+        *,
+        ticket_id: str,
+        nonce: str,
+        expires_at: float,
+        now: float,
+    ) -> bool: ...
+
+
+class InMemoryGameAdapterReplayStore:
+    """Single-process replay protection for local/conformance use."""
+
+    def __init__(self) -> None:
+        self._tickets: dict[str, float] = {}
+        self._nonces: dict[str, float] = {}
+        self._lock = Lock()
+
+    async def consume(
+        self,
+        *,
+        ticket_id: str,
+        nonce: str,
+        expires_at: float,
+        now: float,
+    ) -> bool:
+        with self._lock:
+            expired_tickets = [key for key, expiry in self._tickets.items() if expiry < now]
+            for key in expired_tickets:
+                self._tickets.pop(key, None)
+            expired_nonces = [key for key, expiry in self._nonces.items() if expiry < now]
+            for key in expired_nonces:
+                self._nonces.pop(key, None)
+            if ticket_id in self._tickets or nonce in self._nonces:
+                return False
+            expiry = float(expires_at)
+            self._tickets[str(ticket_id)] = expiry
+            self._nonces[str(nonce)] = expiry
+            return True
+
+
+class SqlGameAdapterReplayStore:
+    """Durable multi-process ticket replay protection backed by a SQLAlchemy engine.
+
+    Production deployments should create the table through Alembic revision 20260909_0007.
+    ``auto_create_schema`` exists for isolated integration tests or dedicated disposable stores.
+    A database failure is fail-closed: execution is not dispatched when replay state cannot be
+    atomically recorded.
+    """
+
+    def __init__(self, engine: Engine, *, auto_create_schema: bool = False) -> None:
+        self.engine = engine
+        self.metadata = MetaData()
+        self.replays = Table(
+            "game_adapter_ticket_replays",
+            self.metadata,
+            Column("ticket_id", String(64), primary_key=True),
+            Column("nonce", String(64), nullable=False),
+            Column("expires_at", Float, nullable=False),
+            Column("consumed_at", Float, nullable=False),
+            UniqueConstraint("nonce", name="uq_game_adapter_ticket_replays_nonce"),
+        )
+        Index("ix_game_adapter_ticket_replays_expires_at", self.replays.c.expires_at)
+        if auto_create_schema:
+            self.metadata.create_all(self.engine, tables=[self.replays])
+
+    def _consume_sync(
+        self,
+        *,
+        ticket_id: str,
+        nonce: str,
+        expires_at: float,
+        now: float,
+    ) -> bool:
+        try:
+            with self.engine.begin() as connection:
+                # Once a ticket is expired the gateway rejects it before this store is called,
+                # so removing old rows cannot make an expired ticket replayable.
+                connection.execute(delete(self.replays).where(self.replays.c.expires_at < now))
+                connection.execute(
+                    insert(self.replays).values(
+                        ticket_id=str(ticket_id),
+                        nonce=str(nonce),
+                        expires_at=float(expires_at),
+                        consumed_at=float(now),
+                    )
+                )
+            return True
+        except IntegrityError:
+            return False
+        except SQLAlchemyError as exc:
+            raise GameAdapterError("game adapter replay store unavailable") from exc
+
+    async def consume(
+        self,
+        *,
+        ticket_id: str,
+        nonce: str,
+        expires_at: float,
+        now: float,
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._consume_sync,
+            ticket_id=ticket_id,
+            nonce=nonce,
+            expires_at=expires_at,
+            now=now,
+        )
+
+
 def _canonical(payload: Any) -> bytes:
     return json.dumps(
         payload,
@@ -163,11 +280,17 @@ class FrozenKernelGameAdapterGateway:
     and the result remains ``external-engine-observation-unverified`` until the real kernel
     verifier independently consumes it.
 
-    The in-memory replay set is sufficient for one process/conformance runs. Production
-    multi-process deployments should back ticket replay state with a durable shared store.
+    The default replay store is deliberately process-local for conformance/development. Pass a
+    durable shared ``GameAdapterReplayStore`` (normally ``SqlGameAdapterReplayStore``) whenever
+    more than one kernel process can dispatch external-engine work.
     """
 
-    def __init__(self, signing_secret: bytes | str | None = None) -> None:
+    def __init__(
+        self,
+        signing_secret: bytes | str | None = None,
+        *,
+        replay_store: GameAdapterReplayStore | None = None,
+    ) -> None:
         if signing_secret is None:
             signing_secret = secrets.token_bytes(32)
         if isinstance(signing_secret, str):
@@ -175,8 +298,7 @@ class FrozenKernelGameAdapterGateway:
         if len(signing_secret) < 16:
             raise ValueError("game adapter signing secret must be at least 16 bytes")
         self._secret = bytes(signing_secret)
-        self._used_nonces: set[str] = set()
-        self._lock = asyncio.Lock()
+        self._replay_store = replay_store or InMemoryGameAdapterReplayStore()
 
     def issue_ticket(
         self,
@@ -269,12 +391,16 @@ class FrozenKernelGameAdapterGateway:
         if not request.dry_run and not capabilities.mutating_actions:
             raise GameAdapterError("adapter has not declared mutating action capability")
 
-        async with self._lock:
-            if ticket.nonce in self._used_nonces:
-                raise GameAdapterError("adapter ticket replay rejected")
-            # Consume before dispatch. A timeout is ambiguous and must require a new explicit
-            # kernel decision/ticket rather than silently retrying a potentially mutating call.
-            self._used_nonces.add(ticket.nonce)
+        consumed = await self._replay_store.consume(
+            ticket_id=ticket.ticket_id,
+            nonce=ticket.nonce,
+            expires_at=ticket.expires_at,
+            now=current,
+        )
+        if not consumed:
+            raise GameAdapterError("adapter ticket replay rejected")
+        # Consume before dispatch. A timeout is ambiguous and must require a new explicit
+        # kernel decision/ticket rather than silently retrying a potentially mutating call.
 
         raw = await adapter.execute(request)
         if raw.adapter_id != capabilities.adapter_id:
