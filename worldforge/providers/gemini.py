@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from pathlib import Path
 import time
@@ -26,6 +27,9 @@ class GeminiProvider(BaseProvider):
     def __init__(self, api_key, model):
         self.api_key, self.model = api_key, model
         self._native_limits_cache: tuple[float, int | None, int | None, str] | None = None
+        self._native_limits_task: asyncio.Task[
+            tuple[int | None, str | None, int | None, int | None]
+        ] | None = None
         self.info = ProviderInfo(
             "gemini",
             "Gemini",
@@ -42,29 +46,11 @@ class GeminiProvider(BaseProvider):
     def _model_id(self) -> str:
         return str(self.model or "").removeprefix("models/")
 
-    async def _resolve_native_input_limit(
+    async def _fetch_native_input_limit(
         self,
         client: httpx.AsyncClient,
-        *,
-        max_tokens: int,
     ) -> tuple[int | None, str | None, int | None, int | None]:
-        profile = load_provider_context_budget("gemini", model=self.model)
-        if profile.context_window_tokens:
-            # Operator-declared CONTEXT_WINDOW_TOKENS keeps the historical combined-window
-            # semantics used by ContextOS, so reserve requested output before accepting input.
-            safe = max(
-                1,
-                int(profile.context_window_tokens)
-                - max(int(profile.output_reserve_tokens), int(max_tokens)),
-            )
-            return safe, "operator-context-profile", profile.context_window_tokens, None
-
         now = time.monotonic()
-        cached = self._native_limits_cache
-        if cached and cached[0] > now:
-            _expires, input_limit, output_limit, source = cached
-            return input_limit, source, input_limit, output_limit
-
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self._model_id}?key={self.api_key}"
@@ -94,6 +80,43 @@ class GeminiProvider(BaseProvider):
             "gemini-models.get",
         )
         return input_limit, "gemini-models.get", input_limit, output_limit
+
+    async def _resolve_native_input_limit(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        max_tokens: int,
+    ) -> tuple[int | None, str | None, int | None, int | None]:
+        profile = load_provider_context_budget("gemini", model=self.model)
+        if profile.context_window_tokens:
+            # Operator-declared CONTEXT_WINDOW_TOKENS keeps the historical combined-window
+            # semantics used by ContextOS, so reserve requested output before accepting input.
+            safe = max(
+                1,
+                int(profile.context_window_tokens)
+                - max(int(profile.output_reserve_tokens), int(max_tokens)),
+            )
+            return safe, "operator-context-profile", profile.context_window_tokens, None
+
+        now = time.monotonic()
+        cached = self._native_limits_cache
+        if cached and cached[0] > now:
+            _expires, input_limit, output_limit, source = cached
+            return input_limit, source, input_limit, output_limit
+
+        # Cold-start metadata fetches are shared per provider instance. There is no await
+        # between observing/creating the task, so concurrent coroutines in the same event loop
+        # cannot both launch models.get. This avoids a cache stampede while keeping the cached
+        # success/failure semantics unchanged. Each chat still performs its own count/generate.
+        task = self._native_limits_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._fetch_native_input_limit(client))
+            self._native_limits_task = task
+        try:
+            return await task
+        finally:
+            if self._native_limits_task is task and task.done():
+                self._native_limits_task = None
 
     def _build_parts(
         self,
