@@ -44,6 +44,7 @@ class GameAdapterTicket:
     adapter_id: str
     action_id: str
     scope_digest: str
+    request_digest: str
     issued_at: float
     expires_at: float
     nonce: str
@@ -248,12 +249,30 @@ def _scope_digest(scope: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical(dict(scope or {}))).hexdigest()
 
 
+def _request_digest(
+    action: dict[str, Any],
+    *,
+    dry_run: bool,
+    evidence_requests: tuple[str, ...] | list[str],
+) -> str:
+    return hashlib.sha256(
+        _canonical(
+            {
+                "action": dict(action or {}),
+                "dry_run": bool(dry_run),
+                "evidence_requests": [str(item) for item in evidence_requests],
+            }
+        )
+    ).hexdigest()
+
+
 def _ticket_message(
     *,
     ticket_id: str,
     adapter_id: str,
     action_id: str,
     scope_digest: str,
+    request_digest: str,
     issued_at: float,
     expires_at: float,
     nonce: str,
@@ -264,6 +283,7 @@ def _ticket_message(
             "adapter_id": adapter_id,
             "action_id": action_id,
             "scope_digest": scope_digest,
+            "request_digest": request_digest,
             "issued_at": round(float(issued_at), 6),
             "expires_at": round(float(expires_at), 6),
             "nonce": nonce,
@@ -275,10 +295,11 @@ class FrozenKernelGameAdapterGateway:
     """Capability boundary between external game engines and the Frozen Kernel.
 
     An adapter is an actuator + evidence source, never a canonical-state authority. Every
-    execution requires a short-lived HMAC ticket bound to adapter/action/scope. Remote evidence
-    provenance is sanitized at this boundary: the adapter cannot claim verifier/system origin,
-    and the result remains ``external-engine-observation-unverified`` until the real kernel
-    verifier independently consumes it.
+    execution requires a short-lived HMAC ticket bound to adapter, action id, exact request
+    semantics and scope. Remote evidence provenance is sanitized at this boundary: the adapter
+    cannot claim verifier/system origin, and the result remains
+    ``external-engine-observation-unverified`` until the real kernel verifier independently
+    consumes it.
 
     The default replay store is deliberately process-local for conformance/development. Pass a
     durable shared ``GameAdapterReplayStore`` (normally ``SqlGameAdapterReplayStore``) whenever
@@ -305,7 +326,10 @@ class FrozenKernelGameAdapterGateway:
         *,
         adapter_id: str,
         action_id: str,
+        action: dict[str, Any],
         scope: dict[str, Any],
+        dry_run: bool,
+        evidence_requests: tuple[str, ...] | list[str] = ("logs",),
         ttl_seconds: float = 30.0,
         now: float | None = None,
     ) -> GameAdapterTicket:
@@ -314,12 +338,18 @@ class FrozenKernelGameAdapterGateway:
         expires = issued + ttl
         ticket_id = f"ga-{secrets.token_hex(10)}"
         nonce = secrets.token_hex(16)
-        digest = _scope_digest(scope)
+        scope_digest = _scope_digest(scope)
+        request_digest = _request_digest(
+            action,
+            dry_run=dry_run,
+            evidence_requests=evidence_requests,
+        )
         message = _ticket_message(
             ticket_id=ticket_id,
             adapter_id=str(adapter_id),
             action_id=str(action_id),
-            scope_digest=digest,
+            scope_digest=scope_digest,
+            request_digest=request_digest,
             issued_at=issued,
             expires_at=expires,
             nonce=nonce,
@@ -329,7 +359,8 @@ class FrozenKernelGameAdapterGateway:
             ticket_id=ticket_id,
             adapter_id=str(adapter_id),
             action_id=str(action_id),
-            scope_digest=digest,
+            scope_digest=scope_digest,
+            request_digest=request_digest,
             issued_at=issued,
             expires_at=expires,
             nonce=nonce,
@@ -342,13 +373,22 @@ class FrozenKernelGameAdapterGateway:
         *,
         adapter_id: str,
         action_id: str,
+        action: dict[str, Any],
         scope: dict[str, Any],
+        dry_run: bool,
+        evidence_requests: tuple[str, ...] | list[str],
         now: float,
     ) -> None:
         if ticket.adapter_id != adapter_id or ticket.action_id != action_id:
             raise GameAdapterError("adapter ticket identity mismatch")
         if ticket.scope_digest != _scope_digest(scope):
             raise GameAdapterError("adapter ticket scope mismatch")
+        if ticket.request_digest != _request_digest(
+            action,
+            dry_run=dry_run,
+            evidence_requests=evidence_requests,
+        ):
+            raise GameAdapterError("adapter ticket request mismatch")
         if float(ticket.expires_at) < now or float(ticket.issued_at) > now + 5.0:
             raise GameAdapterError("adapter ticket expired or not yet valid")
         expected = hmac.new(
@@ -358,6 +398,7 @@ class FrozenKernelGameAdapterGateway:
                 adapter_id=ticket.adapter_id,
                 action_id=ticket.action_id,
                 scope_digest=ticket.scope_digest,
+                request_digest=ticket.request_digest,
                 issued_at=ticket.issued_at,
                 expires_at=ticket.expires_at,
                 nonce=ticket.nonce,
@@ -383,7 +424,10 @@ class FrozenKernelGameAdapterGateway:
             ticket,
             adapter_id=capabilities.adapter_id,
             action_id=request.action_id,
+            action=request.action,
             scope=request.scope,
+            dry_run=request.dry_run,
+            evidence_requests=request.evidence_requests,
             now=current,
         )
         if request.dry_run and not capabilities.supports_dry_run:
