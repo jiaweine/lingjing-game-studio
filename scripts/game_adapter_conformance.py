@@ -62,6 +62,7 @@ async def _run(args) -> dict:
         "target": args.target,
         "mutating": False,
     }
+    evidence_requests = ("logs", "screenshot")
     secret = args.signing_secret or os.getenv("LINGJING_GAME_ADAPTER_SIGNING_SECRET")
     if not secret:
         secret = "synthetic-conformance-secret-32-bytes" if not args.endpoint else None
@@ -89,14 +90,17 @@ async def _run(args) -> dict:
         ticket = gateway.issue_ticket(
             adapter_id=capabilities.adapter_id,
             action_id=action_id,
+            action=action,
             scope=scope,
+            dry_run=True,
+            evidence_requests=evidence_requests,
             ttl_seconds=30,
         )
         request = GameAdapterRequest(
             action_id=action_id,
             action=action,
             scope=scope,
-            evidence_requests=("logs", "screenshot"),
+            evidence_requests=evidence_requests,
             dry_run=True,
             ticket=ticket,
         )
