@@ -244,15 +244,25 @@ class AnthropicProvider(BaseProvider):
                     native_token_model_output_limit=model_output_limit,
                     native_token_media_bytes=media_bytes,
                     native_token_count_endpoint="/v1/messages/count_tokens",
+                    native_token_count_extra_rtt_ms=None,
+                    native_token_estimate_delta=None,
+                    native_token_exact_estimate_ratio=None,
                 )
 
                 if decision.should_count:
                     try:
+                        count_started = time.perf_counter()
                         count_response = await client.post(
                             "https://api.anthropic.com/v1/messages/count_tokens",
                             headers=self._headers(),
                             json=count_payload,
                             timeout=15,
+                        )
+                        self.update_request_telemetry(
+                            native_token_count_extra_rtt_ms=round(
+                                (time.perf_counter() - count_started) * 1000.0,
+                                3,
+                            )
                         )
                         if count_response.status_code >= 400:
                             self.update_request_telemetry(
@@ -266,9 +276,15 @@ class AnthropicProvider(BaseProvider):
                             )
                             if input_tokens <= 0:
                                 raise ValueError("missing-input_tokens")
+                            estimated = max(1, int(decision.estimated_text_tokens))
                             self.update_request_telemetry(
                                 native_token_count_status="success",
                                 native_token_count_input_tokens=input_tokens,
+                                native_token_estimate_delta=input_tokens - estimated,
+                                native_token_exact_estimate_ratio=round(
+                                    input_tokens / estimated,
+                                    6,
+                                ),
                             )
                             if native_count_exceeds_limit(input_tokens, decision):
                                 self.update_request_telemetry(
