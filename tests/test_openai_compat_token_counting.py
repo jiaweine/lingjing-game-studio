@@ -53,6 +53,10 @@ def test_trusted_compatible_gateway_exact_count_records_calibration(monkeypatch)
     monkeypatch.setenv("LINGJING_CUSTOM_TOKEN_COUNT_TRUSTED", "1")
     monkeypatch.setenv("LINGJING_CUSTOM_NATIVE_TOKEN_COUNT", "on")
     monkeypatch.setenv("LINGJING_CUSTOM_CONTEXT_WINDOW_TOKENS", "1000")
+    # This case measures calibration, not over-limit blocking. Keep the operator profile
+    # internally consistent instead of inheriting the production default 1800-token reserve,
+    # which would intentionally leave no usable input window for a 1000-token model.
+    monkeypatch.setenv("LINGJING_CUSTOM_OUTPUT_RESERVE_TOKENS", "100")
     monkeypatch.setattr(
         "worldforge.providers.openai_compat.httpx.AsyncClient",
         lambda **_kwargs: Client(),
