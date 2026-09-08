@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from pathlib import Path
 import time
@@ -30,6 +31,9 @@ class AnthropicProvider(BaseProvider):
     def __init__(self, api_key, model):
         self.api_key, self.model = api_key, model
         self._native_limits_cache: tuple[float, int | None, int | None, str] | None = None
+        self._native_limits_task: asyncio.Task[
+            tuple[int | None, str | None, int | None, int | None]
+        ] | None = None
         self.info = ProviderInfo(
             "anthropic",
             "Claude",
@@ -47,27 +51,11 @@ class AnthropicProvider(BaseProvider):
             "content-type": "application/json",
         }
 
-    async def _resolve_native_input_limit(
+    async def _fetch_native_input_limit(
         self,
         client: httpx.AsyncClient,
-        *,
-        max_tokens: int,
     ) -> tuple[int | None, str | None, int | None, int | None]:
-        profile = load_provider_context_budget("anthropic", model=self.model)
-        if profile.context_window_tokens:
-            safe = max(
-                1,
-                int(profile.context_window_tokens)
-                - max(int(profile.output_reserve_tokens), int(max_tokens)),
-            )
-            return safe, "operator-context-profile", profile.context_window_tokens, None
-
         now = time.monotonic()
-        cached = self._native_limits_cache
-        if cached and cached[0] > now:
-            _expires, input_limit, output_limit, source = cached
-            return input_limit, source, input_limit, output_limit
-
         model_id = quote(str(self.model or ""), safe="")
         try:
             response = await client.get(
@@ -98,6 +86,40 @@ class AnthropicProvider(BaseProvider):
             "anthropic-models.get",
         )
         return input_limit, "anthropic-models.get", input_limit, output_limit
+
+    async def _resolve_native_input_limit(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        max_tokens: int,
+    ) -> tuple[int | None, str | None, int | None, int | None]:
+        profile = load_provider_context_budget("anthropic", model=self.model)
+        if profile.context_window_tokens:
+            safe = max(
+                1,
+                int(profile.context_window_tokens)
+                - max(int(profile.output_reserve_tokens), int(max_tokens)),
+            )
+            return safe, "operator-context-profile", profile.context_window_tokens, None
+
+        now = time.monotonic()
+        cached = self._native_limits_cache
+        if cached and cached[0] > now:
+            _expires, input_limit, output_limit, source = cached
+            return input_limit, source, input_limit, output_limit
+
+        # Share one cold-start models.get request across concurrent chats on this provider.
+        # Success and failure are still cached with their existing TTLs; only metadata refresh
+        # is singleflight, while every chat keeps independent count/generation requests.
+        task = self._native_limits_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._fetch_native_input_limit(client))
+            self._native_limits_task = task
+        try:
+            return await task
+        finally:
+            if self._native_limits_task is task and task.done():
+                self._native_limits_task = None
 
     def _build_messages(
         self,
