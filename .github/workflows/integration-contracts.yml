@@ -19,10 +19,11 @@ jobs:
           cache: pip
       - name: Install application dependencies
         run: pip install -r requirements.txt
-      - name: Frozen Kernel GameAdapter contract smoke
+      - name: Frozen Kernel GameAdapter contract and durable replay smoke
         run: |
           python scripts/game_adapter_conformance.py \
             --execute-dry-run \
+            --durable-replay-smoke \
             --require-conformance
       - name: Memory ingestion multi-worker backlog smoke
         run: |
