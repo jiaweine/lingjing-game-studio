@@ -4,11 +4,13 @@ import asyncio
 from dataclasses import replace
 
 import pytest
+from sqlalchemy import create_engine
 
 from worldforge.integrations.game_adapter import (
     FrozenKernelGameAdapterGateway,
     GameAdapterError,
     GameAdapterRequest,
+    SqlGameAdapterReplayStore,
     SyntheticContractAdapter,
 )
 
@@ -79,6 +81,42 @@ def test_adapter_ticket_replay_and_expiry_are_fail_closed():
     with pytest.raises(GameAdapterError, match="expired"):
         asyncio.run(gateway.execute(adapter, expired, now=2031.0))
     assert adapter.calls == 1
+
+
+def test_durable_replay_store_rejects_ticket_across_gateway_instances(tmp_path):
+    database = tmp_path / "adapter-replay.sqlite3"
+    first_engine = create_engine(f"sqlite:///{database.as_posix()}")
+    second_engine = create_engine(f"sqlite:///{database.as_posix()}")
+    first_store = SqlGameAdapterReplayStore(first_engine, auto_create_schema=True)
+    second_store = SqlGameAdapterReplayStore(second_engine)
+    secret = "0123456789abcdef0123456789abcdef"
+    first_gateway = FrozenKernelGameAdapterGateway(secret, replay_store=first_store)
+    second_gateway = FrozenKernelGameAdapterGateway(secret, replay_store=second_store)
+    adapter = SyntheticContractAdapter()
+    request = _request(first_gateway, adapter, action_id="durable-act")
+
+    observation = asyncio.run(first_gateway.execute(adapter, request, now=1001.0))
+    assert observation.status == "dry-run"
+    assert adapter.calls == 1
+
+    with pytest.raises(GameAdapterError, match="replay"):
+        asyncio.run(second_gateway.execute(adapter, request, now=1002.0))
+    assert adapter.calls == 1
+
+
+def test_durable_replay_store_database_failure_is_fail_closed(tmp_path):
+    database = tmp_path / "missing-replay-schema.sqlite3"
+    store = SqlGameAdapterReplayStore(create_engine(f"sqlite:///{database.as_posix()}"))
+    gateway = FrozenKernelGameAdapterGateway(
+        "0123456789abcdef0123456789abcdef",
+        replay_store=store,
+    )
+    adapter = SyntheticContractAdapter()
+    request = _request(gateway, adapter, action_id="missing-schema")
+
+    with pytest.raises(GameAdapterError, match="replay store unavailable"):
+        asyncio.run(gateway.execute(adapter, request, now=1001.0))
+    assert adapter.calls == 0
 
 
 def test_adapter_requires_kernel_ticket_and_mutation_capability():
