@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 
 import numpy as np
@@ -14,11 +15,13 @@ def test_build_lease_is_exclusive_and_expired_lease_is_recoverable(tmp_path):
     first = PersistentVectorStore(path)
     second = PersistentVectorStore(path)
 
+    # Use a comfortably long lease for the exclusivity assertion. A 50 ms lease makes the
+    # test depend on CI filesystem/SQLite scheduling rather than on lease correctness.
     assert first.try_claim_build(
         cache_key="build:asset-1",
         backend="test",
         owner="worker-a",
-        lease_seconds=0.05,
+        lease_seconds=30.0,
     )
     assert not second.try_claim_build(
         cache_key="build:asset-1",
@@ -27,7 +30,14 @@ def test_build_lease_is_exclusive_and_expired_lease_is_recoverable(tmp_path):
         lease_seconds=1.0,
     )
 
-    time.sleep(0.07)
+    # Expire the durable row explicitly instead of sleeping against the wall clock. This keeps
+    # the recovery half deterministic while still exercising the real persisted lease path.
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE build_leases SET expires_at = ? WHERE cache_key = ? AND backend = ?",
+            (time.time() - 1.0, "build:asset-1", "test"),
+        )
+
     assert second.try_claim_build(
         cache_key="build:asset-1",
         backend="test",
