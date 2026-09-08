@@ -27,9 +27,53 @@ class NativeTokenDecision:
         return {f"native_token_{key}": value for key, value in payload.items()}
 
 
+@dataclass(frozen=True)
+class TrustedTokenCountEndpoint:
+    provider_key: str
+    url: str | None
+    response_field: str
+    trusted: bool
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.trusted and self.url)
+
+
 def _prefix(provider_key: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9]+", "_", str(provider_key or "provider")).strip("_")
     return f"LINGJING_{(normalized or 'PROVIDER').upper()}"
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def trusted_token_count_endpoint(
+    provider_key: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> TrustedTokenCountEndpoint:
+    """Load an operator-declared exact-count capability for a nonstandard gateway.
+
+    OpenAI-compatible APIs do not share one guaranteed token-count endpoint. To avoid
+    pretending a vendor/private gateway has an official capability, both an endpoint URL and
+    an explicit TRUSTED flag are required. The endpoint is expected to accept the same
+    ``model`` + ``messages`` shape used by the gateway chat request and return a numeric field
+    selected by RESPONSE_FIELD (dot-separated nested paths are supported by the caller).
+    """
+    env = environ or os.environ
+    prefix = _prefix(provider_key)
+    url = str(env.get(f"{prefix}_TOKEN_COUNT_URL") or "").strip() or None
+    response_field = str(
+        env.get(f"{prefix}_TOKEN_COUNT_RESPONSE_FIELD") or "input_tokens"
+    ).strip() or "input_tokens"
+    trusted = _truthy(env.get(f"{prefix}_TOKEN_COUNT_TRUSTED"))
+    return TrustedTokenCountEndpoint(
+        provider_key=str(provider_key),
+        url=url,
+        response_field=response_field,
+        trusted=trusted,
+    )
 
 
 def native_token_mode(
