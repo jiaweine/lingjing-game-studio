@@ -12,11 +12,16 @@ Every execution request must carry a short-lived Frozen Kernel HMAC ticket bound
 
 - adapter id;
 - action id;
+- exact canonical action payload;
+- `dry_run` mode;
+- ordered evidence requests;
 - project/build scope digest;
 - issue/expiry timestamps;
 - a one-use nonce.
 
-The gateway consumes the ticket before dispatch. A timeout is therefore treated as ambiguous: the caller must make a new explicit kernel decision instead of silently retrying a potentially mutating request.
+The exact request semantics are reduced to a canonical SHA-256 `request_digest`, and that digest is included in the HMAC signature. Keeping the same action id and scope is therefore not enough to reuse an authorization for a different target, payload, evidence request, or to upgrade a dry-run into a mutating execution. Request-digest verification occurs before capability checks and before any adapter dispatch.
+
+The gateway consumes the ticket before dispatch. A timeout is therefore treated as ambiguous: the caller must make a new explicit kernel decision and issue a new ticket instead of silently retrying a potentially mutating request.
 
 Adapter output is always returned as:
 
@@ -103,23 +108,36 @@ A request contains:
   "scope": {"build_ref": "...", "branch_ref": "..."},
   "evidence_requests": ["logs", "screenshot"],
   "dry_run": true,
-  "ticket": {"...": "Frozen Kernel ticket"}
+  "ticket": {
+    "ticket_id": "...",
+    "adapter_id": "...",
+    "action_id": "...",
+    "scope_digest": "...",
+    "request_digest": "...",
+    "issued_at": 0,
+    "expires_at": 0,
+    "nonce": "...",
+    "signature": "..."
+  }
 }
 ```
+
+The bridge receives the signed request envelope, but the Frozen Kernel gateway is the component that validates the ticket before dispatch. The ticket cannot be moved onto a modified request because action payload, `dry_run`, evidence requests and scope are all bound into the signed digests.
 
 For snapshot-capable adapters, a successful or dry-run result must return both before/after snapshot digests. The result also echoes the adapter id, action id and ticket id; all three are checked before evidence is accepted.
 
 ## Conformance
 
-Synthetic contract smoke:
+Synthetic contract + durable replay smoke:
 
 ```bash
 python scripts/game_adapter_conformance.py \
   --execute-dry-run \
+  --durable-replay-smoke \
   --require-conformance
 ```
 
-This is only protocol/mechanism evidence.
+This is only protocol/mechanism evidence. The durable replay smoke uses two independently constructed SQLAlchemy engines/gateways sharing one disposable SQLite store and requires the second gateway to reject the already-consumed ticket before a second dispatch. It is not production database or engine performance evidence.
 
 Probe a real bridge without executing an action:
 
