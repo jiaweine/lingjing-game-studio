@@ -238,23 +238,32 @@ class EventStore:
         return [self._event_from_row(row) for row in rows]
 
     def verify_chain(self, session_id: str) -> bool:
-        events = self.list_events(session_id)
+        """Verify the complete chain without materializing the complete trace in memory."""
         prev = "GENESIS"
-        for e in events:
-            if e.prev_hash != prev:
-                return False
-            payload_json = json.dumps(
-                e.payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
+        expected_seq = 1
+        with self._conn() as c:
+            cursor = c.execute(
+                "SELECT session_id,seq,event_type,payload_json,ts,prev_hash,hash "
+                "FROM events WHERE session_id=? ORDER BY seq",
+                (session_id,),
             )
-            digest = hashlib.sha256(
-                f"{e.session_id}|{e.seq}|{e.event_type}|{payload_json}|{e.ts:.6f}|{e.prev_hash}".encode()
-            ).hexdigest()
-            if digest != e.hash:
-                return False
-            prev = e.hash
+            for row in cursor:
+                if int(row["seq"]) != expected_seq or row["prev_hash"] != prev:
+                    return False
+                payload_json = json.dumps(
+                    json.loads(row["payload_json"]),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                digest = hashlib.sha256(
+                    f"{row['session_id']}|{row['seq']}|{row['event_type']}|"
+                    f"{payload_json}|{float(row['ts']):.6f}|{row['prev_hash']}".encode()
+                ).hexdigest()
+                if digest != row["hash"]:
+                    return False
+                prev = row["hash"]
+                expected_seq += 1
         return True
 
     def save_snapshot(
