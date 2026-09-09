@@ -45,6 +45,22 @@ class RunManager:
         import uuid
 
         session_id = f"wf-{uuid.uuid4().hex[:10]}"
+        session_scope = {
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+        }
+        # Persist the access-control boundary before returning the public session id.
+        # The engine will enrich/replace this metadata when execution begins, but a client
+        # that immediately polls or opens a WebSocket must never see a transient 404 simply
+        # because the scheduled task has not received its first event-loop turn yet.
+        self.engine.events.create_session(
+            session_id,
+            meta={
+                "config": config.model_dump(),
+                "lifecycle": "scheduled",
+                **session_scope,
+            },
+        )
 
         async def sink(event: RuntimeEvent) -> None:
             self._fanout(session_id, event.model_dump())
@@ -55,10 +71,7 @@ class RunManager:
                     config,
                     session_id=session_id,
                     sink=sink,
-                    session_meta={
-                        "workspace_id": workspace_id,
-                        "user_id": user_id,
-                    },
+                    session_meta=session_scope,
                 )
             except Exception as exc:
                 event = self.engine.events.append(
