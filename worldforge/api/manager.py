@@ -15,13 +15,25 @@ class RunManager:
         data_dir.mkdir(parents=True, exist_ok=True)
         self.engine = WorldForgeEngine(data_dir / "worldforge.db")
         self.tasks: dict[str, asyncio.Task] = {}
-        self.summaries = {}
         self.queues: dict[str, list[DurableReplayQueue]] = defaultdict(list)
         self.queue_size = max(1, int(queue_size))
 
     def _fanout(self, session_id: str, payload: dict) -> None:
         for queue in list(self.queues.get(session_id, [])):
             queue.offer(payload)
+
+    def _track_task(self, session_id: str, task: asyncio.Task) -> None:
+        self.tasks[session_id] = task
+
+        def release(done: asyncio.Task) -> None:
+            if self.tasks.get(session_id) is done:
+                self.tasks.pop(session_id, None)
+            try:
+                done.exception()
+            except asyncio.CancelledError:
+                pass
+
+        task.add_done_callback(release)
 
     async def start(
         self,
@@ -38,7 +50,7 @@ class RunManager:
 
         async def execute() -> None:
             try:
-                self.summaries[session_id] = await self.engine.run(
+                await self.engine.run(
                     config,
                     session_id=session_id,
                     sink=sink,
@@ -54,38 +66,40 @@ class RunManager:
                 await sink(event)
                 raise
 
-        self.tasks[session_id] = asyncio.create_task(
-            execute(), name=session_id
-        )
+        task = asyncio.create_task(execute(), name=session_id)
+        self._track_task(session_id, task)
         return session_id
 
     def status(self, session_id):
         task = self.tasks.get(session_id)
-        summary = self.summaries.get(session_id)
         events = self.engine.events.list_events(session_id)
-        if summary:
-            status = "completed"
-        elif task and task.cancelled():
-            status = "cancelled"
-        elif task and task.done():
-            try:
-                status = "failed" if task.exception() else "completed"
-            except asyncio.CancelledError:
+        terminal = next(
+            (
+                event
+                for event in reversed(events)
+                if event.event_type in {"run.completed", "run.failed", "run.cancelled"}
+            ),
+            None,
+        )
+        summary = None
+        if terminal is not None:
+            if terminal.event_type == "run.completed":
+                status = "completed"
+                summary = terminal.payload.get("summary")
+            elif terminal.event_type == "run.failed":
+                status = "failed"
+            else:
                 status = "cancelled"
         elif task:
             status = "running"
         elif events:
-            status = (
-                "completed"
-                if any(event.event_type == "run.completed" for event in events)
-                else "stored"
-            )
+            status = "stored"
         else:
             status = "unknown"
         return {
             "session_id": session_id,
             "status": status,
-            "summary": summary.model_dump() if summary else None,
+            "summary": summary,
             "event_count": len(events),
             "last_event": events[-1].model_dump() if events else None,
         }
@@ -93,7 +107,7 @@ class RunManager:
     async def cancel(self, session_id):
         task = self.tasks.get(session_id)
         if not task:
-            return {"session_id": session_id, "status": "unknown"}
+            return self.status(session_id)
         if task.done():
             return self.status(session_id)
         task.cancel()
