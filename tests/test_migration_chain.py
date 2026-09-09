@@ -63,6 +63,11 @@ def test_alembic_upgrade_head_includes_memory_ingestion_and_game_adapter_schema(
     }
     assert "uq_game_adapter_ticket_replays_nonce" in replay_unique_constraints
 
+    job_indexes = {row["name"]: row for row in inspector.get_indexes("analysis_jobs")}
+    active_job_index = job_indexes["uq_analysis_jobs_active_conversation"]
+    assert active_job_index["unique"] is True
+    assert active_job_index["column_names"] == ["workspace_id", "conversation_id"]
+
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "20260909_0007"
+    assert revision == "20260909_0008"
