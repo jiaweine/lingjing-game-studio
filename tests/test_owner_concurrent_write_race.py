@@ -15,19 +15,14 @@ class _ConnectionProxy:
         self._paused = False
 
     def execute(self, statement, *args, **kwargs):
-        result = self._connection.execute(statement, *args, **kwargs)
-        if not self._paused and getattr(statement, "is_select", False):
-            from_names = {
-                getattr(item, "name", None)
-                for item in statement.get_final_froms()
-            }
-            selected = [getattr(column, "name", None) for column in statement.selected_columns]
-            if from_names == {"workspaces"} and selected == ["id"]:
+        if not self._paused and getattr(statement, "is_update", False):
+            table = getattr(statement, "table", None)
+            if getattr(table, "name", None) == "workspaces":
                 self._paused = True
-                # Both vulnerable transactions have established the same SQLite read snapshot
-                # before either one changes owner membership state.
+                # Force both callers to attempt the SQLite write-intent lock together.
+                # Exactly one may pass into the protected owner-count/write section first.
                 self._barrier.wait(timeout=5)
-        return result
+        return self._connection.execute(statement, *args, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._connection, name)
