@@ -64,10 +64,11 @@ def test_run_manager_persists_access_scope_before_scheduled_task_runs(tmp_path, 
         assert meta["meta"]["lifecycle"] == "scheduled"
         assert manager.status(session_id)["status"] == "running"
 
+        # Cleanup timing belongs to the dedicated task-lifecycle test above; this regression
+        # only asserts that the access boundary exists before the scheduled task can run.
         task = manager.tasks[session_id]
         task.cancel()
-        await asyncio.sleep(0)
-        assert session_id not in manager.tasks
+        await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(scenario())
 
