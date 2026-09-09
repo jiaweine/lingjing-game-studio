@@ -104,12 +104,11 @@ class RunManager:
         return {"session_id": session_id, "status": "cancelled"}
 
     def subscribe(self, session_id):
-        existing = self.engine.events.list_events(session_id)
-        initial_cursor = int(existing[-1].seq) if existing else 0
+        initial_cursor = self.engine.events.latest_seq(session_id)
 
         def replay_next(after_seq: int):
-            rows = self.engine.events.list_events(session_id, after_seq)
-            return rows[0].model_dump() if rows else None
+            event = self.engine.events.next_event(session_id, after_seq)
+            return event.model_dump() if event is not None else None
 
         queue = DurableReplayQueue(
             maxsize=self.queue_size,
