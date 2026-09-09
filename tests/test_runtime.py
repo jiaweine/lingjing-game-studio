@@ -198,15 +198,15 @@ def test_engine_completes_and_trace_valid(tmp_path):
 
 def test_engine_checkpoint_cursor_does_not_scan_complete_history(tmp_path, monkeypatch):
     engine = WorldForgeEngine(tmp_path / "bounded-checkpoint.db")
-    real_list_events = engine.events.list_events
-    history_scans = 0
 
-    def tracked_list_events(*args, **kwargs):
-        nonlocal history_scans
-        history_scans += 1
-        return real_list_events(*args, **kwargs)
+    # End-of-run integrity verification intentionally scans the chain. Stub that independent
+    # contract so any list_events() call left in the checkpoint hot path fails immediately.
+    monkeypatch.setattr(engine.events, "verify_chain", lambda _session_id: True)
 
-    monkeypatch.setattr(engine.events, "list_events", tracked_list_events)
+    def forbid_history_scan(*_args, **_kwargs):
+        raise AssertionError("checkpoint creation must not replay complete event history")
+
+    monkeypatch.setattr(engine.events, "list_events", forbid_history_scan)
     summary = asyncio.run(
         engine.run(
             RunConfig(
@@ -220,9 +220,7 @@ def test_engine_checkpoint_cursor_does_not_scan_complete_history(tmp_path, monke
     )
 
     assert summary.status == "completed"
-    # The one full scan is the intentional end-of-run hash-chain verification.
-    # Checkpoint creation itself must use latest_seq() instead of replaying history.
-    assert history_scans == 1
+    assert engine.events.latest_seq(summary.session_id) > 0
 
 
 def test_persistent_snapshot_roundtrip(tmp_path):
