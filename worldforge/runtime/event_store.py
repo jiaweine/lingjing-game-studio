@@ -295,30 +295,53 @@ class EventStore:
             else None
         )
 
-    def list_sessions(self, limit: int = 30) -> list[dict[str, Any]]:
+    def list_sessions(
+        self,
+        limit: int = 30,
+        *,
+        verify_hash_chain: bool = True,
+    ) -> list[dict[str, Any]]:
+        """List recent session metadata with optional explicit integrity verification.
+
+        The default preserves the historical verified-list contract. High-frequency listing
+        endpoints may opt out of O(total trace) verification; such rows are marked unchecked
+        rather than being presented as valid. Event counts use the contiguous maximum sequence
+        and are aggregated in one query instead of one COUNT query per session.
+        """
         with self._conn() as c:
             rows = c.execute(
-                "SELECT session_id,parent_session_id,parent_seq,created_at,meta_json FROM sessions ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                "SELECT session_id,parent_session_id,parent_seq,created_at,meta_json "
+                "FROM sessions ORDER BY created_at DESC LIMIT ?",
+                (max(0, int(limit)),),
             ).fetchall()
+            session_ids = [str(row["session_id"]) for row in rows]
+            counts: dict[str, int] = {}
+            if session_ids:
+                placeholders = ",".join("?" for _ in session_ids)
+                event_rows = c.execute(
+                    "SELECT session_id, MAX(seq) AS event_count FROM events "
+                    f"WHERE session_id IN ({placeholders}) GROUP BY session_id",
+                    session_ids,
+                ).fetchall()
+                counts = {
+                    str(row["session_id"]): int(row["event_count"] or 0)
+                    for row in event_rows
+                }
+
         out = []
-        for r in rows:
-            count = 0
-            with self._conn() as c:
-                cr = c.execute(
-                    "SELECT COUNT(*) AS n FROM events WHERE session_id=?",
-                    (r["session_id"],),
-                ).fetchone()
-                count = int(cr["n"]) if cr else 0
+        for row in rows:
+            session_id = str(row["session_id"])
+            checked = bool(verify_hash_chain)
             out.append(
                 {
-                    "session_id": r["session_id"],
-                    "parent_session_id": r["parent_session_id"],
-                    "parent_seq": r["parent_seq"],
-                    "created_at": r["created_at"],
-                    "meta": json.loads(r["meta_json"] or "{}"),
-                    "event_count": count,
-                    "hash_chain_valid": self.verify_chain(r["session_id"]),
+                    "session_id": session_id,
+                    "parent_session_id": row["parent_session_id"],
+                    "parent_seq": row["parent_seq"],
+                    "created_at": row["created_at"],
+                    "meta": json.loads(row["meta_json"] or "{}"),
+                    "event_count": counts.get(session_id, 0),
+                    "hash_chain_checked": checked,
+                    "hash_chain_valid": self.verify_chain(session_id) if checked else None,
                 }
             )
         return out
