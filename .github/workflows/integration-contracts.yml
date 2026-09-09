@@ -17,8 +17,8 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-      - name: Install application dependencies
-        run: pip install -r requirements.txt
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
       - name: Frozen Kernel GameAdapter contract and durable replay smoke
         run: |
           python scripts/game_adapter_conformance.py \
