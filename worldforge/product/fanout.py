@@ -9,29 +9,12 @@ from collections import defaultdict
 from sqlalchemy import func, select
 
 from worldforge.context.memory_ingestion import MemoryIngestionConsumer
+from worldforge.replay_queue import DurableReplayQueue, ReplayRequired
 
 logger = logging.getLogger("worldforge.product.fanout")
 
-
-class FanoutQueueOverflow(RuntimeError):
-    """A slow subscriber must reconnect and replay from its durable event cursor."""
-
-
-class _SubscriberQueue(asyncio.Queue):
-    def __init__(self, *, maxsize: int) -> None:
-        super().__init__(maxsize=maxsize)
-        self.overflowed = False
-
-    def mark_overflow(self) -> None:
-        self.overflowed = True
-
-    async def get(self):
-        if self.overflowed:
-            raise FanoutQueueOverflow("task-event subscriber queue overflowed")
-        item = await super().get()
-        if self.overflowed:
-            raise FanoutQueueOverflow("task-event subscriber queue overflowed")
-        return item
+# Backward-compatible name for callers/tests that already treat overflow as a RuntimeError.
+FanoutQueueOverflow = ReplayRequired
 
 
 class TaskEventFanoutHub:
@@ -60,7 +43,7 @@ class TaskEventFanoutHub:
         self.poll_interval = poll_interval
         self.batch_size = batch_size
         self.queue_size = queue_size
-        self.subscribers: dict[str, set[_SubscriberQueue]] = defaultdict(set)
+        self.subscribers: dict[str, set[DurableReplayQueue]] = defaultdict(set)
         self._task: asyncio.Task | None = None
         self._cursor = 0
         self.poll_count = 0
@@ -92,8 +75,8 @@ class TaskEventFanoutHub:
             pass
         self._task = None
 
-    def subscribe(self, conversation_id: str) -> _SubscriberQueue:
-        queue = _SubscriberQueue(maxsize=self.queue_size)
+    def subscribe(self, conversation_id: str) -> DurableReplayQueue:
+        queue = DurableReplayQueue(maxsize=self.queue_size)
         self.subscribers[conversation_id].add(queue)
         return queue
 
@@ -131,15 +114,7 @@ class TaskEventFanoutHub:
     def _fanout_event(self, event: dict) -> None:
         conversation_id = str(event["conversation_id"])
         for queue in tuple(self.subscribers.get(conversation_id, ())):
-            if queue.overflowed:
-                continue
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                # Never advance a connected client's apparent cursor across a gap. Mark the
-                # bounded subscription stale; its next read raises RuntimeError, which closes
-                # the socket and lets the existing after_id reconnect path replay durably.
-                queue.mark_overflow()
+            queue.offer(event)
 
     async def _drain_memory_ingestion(self, *, max_batches: int) -> None:
         if self.memory_ingestion is None:
