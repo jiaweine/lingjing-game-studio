@@ -69,7 +69,8 @@ class ProviderRegistry:
                 ),
                 model=env.get("QWEN_MODEL", "qwen3-vl-plus"),
                 multimodal=True,
-                note="中文、多模态与文档理解",
+                supports_video=True,
+                note="中文、多模态、视频与文档理解",
             ),
             "doubao": OpenAICompatProvider(
                 key="doubao",
@@ -100,6 +101,7 @@ class ProviderRegistry:
                 base_url=env["CUSTOM_BASE_URL"],
                 model=env.get("CUSTOM_MODEL"),
                 multimodal=env.get("CUSTOM_MULTIMODAL", "1") != "0",
+                supports_video=env.get("CUSTOM_VIDEO", "0") == "1",
                 supports_audio=env.get("CUSTOM_AUDIO", "0") == "1",
                 auth_optional=env.get("CUSTOM_AUTH_OPTIONAL", "0") == "1",
                 note="企业自建或私有化模型服务",

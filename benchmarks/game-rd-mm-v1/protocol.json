@@ -1,0 +1,18 @@
+{
+  "name": "game-rd-mm-v1",
+  "protocol_version": "1.0",
+  "annotation_guideline_version": "game-rd-mm-v1-annotation-1",
+  "quality_evidence_requirements": {
+    "minimum_cases": 100,
+    "minimum_unique_source_groups": 20,
+    "minimum_cases_per_target_modality": 20,
+    "minimum_temporal_cases": 20,
+    "minimum_scope_negative_cases": 25,
+    "minimum_annotators_per_case": 2,
+    "require_adjudication": true,
+    "require_frozen_manifest": true,
+    "require_content_sha256": true,
+    "require_file_hash_verification": true,
+    "require_heldout_development_exclusion": true
+  }
+}

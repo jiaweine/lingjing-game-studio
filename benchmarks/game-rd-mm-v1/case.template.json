@@ -1,0 +1,22 @@
+{
+  "id": "case-000",
+  "query": "Human-authored retrieval question. Do not generate this from benchmark output.",
+  "source_group": "capture-session-000",
+  "target_modalities": ["video"],
+  "annotation": {
+    "annotator_count": 2,
+    "adjudicated": false
+  },
+  "candidate_asset_ids": [
+    "asset-REPLACE_WITH_CATALOG_ID"
+  ],
+  "relevant": [
+    {
+      "asset_id": "asset-REPLACE_WITH_CATALOG_ID",
+      "start": 0.0,
+      "end": 1.0
+    }
+  ],
+  "forbidden_asset_ids": [],
+  "top_k": 5
+}

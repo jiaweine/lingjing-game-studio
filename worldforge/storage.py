@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import quote
+
+
+def _attachment_disposition(filename: str) -> str:
+    """Return a header-safe UTF-8 Content-Disposition value for object-store responses."""
+    encoded = quote(str(filename or "download.bin"), safe="")
+    return f"attachment; filename*=UTF-8''{encoded}"
 
 
 class ObjectStorage:
@@ -117,7 +124,7 @@ class S3ObjectStorage(ObjectStorage):
             Params={
                 "Bucket": self.bucket,
                 "Key": key,
-                "ResponseContentDisposition": f'attachment; filename="{filename}"',
+                "ResponseContentDisposition": _attachment_disposition(filename),
             },
             ExpiresIn=expires,
         )

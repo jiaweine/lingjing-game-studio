@@ -1,0 +1,35 @@
+name: Integration Contracts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration-contracts:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+      - name: Frozen Kernel GameAdapter contract and durable replay smoke
+        run: |
+          python scripts/game_adapter_conformance.py \
+            --execute-dry-run \
+            --durable-replay-smoke \
+            --require-conformance
+      - name: Memory ingestion multi-worker backlog smoke
+        run: |
+          python scripts/memory_ingestion_load_benchmark.py \
+            --events 40 \
+            --workers 4 \
+            --require-complete
+      - name: Long-horizon model evaluation protocol smoke
+        run: python scripts/long_horizon_model_benchmark.py

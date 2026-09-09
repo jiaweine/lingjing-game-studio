@@ -1,0 +1,6 @@
+# Real held-out media and derived manifests are local/private by default.
+/assets/
+/source_inventory.json
+/workspace.json
+/manifest.json
+/artifacts/

@@ -5,6 +5,7 @@ import os
 import socket
 
 from worldforge.api.app import _fail_product_job, _run_analysis_job, product_store
+from worldforge.context.history_snapshot import history_from_job_payload
 
 
 async def run_worker():
@@ -29,14 +30,22 @@ async def run_worker():
                     )
                 except KeyError:
                     pass
+            history, history_meta = history_from_job_payload(
+                product_store,
+                conversation_id=job["conversation_id"],
+                workspace_id=job["workspace_id"],
+                payload=payload,
+            )
             await _run_analysis_job(
                 conversation_id=job["conversation_id"],
                 workspace_id=job["workspace_id"],
                 text=str(payload.get("text", "")),
                 provider_key=str(payload.get("provider", "auto")),
-                history=list(payload.get("history", [])),
+                history=history,
                 assets=assets,
                 job_id=job["id"],
+                project_context=dict(payload.get("project_context") or {}),
+                history_snapshot_meta=history_meta,
             )
         except Exception as exc:
             await _fail_product_job(job["id"], repr(exc))

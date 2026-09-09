@@ -1,0 +1,50 @@
+name: Multimodal Context Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  multimodal-context-benchmark:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+      - name: Held-out corpus protocol contract
+        run: python scripts/validate_multimodal_corpus.py --protocol-only
+      - name: Lingjing product-asset staging smoke
+        run: python scripts/multimodal_product_asset_export_smoke.py
+      - name: Real-corpus workspace scaffold smoke
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/assets"
+          printf 'fixture-only\n' > "$tmp/assets/note.txt"
+          python scripts/scaffold_multimodal_corpus.py --corpus-root "$tmp" > "$tmp/report.json"
+          python scripts/multimodal_annotation_readiness.py --workspace "$tmp/workspace.json" > "$tmp/readiness.json"
+          python - "$tmp/workspace.json" "$tmp/readiness.json" <<'PY'
+          import json
+          import sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          readiness = json.load(open(sys.argv[2], encoding="utf-8"))
+          assert payload["evidence_class"] == "annotation-in-progress"
+          assert payload["cases"] == []
+          assert payload["heldout_policy"]["development_excluded"] is False
+          assert readiness["evidence_claim"] == "none-annotation-readiness-audit"
+          assert readiness["coverage"]["deficits"]["cases"] == 100
+          assert readiness["coverage"]["ready_for_strict_freeze_attempt"] is False
+          PY
+      - name: All-modal scope and provenance benchmark
+        run: python scripts/multimodal_context_benchmark.py
+      - name: Multimodal quality repeat-aggregation smoke
+        run: python scripts/multimodal_quality_benchmark.py --repeats 2 --require-zero-contamination
+      - name: Multimodal quality matrix rotation smoke
+        run: python scripts/multimodal_quality_matrix.py --repeats 2 --require-zero-contamination
