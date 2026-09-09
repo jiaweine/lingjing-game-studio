@@ -31,6 +31,7 @@ jobs:
             tests/test_memory_ingestion_lease_fencing.py \
             tests/test_product_governance_fencing.py \
             tests/test_game_adapter_stress.py \
+            tests/test_fanout_backpressure.py \
             tests/test_multimodal_corpus_path_containment.py \
             tests/test_local_object_storage_containment.py
       - name: Memory ingestion 1000-event 16-worker stress
