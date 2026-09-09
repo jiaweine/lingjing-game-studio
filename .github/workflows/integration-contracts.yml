@@ -38,7 +38,9 @@ jobs:
             tests/test_multimodal_corpus_path_containment.py \
             tests/test_local_object_storage_containment.py \
             tests/test_asset_upload_rollback.py \
-            tests/test_storage_security.py
+            tests/test_storage_security.py \
+            tests/test_migration_chain.py \
+            tests/test_pending_approval_migration_guard.py
       - name: Memory ingestion 1000-event 16-worker stress
         run: |
           python scripts/memory_ingestion_load_benchmark.py \
