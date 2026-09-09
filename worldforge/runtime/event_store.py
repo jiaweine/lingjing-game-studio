@@ -60,6 +60,18 @@ class EventStore:
                 """
             )
 
+    @staticmethod
+    def _event_from_row(row: sqlite3.Row) -> RuntimeEvent:
+        return RuntimeEvent(
+            session_id=row["session_id"],
+            seq=row["seq"],
+            event_type=row["event_type"],
+            payload=json.loads(row["payload_json"]),
+            ts=row["ts"],
+            hash=row["hash"],
+            prev_hash=row["prev_hash"],
+        )
+
     def create_session(self, session_id: str, *, parent_session_id: str | None = None,
                        parent_seq: int | None = None, meta: dict[str, Any] | None = None) -> None:
         with self._lock, self._conn() as c:
@@ -85,14 +97,28 @@ class EventStore:
         return RuntimeEvent(session_id=session_id, seq=seq, event_type=event_type, payload=payload,
                             ts=ts, hash=digest, prev_hash=prev_hash)
 
+    def latest_seq(self, session_id: str) -> int:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT seq FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        return int(row["seq"]) if row else 0
+
+    def next_event(self, session_id: str, after_seq: int = 0) -> RuntimeEvent | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM events WHERE session_id=? AND seq>? ORDER BY seq LIMIT 1",
+                (session_id, int(after_seq)),
+            ).fetchone()
+        return self._event_from_row(row) if row else None
+
     def list_events(self, session_id: str, after_seq: int = 0) -> list[RuntimeEvent]:
         with self._conn() as c:
             rows = c.execute(
                 "SELECT * FROM events WHERE session_id=? AND seq>? ORDER BY seq", (session_id, after_seq)
             ).fetchall()
-        return [RuntimeEvent(session_id=r["session_id"], seq=r["seq"], event_type=r["event_type"],
-                             payload=json.loads(r["payload_json"]), ts=r["ts"], hash=r["hash"], prev_hash=r["prev_hash"])
-                for r in rows]
+        return [self._event_from_row(row) for row in rows]
 
     def verify_chain(self, session_id: str) -> bool:
         events = self.list_events(session_id)
