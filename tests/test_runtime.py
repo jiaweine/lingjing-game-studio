@@ -196,6 +196,35 @@ def test_engine_completes_and_trace_valid(tmp_path):
     assert "subagent.deliberation" in types
 
 
+def test_engine_checkpoint_cursor_does_not_scan_complete_history(tmp_path, monkeypatch):
+    engine = WorldForgeEngine(tmp_path / "bounded-checkpoint.db")
+    real_list_events = engine.events.list_events
+    history_scans = 0
+
+    def tracked_list_events(*args, **kwargs):
+        nonlocal history_scans
+        history_scans += 1
+        return real_list_events(*args, **kwargs)
+
+    monkeypatch.setattr(engine.events, "list_events", tracked_list_events)
+    summary = asyncio.run(
+        engine.run(
+            RunConfig(
+                scenario_id="boss_burst",
+                seed=9,
+                max_steps=4,
+                rollouts_per_branch=1,
+            ),
+            demo_delay=0,
+        )
+    )
+
+    assert summary.status == "completed"
+    # The one full scan is the intentional end-of-run hash-chain verification.
+    # Checkpoint creation itself must use latest_seq() instead of replaying history.
+    assert history_scans == 1
+
+
 def test_persistent_snapshot_roundtrip(tmp_path):
     store = EventStore(tmp_path / "snap.db")
     store.create_session("s")
