@@ -118,9 +118,16 @@ class RunManager:
         }
 
     async def cancel(self, session_id):
+        # The canonical kernel can persist run.completed before the outer self-evolution task
+        # finishes. Durable terminal state is authoritative: a late operator cancel must not
+        # append run.cancelled after run.completed and rewrite an already-finished run's status.
+        current = self.status(session_id)
+        if current["status"] in {"completed", "failed", "cancelled"}:
+            return current
+
         task = self.tasks.get(session_id)
         if not task:
-            return self.status(session_id)
+            return current
         if task.done():
             return self.status(session_id)
         task.cancel()
