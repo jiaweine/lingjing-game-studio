@@ -43,6 +43,7 @@ class RunManager:
         user_id: str | None = None,
     ) -> str:
         import uuid
+
         session_id = f"wf-{uuid.uuid4().hex[:10]}"
 
         async def sink(event: RuntimeEvent) -> None:
@@ -61,7 +62,9 @@ class RunManager:
                 )
             except Exception as exc:
                 event = self.engine.events.append(
-                    session_id, "run.failed", {"error": repr(exc)}
+                    session_id,
+                    "run.failed",
+                    {"error": repr(exc)},
                 )
                 await sink(event)
                 raise
@@ -72,15 +75,8 @@ class RunManager:
 
     def status(self, session_id):
         task = self.tasks.get(session_id)
-        events = self.engine.events.list_events(session_id)
-        terminal = next(
-            (
-                event
-                for event in reversed(events)
-                if event.event_type in {"run.completed", "run.failed", "run.cancelled"}
-            ),
-            None,
-        )
+        snapshot = self.engine.events.status_snapshot(session_id)
+        terminal = snapshot["terminal_event"]
         summary = None
         if terminal is not None:
             if terminal.event_type == "run.completed":
@@ -92,7 +88,7 @@ class RunManager:
                 status = "cancelled"
         elif task:
             status = "running"
-        elif events:
+        elif snapshot["last_event"] is not None:
             status = "stored"
         else:
             status = "unknown"
@@ -100,8 +96,12 @@ class RunManager:
             "session_id": session_id,
             "status": status,
             "summary": summary,
-            "event_count": len(events),
-            "last_event": events[-1].model_dump() if events else None,
+            "event_count": snapshot["event_count"],
+            "last_event": (
+                snapshot["last_event"].model_dump()
+                if snapshot["last_event"] is not None
+                else None
+            ),
         }
 
     async def cancel(self, session_id):
@@ -112,7 +112,9 @@ class RunManager:
             return self.status(session_id)
         task.cancel()
         event = self.engine.events.append(
-            session_id, "run.cancelled", {"reason": "operator_stop"}
+            session_id,
+            "run.cancelled",
+            {"reason": "operator_stop"},
         )
         self._fanout(session_id, event.model_dump())
         return {"session_id": session_id, "status": "cancelled"}
