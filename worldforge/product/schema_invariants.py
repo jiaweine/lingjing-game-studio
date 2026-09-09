@@ -13,6 +13,11 @@ _registered = False
 def _attach_single_active_job_index(table: Table, _metadata) -> None:
     if table.name != "analysis_jobs":
         return
+    required = {"workspace_id", "conversation_id", "status"}
+    if not required.issubset(table.c.keys()):
+        # Alembic creates transient partial Table objects while emitting ordinary
+        # indexes. Only attach this invariant to the complete application schema.
+        return
     if any(index.name == ACTIVE_JOB_INDEX for index in table.indexes):
         return
     active = table.c.status.in_(("queued", "running"))
