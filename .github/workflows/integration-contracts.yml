@@ -30,6 +30,7 @@ jobs:
           pytest -q \
             tests/test_memory_ingestion_lease_fencing.py \
             tests/test_product_governance_fencing.py \
+            tests/test_feedback_upsert_race.py \
             tests/test_game_adapter_stress.py \
             tests/test_fanout_backpressure.py \
             tests/test_multimodal_corpus_path_containment.py \
