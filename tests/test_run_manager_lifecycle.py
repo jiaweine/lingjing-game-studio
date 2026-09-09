@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from worldforge.api.manager import RunManager
+from worldforge.models import RunConfig
 
 
 def test_run_manager_releases_completed_and_failed_tasks(tmp_path):
@@ -25,6 +26,48 @@ def test_run_manager_releases_completed_and_failed_tasks(tmp_path):
         assert failed.done()
         assert isinstance(failed.exception(), RuntimeError)
         assert "failed-task" not in manager.tasks
+
+    asyncio.run(scenario())
+
+
+def test_run_manager_persists_access_scope_before_scheduled_task_runs(tmp_path, monkeypatch):
+    async def scenario():
+        manager = RunManager(tmp_path / "runs")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_run(*_args, **_kwargs):
+            entered.set()
+            await release.wait()
+
+        monkeypatch.setattr(manager.engine, "run", blocked_run)
+        config = RunConfig(
+            scenario_id="boss_burst",
+            seed=7,
+            max_steps=2,
+            rollouts_per_branch=1,
+        )
+        session_id = await manager.start(
+            config,
+            workspace_id="workspace-immediate",
+            user_id="user-immediate",
+        )
+
+        # start() contains no scheduling yield after create_task(). The durable ACL metadata
+        # must therefore exist before the new task gets its first event-loop turn.
+        assert entered.is_set() is False
+        meta = manager.engine.events.session_meta(session_id)
+        assert meta is not None
+        assert meta["meta"]["workspace_id"] == "workspace-immediate"
+        assert meta["meta"]["user_id"] == "user-immediate"
+        assert meta["meta"]["config"]["scenario_id"] == "boss_burst"
+        assert meta["meta"]["lifecycle"] == "scheduled"
+        assert manager.status(session_id)["status"] == "running"
+
+        task = manager.tasks[session_id]
+        task.cancel()
+        await asyncio.sleep(0)
+        assert session_id not in manager.tasks
 
     asyncio.run(scenario())
 
