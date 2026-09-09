@@ -5,17 +5,23 @@ from collections import defaultdict
 from pathlib import Path
 
 from worldforge.models import RunConfig, RuntimeEvent
+from worldforge.replay_queue import DurableReplayQueue
 from worldforge.runtime import WorldForgeEngine
 
 
 class RunManager:
-    def __init__(self, data_dir: str | Path) -> None:
+    def __init__(self, data_dir: str | Path, *, queue_size: int = 500) -> None:
         data_dir = Path(data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
         self.engine = WorldForgeEngine(data_dir / "worldforge.db")
         self.tasks: dict[str, asyncio.Task] = {}
         self.summaries = {}
-        self.queues = defaultdict(list)
+        self.queues: dict[str, list[DurableReplayQueue]] = defaultdict(list)
+        self.queue_size = max(1, int(queue_size))
+
+    def _fanout(self, session_id: str, payload: dict) -> None:
+        for queue in list(self.queues.get(session_id, [])):
+            queue.offer(payload)
 
     async def start(
         self,
@@ -28,13 +34,7 @@ class RunManager:
         session_id = f"wf-{uuid.uuid4().hex[:10]}"
 
         async def sink(event: RuntimeEvent) -> None:
-            for queue in list(self.queues.get(session_id, [])):
-                try:
-                    queue.put_nowait(event.model_dump())
-                except asyncio.QueueFull:
-                    # Runtime events are durable; a reconnect replays anything a slow
-                    # client could not consume from this bounded live queue.
-                    pass
+            self._fanout(session_id, event.model_dump())
 
         async def execute() -> None:
             try:
@@ -100,18 +100,16 @@ class RunManager:
         event = self.engine.events.append(
             session_id, "run.cancelled", {"reason": "operator_stop"}
         )
-        for queue in list(self.queues.get(session_id, [])):
-            try:
-                queue.put_nowait(event.model_dump())
-            except asyncio.QueueFull:
-                pass
+        self._fanout(session_id, event.model_dump())
         return {"session_id": session_id, "status": "cancelled"}
 
     def subscribe(self, session_id):
-        queue = asyncio.Queue(maxsize=500)
+        queue = DurableReplayQueue(maxsize=self.queue_size)
         self.queues[session_id].append(queue)
         return queue
 
     def unsubscribe(self, session_id, queue):
         if queue in self.queues.get(session_id, []):
             self.queues[session_id].remove(queue)
+        if not self.queues.get(session_id):
+            self.queues.pop(session_id, None)
