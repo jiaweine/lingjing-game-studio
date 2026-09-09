@@ -71,6 +71,17 @@ def test_alembic_upgrade_head_includes_memory_ingestion_and_game_adapter_schema(
     assert bool(active_job_index["unique"])
     assert active_job_index["column_names"] == ["workspace_id", "conversation_id"]
 
+    approval_indexes = {
+        row["name"]: row for row in inspector.get_indexes("approval_requests")
+    }
+    pending_approval_index = approval_indexes["uq_approval_requests_pending_action"]
+    assert bool(pending_approval_index["unique"])
+    assert pending_approval_index["column_names"] == [
+        "workspace_id",
+        "conversation_id",
+        "action",
+    ]
+
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "20260909_0008"
+    assert revision == "20260909_0009"
