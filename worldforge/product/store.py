@@ -154,7 +154,7 @@ class ConversationStore:
             Column("workspace_id", String(64), nullable=True, index=True),
             Column("user_id", String(64), nullable=True),
             Column("request_id", String(64), nullable=False, index=True),
-            Column("action", String(120), nullable=False),
+            Column("action", String(120), nullable=False, index=True),
             Column("resource_type", String(80), nullable=True),
             Column("resource_id", String(96), nullable=True),
             Column("payload", Text, nullable=False, default="{}"),
@@ -347,29 +347,97 @@ class ConversationStore:
     def set_member_role(self, workspace_id: str, user_id: str, role: str) -> dict[str, Any]:
         if role not in {"owner", "admin", "member", "viewer"}:
             raise ValueError("成员角色无效")
-        current = self.get_membership(workspace_id, user_id)
-        if not current:
-            raise KeyError(user_id)
-        if current["role"] == "owner" and role != "owner" and self._owner_count(workspace_id) <= 1:
-            raise ValueError("工作空间必须至少保留一位所有者")
         with self.engine.begin() as connection:
-            connection.execute(update(self.memberships).where(and_(self.memberships.c.workspace_id == workspace_id, self.memberships.c.user_id == user_id)).values(role=role))
+            workspace = connection.execute(
+                select(self.workspaces.c.id)
+                .where(self.workspaces.c.id == workspace_id)
+                .with_for_update()
+            ).first()
+            if not workspace:
+                raise KeyError(workspace_id)
+            row = connection.execute(
+                select(self.memberships).where(
+                    and_(
+                        self.memberships.c.workspace_id == workspace_id,
+                        self.memberships.c.user_id == user_id,
+                    )
+                )
+            ).first()
+            if not row:
+                raise KeyError(user_id)
+            current = self._dict(row)
+            if current["role"] == "owner" and role != "owner":
+                owners = connection.execute(
+                    select(self.memberships.c.user_id).where(
+                        and_(
+                            self.memberships.c.workspace_id == workspace_id,
+                            self.memberships.c.role == "owner",
+                        )
+                    )
+                ).fetchall()
+                if len(owners) <= 1:
+                    raise ValueError("工作空间必须至少保留一位所有者")
+            connection.execute(
+                update(self.memberships)
+                .where(
+                    and_(
+                        self.memberships.c.workspace_id == workspace_id,
+                        self.memberships.c.user_id == user_id,
+                    )
+                )
+                .values(role=role)
+            )
         return self.get_membership(workspace_id, user_id) or {}
 
     def remove_member(self, workspace_id: str, user_id: str) -> None:
-        current = self.get_membership(workspace_id, user_id)
-        if not current:
-            raise KeyError(user_id)
-        if current["role"] == "owner" and self._owner_count(workspace_id) <= 1:
-            raise ValueError("不能移除工作空间最后一位所有者")
         with self.engine.begin() as connection:
-            connection.execute(delete(self.memberships).where(and_(self.memberships.c.workspace_id == workspace_id, self.memberships.c.user_id == user_id)))
-            connection.execute(update(self.conversations).where(and_(self.conversations.c.workspace_id == workspace_id, self.conversations.c.assigned_to == user_id)).values(assigned_to=None, updated_at=time.time()))
-
-    def _owner_count(self, workspace_id: str) -> int:
-        with self.engine.connect() as connection:
-            rows = connection.execute(select(self.memberships.c.user_id).where(and_(self.memberships.c.workspace_id == workspace_id, self.memberships.c.role == "owner"))).fetchall()
-        return len(rows)
+            workspace = connection.execute(
+                select(self.workspaces.c.id)
+                .where(self.workspaces.c.id == workspace_id)
+                .with_for_update()
+            ).first()
+            if not workspace:
+                raise KeyError(workspace_id)
+            row = connection.execute(
+                select(self.memberships).where(
+                    and_(
+                        self.memberships.c.workspace_id == workspace_id,
+                        self.memberships.c.user_id == user_id,
+                    )
+                )
+            ).first()
+            if not row:
+                raise KeyError(user_id)
+            current = self._dict(row)
+            if current["role"] == "owner":
+                owners = connection.execute(
+                    select(self.memberships.c.user_id).where(
+                        and_(
+                            self.memberships.c.workspace_id == workspace_id,
+                            self.memberships.c.role == "owner",
+                        )
+                    )
+                ).fetchall()
+                if len(owners) <= 1:
+                    raise ValueError("不能移除工作空间最后一位所有者")
+            connection.execute(
+                delete(self.memberships).where(
+                    and_(
+                        self.memberships.c.workspace_id == workspace_id,
+                        self.memberships.c.user_id == user_id,
+                    )
+                )
+            )
+            connection.execute(
+                update(self.conversations)
+                .where(
+                    and_(
+                        self.conversations.c.workspace_id == workspace_id,
+                        self.conversations.c.assigned_to == user_id,
+                    )
+                )
+                .values(assigned_to=None, updated_at=time.time())
+            )
 
     def create_invite(self, *, workspace_id: str, created_by: str, email: str | None = None, role: str = "member", ttl_hours: int = 168) -> dict[str, Any]:
         if role not in {"admin", "member", "viewer"}:
@@ -843,16 +911,56 @@ class ConversationStore:
     def resolve_approval(self, approval_id: str, *, workspace_id: str, user_id: str, approved: bool) -> dict[str, Any]:
         now = time.time()
         with self.engine.begin() as connection:
-            row = connection.execute(select(self.approval_requests).where(and_(self.approval_requests.c.id == approval_id, self.approval_requests.c.workspace_id == workspace_id))).first()
+            row = connection.execute(
+                select(self.approval_requests)
+                .where(
+                    and_(
+                        self.approval_requests.c.id == approval_id,
+                        self.approval_requests.c.workspace_id == workspace_id,
+                    )
+                )
+                .with_for_update()
+            ).first()
             if not row:
                 raise KeyError(approval_id)
             approval = self._json_row(row)
             if approval["status"] != "pending":
                 return approval
             status = "approved" if approved else "rejected"
-            connection.execute(update(self.approval_requests).where(and_(self.approval_requests.c.id == approval_id, self.approval_requests.c.status == "pending")).values(status=status, resolved_by=user_id, resolved_at=now))
+            result = connection.execute(
+                update(self.approval_requests)
+                .where(
+                    and_(
+                        self.approval_requests.c.id == approval_id,
+                        self.approval_requests.c.workspace_id == workspace_id,
+                        self.approval_requests.c.status == "pending",
+                    )
+                )
+                .values(status=status, resolved_by=user_id, resolved_at=now)
+            )
+            if result.rowcount != 1:
+                current = connection.execute(
+                    select(self.approval_requests).where(
+                        and_(
+                            self.approval_requests.c.id == approval_id,
+                            self.approval_requests.c.workspace_id == workspace_id,
+                        )
+                    )
+                ).first()
+                if not current:
+                    raise KeyError(approval_id)
+                return self._json_row(current)
             next_status = "waiting_approval" if approved else str((approval.get("payload") or {}).get("previous_status") or "active")
-            connection.execute(update(self.conversations).where(self.conversations.c.id == approval["conversation_id"]).values(status=next_status, updated_at=now))
+            connection.execute(
+                update(self.conversations)
+                .where(
+                    and_(
+                        self.conversations.c.id == approval["conversation_id"],
+                        self.conversations.c.workspace_id == workspace_id,
+                    )
+                )
+                .values(status=next_status, updated_at=now)
+            )
         return self.get_approval(approval_id, workspace_id=workspace_id)
 
     def delete_conversation(
