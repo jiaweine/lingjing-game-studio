@@ -45,6 +45,7 @@ jobs:
             tests/test_run_session_listing.py \
             tests/test_event_store_streaming_verification.py \
             tests/test_event_store_fork_boundaries.py \
+            tests/test_event_store_cross_instance_append.py \
             tests/test_multimodal_corpus_path_containment.py \
             tests/test_local_object_storage_containment.py \
             tests/test_asset_upload_rollback.py \
