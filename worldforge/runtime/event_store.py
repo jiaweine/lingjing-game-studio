@@ -299,14 +299,13 @@ class EventStore:
         self,
         limit: int = 30,
         *,
-        verify_hash_chain: bool = True,
+        verify_hash_chain: bool = False,
     ) -> list[dict[str, Any]]:
-        """List recent session metadata with optional explicit integrity verification.
+        """List recent session metadata without silently claiming integrity verification.
 
-        The default preserves the historical verified-list contract. High-frequency listing
-        endpoints may opt out of O(total trace) verification; such rows are marked unchecked
-        rather than being presented as valid. Event counts use the contiguous maximum sequence
-        and are aggregated in one query instead of one COUNT query per session.
+        Listing is lightweight by default: event counts are derived from contiguous max seq and
+        hash-chain fields are explicitly marked unchecked. Callers that genuinely need integrity
+        evidence must pass ``verify_hash_chain=True`` or call ``verify_chain`` directly.
         """
         with self._conn() as c:
             rows = c.execute(
