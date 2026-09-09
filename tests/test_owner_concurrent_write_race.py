@@ -3,54 +3,9 @@ from __future__ import annotations
 import threading
 import time
 
-from sqlalchemy import insert, select
+from sqlalchemy import event, insert, select
 
 from worldforge.product.store import ConversationStore, DEMO_USER_ID, DEMO_WORKSPACE_ID
-
-
-class _ConnectionProxy:
-    def __init__(self, connection, barrier):
-        self._connection = connection
-        self._barrier = barrier
-        self._paused = False
-
-    def execute(self, statement, *args, **kwargs):
-        if not self._paused and getattr(statement, "is_update", False):
-            table = getattr(statement, "table", None)
-            if getattr(table, "name", None) == "workspaces":
-                self._paused = True
-                # Force both callers to attempt the SQLite write-intent lock together.
-                # Exactly one may pass into the protected owner-count/write section first.
-                self._barrier.wait(timeout=5)
-        return self._connection.execute(statement, *args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._connection, name)
-
-
-class _EngineProxy:
-    def __init__(self, engine, barrier):
-        self._engine = engine
-        self._barrier = barrier
-
-    def begin(self):
-        outer = self
-        context = self._engine.begin()
-
-        class _Context:
-            def __enter__(self):
-                return _ConnectionProxy(context.__enter__(), outer._barrier)
-
-            def __exit__(self, exc_type, exc, tb):
-                return context.__exit__(exc_type, exc, tb)
-
-        return _Context()
-
-    def connect(self):
-        return self._engine.connect()
-
-    def __getattr__(self, name):
-        return getattr(self._engine, name)
 
 
 def test_sqlite_concurrent_owner_demotion_and_removal_preserve_business_contract(tmp_path):
@@ -79,8 +34,21 @@ def test_sqlite_concurrent_owner_demotion_and_removal_preserve_business_contract
         )
 
     barrier = threading.Barrier(2)
-    first.engine = _EngineProxy(first.engine, barrier)
-    second.engine = _EngineProxy(second.engine, barrier)
+
+    def synchronize_write_intent(
+        _connection,
+        _clauseelement,
+        _multiparams,
+        _params,
+        execution_options,
+    ):
+        if execution_options.get("_lingjing_sqlite_write_intent"):
+            # Both callers reach the DB write-intent at the same time. SQLite must serialize
+            # them before either caller is allowed to count owners and mutate membership.
+            barrier.wait(timeout=5)
+
+    event.listen(first.engine, "before_execute", synchronize_write_intent)
+    event.listen(second.engine, "before_execute", synchronize_write_intent)
     outcomes: list[tuple[str, object]] = []
     outcomes_lock = threading.Lock()
 
