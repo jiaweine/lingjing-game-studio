@@ -25,11 +25,17 @@ jobs:
             --execute-dry-run \
             --durable-replay-smoke \
             --require-conformance
-      - name: Memory ingestion multi-worker backlog smoke
+      - name: Concurrency fencing and evidence-boundary regressions
+        run: |
+          pytest -q \
+            tests/test_memory_ingestion_lease_fencing.py \
+            tests/test_game_adapter_stress.py \
+            tests/test_multimodal_corpus_path_containment.py
+      - name: Memory ingestion 1000-event 16-worker stress
         run: |
           python scripts/memory_ingestion_load_benchmark.py \
-            --events 40 \
-            --workers 4 \
+            --events 1000 \
+            --workers 16 \
             --require-complete
       - name: Long-horizon model evaluation protocol smoke
         run: python scripts/long_horizon_model_benchmark.py
