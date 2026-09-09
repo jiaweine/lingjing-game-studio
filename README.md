@@ -162,7 +162,7 @@ flowchart LR
 
 任务开始时固定一个明确 Harness generation；即使其他 worker 在任务期间完成新的 promotion，当前任务也不会中途切换 phenotype。
 
-算法、评估协议与研究背景分别见：
+README 只保留机制概览；算法、评估协议与研究背景分别见：
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md)
