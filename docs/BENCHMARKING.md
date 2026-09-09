@@ -1,19 +1,23 @@
 # Benchmarking
 
-## 1. 目的
+## 1. 目的与证据分层
 
-仓库内 benchmark 用于回答四类不同问题：
+Lingjing 仓库内 benchmark 不是一张“综合性能榜”。不同协议回答不同问题，证据等级不能互相替代：
 
-1. **Runtime / 产品是否仍然可靠**：执行、验证、恢复、权限、队列和产品生命周期有没有回归；
-2. **Harness 是否真的还能自进化**：不是只会生成 candidate，而是能在独立 held-out credit 下晋升新的 generation；
-3. **长期记忆是否正确且可治理**：更新、版本隔离、撤回、未批准提议、队列快照、消息摄取和重启恢复是否满足明确不变量；
-4. **Memory Identity 是否足够安全**：新 proposal 是否能在不错误合并不同实体/属性的前提下，识别可能属于同一个 `memory_key` 的 revision。
+1. **Runtime / 产品回归**：执行、验证、恢复、权限、队列和产品生命周期是否仍可靠；
+2. **Harness 自进化**：search → sealed held-out credit → promotion 是否仍然成立；
+3. **Project Memory correctness**：版本、scope、撤回、proposal、queue snapshot、durable ingestion 等治理不变量是否正确；
+4. **Memory Identity safety**：revision identity suggestion 是否能在 precision-first / 可 abstain 的前提下避免错误合并；
+5. **ContextOS / multimodal correctness**：10k/50k 长历史、文本/图片/视频/音频、scope/provenance 和 contamination gate 是否正确；
+6. **模型 / live retrieval / engine / production-like load 的外部证据**：只有真实 held-out、真实 provider/backend/数据库/游戏引擎环境才能产生，CI smoke 不能替代。
 
-这四类分数不能互相替代。benchmark 是工程验证，不是客户工作台营销榜单。没有 controlled protocol，不声称“性能超过某外部产品”。
+没有 controlled protocol，不声称“性能超过某外部产品”。Synthetic / deterministic 分数只作为 correctness、safety 或 protocol floor。
+
+真实外部实验统一按 [`EXTERNAL_EVIDENCE_RUNBOOK.md`](./EXTERNAL_EVIDENCE_RUNBOOK.md) 执行，先冻结代码、数据、部署身份和证据标签，再讨论任何质量、吞吐、延迟或成本结论。
 
 ## 2. Harness promotion benchmark
 
-永久门禁命令：
+永久门禁：
 
 ```bash
 python scripts/harness_evolution_benchmark.py
@@ -21,27 +25,11 @@ python scripts/harness_evolution_benchmark.py
 
 协议 ID：`sealed-heldout-game-harness-2026-08`。
 
-当前固定实验设置：
+固定设置包括 bootstrap HarnessGenome、population 8、train seeds 11/23、held-out seeds 37/51、branch width / horizon / rollouts 上限 2/2/2，以及 128 次 paired bootstrap。Held-out 不参与 candidate generation、elite selection、refinement、trust-region 或 minimum-effective-edit 搜索。
 
-- 从 bootstrap HarnessGenome 启动；
-- population = 8；
-- train seeds = 11 / 23；
-- held-out seeds = 37 / 51；
-- branch width / horizon / rollouts 评估上限 = 2 / 2 / 2；
-- paired-bootstrap samples = 128；
-- held-out 不参与 candidate generation、elite selection、refinement、trust-region 或 minimum-effective-edit 搜索。
+Promotion 必须同时满足 train objective 正增益、sealed held-out 不回退、**paired-bootstrap LCB** 不为负，以及 quality / safety / efficiency / operations 的冻结门槛。
 
-Promotion 必须同时满足：
-
-- train objective 达到最小正增益；
-- sealed held-out gain 不为负；
-- paired-bootstrap lower bound 不为负；
-- quality 不回退；
-- safety 不回退；
-- efficiency 在冻结容忍范围内；
-- operations 不超过冻结资源上限。
-
-### 当前独立进程的核心 sealed credit
+当前独立进程的核心 sealed credit：
 
 ```text
 train objective gain         +0.004712
@@ -53,15 +41,11 @@ held-out efficiency            0.730917
 held-out operations               23.25
 ```
 
-candidate 数、accepted candidate 数、promoted generation 和具体 winning lineage 属于当前搜索轨迹，会随着 Harness 搜索实现演进；CI workflow 日志是这些运行细节的事实来源，不把它们固定成长期文档常量。
+这只证明 Harness generation / promotion 机制在冻结协议下成立；增益很小，不能据此宣称通用 SOTA。
 
-这组 sealed credit 只证明：从干净进程、bootstrap Genome 出发，搜索器能够产生被 sealed judge 接受的新 Harness。增益很小，因此不能据此宣称通用 SOTA 或大幅性能领先。
+## 3. Held-out 为什么必须 sealed
 
-## 3. 为什么 held-out 必须 sealed
-
-如果搜索器能反复读取 held-out 再继续改 candidate，最终分数只是对测试集的优化，不是独立 credit。
-
-当前流程严格分成：
+搜索器如果在看过 held-out 后继续修改 candidate，分数就不再是独立 credit。当前流程保持：
 
 ```text
 train-only proposal/search
@@ -75,164 +59,204 @@ paired-bootstrap credit
 promotion / rejection
 ```
 
-被 promotion 的 Genome 就是被 held-out 评估的同一个对象；评估之后不会再更新 mutation policy 或其他字段。
+被 promotion 的 Genome 与 held-out 被评估的是同一个冻结对象；评估后不会再回写 mutation policy。
 
-## 4. Game R&D evaluator
+## 4. Lingjing-MemoryBench：长期记忆 correctness floor
 
-Harness benchmark 不把“击败敌人”当作唯一目标。评估同时观察：
-
-- task quality：success / progress / health / environment score；
-- diagnostic coverage：隐藏机制被观察、环境 anomaly / finding 被发现；
-- safety：critical invariant、rollback / replan 风险；
-- efficiency：counterfactual decision operations。
-
-Finding 和 unsafe execution 分开。研发 Harness 发现漏洞应该获得诊断价值，而不是因为出现 anomaly 字样就被当作安全失败。
-
-## 5. Lingjing-MemoryBench：长期记忆 correctness floor
-
-独立命令：
+命令：
 
 ```bash
 python scripts/memory_benchmark.py
 ```
 
-`Lingjing-MemoryBench v1` 当前不调用外部模型，也不使用 LLM judge。它先验证长期记忆的确定性系统语义；如果这些不变量都无法满足，再高的问答准确率也没有产品意义。
+`Lingjing-MemoryBench v1` 不调用外部 LLM judge，先验证系统不变量。目前十个 competency：
 
-当前十个 competency：
-
-| Competency | 必须满足的反例约束 |
+| Competency | 必须满足的约束 |
 |---|---|
-| cross-conversation recall | 在 Conversation A 明确批准的项目记忆，Conversation B 绑定同一 Project 后可以检索 |
-| update tracking | 新 revision 成为 head 后，旧 revision 不得继续出现在正常检索结果中 |
-| scoped version isolation | build 1.4.7 / 2.0.0 的同 key 事实不能互相污染；无版本身份时不能猜一个版本 |
-| conflict abstention | 当前素材给出冲突 build 身份时，只允许 general-scope 记忆，不允许随机选择某个版本事实 |
-| selective forgetting | 撤回一个 memory head 后它必须消失，同时其他无关 active memory 继续可用 |
-| pending memory isolation | pending proposal 不是 truth；人工批准前不能进入 Project Memory 检索 |
-| provenance integrity | proposal 批准后必须保留 `user_confirmed + proposal/message` 来源，批准动作不能改写用户原文再冒充确认 |
-| queued snapshot revocation | 排队时命中的 revision 后来被撤回时，旧 job 必须 invalidated，不能继续用旧正文，也不能自动换新 head |
-| restart persistence | 用同一数据库重新构造全新 Store 后，active Project Memory 必须继续可检索 |
-| ingestion outbox cancellation | user message / analysis job / `message.accepted` 已提交后，即使 analysis job 在 worker 启动前被取消并发生进程重启，也必须 exactly-once 恢复一个 pending proposal；replay 不得重复 |
+| cross-conversation recall | Conversation A 批准的项目记忆，在绑定同一 Project 的 Conversation B 可检索 |
+| update tracking | 新 revision 成为 head 后，旧 revision 不得继续出现在正常检索结果 |
+| scoped version isolation | build / branch scope 不能互相污染；无版本身份时不能猜版本 |
+| conflict abstention | 当前素材 scope 冲突时只能退到合法 general scope，不能随机选版本 |
+| selective forgetting | 撤回一个 head 后它必须消失，其他 active memory 不受影响 |
+| pending memory isolation | pending proposal 在人工批准前不是 Project Memory truth |
+| provenance integrity | 批准后保留 user-confirmed proposal/message 来源，不改写成伪确认 |
+| queued snapshot revocation | queued revision 被撤回后旧 job 必须 invalidated，不能偷偷升级到新 head |
+| restart persistence | 同一数据库重建 Store 后 active Project Memory 继续可检索 |
+| ingestion outbox cancellation | accepted message 即使 analysis job 被取消/删除，durable ingestion 仍 exactly-once 恢复 proposal |
 
-pytest 对这十项要求全部为 `1.0`，总分必须 `1.0`。CI 还会单独运行 `scripts/memory_benchmark.py`，把每个 competency 的机器可读结果留在 workflow 日志中。
+当前 correctness floor 为 **10/10**。这不是 SOTA memory accuracy，只是治理与恢复语义全部满足。
 
-当前独立进程已经通过 **10/10**，包括 `ingestion_outbox_cancellation = 1.0`。这里的 **10/10 只表示 correctness floor 全部满足，不代表 SOTA memory accuracy**。
-
-### Durable ingestion 与 execution 解耦
-
-Project Memory proposal 不再依赖 analysis worker 是否启动：
+Durable ingestion 的权威链：
 
 ```text
 committed user message
-    + analysis job
-    + message.accepted immutable task event
-                  ↓
-       durable ingestion consumer
-       receipt / lease / retry
-                  ↓
-       pending proposal only
-                  ↓
+  + analysis job
+  + immutable message.accepted event (v2 locator)
+              ↓
+    ingestion receipt / lease / retry
+              ↓
+         pending proposal
+              ↓
        explicit human approval
-                  ↓
-       authoritative Project Memory
+              ↓
+      authoritative Project Memory
 ```
 
-关键约束：
+新 v2 outbox locator 不依赖 analysis job row 存活；历史事件仍保留 timestamp fallback。Delivery 由 receipt idempotency 防重，proposal 再用 source fingerprint 做第二层防重。
 
-- `message.accepted` 与 user message / job 在同一数据库事务提交，因此不会出现“消息成功但 ingestion intent 不存在”；
-- analysis job 的 cancel / retry / provider failure 不撤销已经提交的 ingestion intent；
-- receipt 使用 event id 做 delivery 幂等，proposal 自身再使用 source fingerprint 做第二层幂等；
-- stale processing lease 可恢复，failed receipt 有退避；
-- API 启动恢复旧 backlog，空闲期也周期性恢复，因此不依赖下一条用户消息才能继续消费；
-- unbound message 被 terminally ignored，之后不会根据相似文本或后来绑定关系猜一个 Project；
-- ingestion 只能生成 reviewable pending proposal，不能直接写 authoritative memory。
+### Multi-worker load protocol
 
-下一阶段 MemoryBench 会继续增加：
+命令：
 
-- 100+ / 500+ turn 的状态变化与 premise awareness；
-- contradiction / dispute / retract / delete 组合；
-- 多 worker / PostgreSQL 并发与高 backlog 恢复；
-- multimodal provenance 与跨素材时间线；
-- provider-aware token / latency / cost；
-- 模型问答层的 recall、update、abstention 和 workflow-learning accuracy。
+```bash
+python scripts/memory_ingestion_load_benchmark.py --events 40 --workers 4 --require-complete
+```
 
-## 6. Lingjing-IdentityBench：revision identity safety floor
+CI SQLite run 只标为 `sqlite-concurrency-mechanism-smoke`。生产型 PostgreSQL 证据必须使用 disposable database，并显式传 `--confirm-disposable-database`；结果标签为 `postgresql-multiworker-load-measurement`，但仍不是通用生产 SLA。真实执行方式见 external evidence runbook。
 
-独立命令：
+## 5. Lingjing-IdentityBench：revision identity safety floor
+
+命令：
 
 ```bash
 python scripts/memory_identity_benchmark.py
 ```
 
-`Lingjing-IdentityBench v1` 单独验证 proposal → existing `memory_key` 的 identity suggestion。它只评估**建议器**，不允许 benchmark 通过后直接获得 memory 写权限。
+Identity Resolver 只提供 suggestion，仍是 shadow/advisory path；UI 必须先“采用建议 key”，再执行独立 proposal approval。False merge 比 false split 更危险，因此允许 abstain，不为了 recall 强行归链。
 
-当前设计故意把 false merge 看得比 false split 更危险：
+当前 deterministic adversarial corpus 为 **280 cases**：124 positives、156 negatives，覆盖 value/paraphrase 更新、cross-build、cross-branch、predicate/entity collision、ambiguous key、kind mismatch 和 retracted head。
 
-- **false merge**：把本来不同的实体或属性错误归到同一 `memory_key`，会污染 revision chain，因此必须为 `0`；
-- **false split**：本来属于同一 identity 却 abstain / 新建 key，主要增加人工治理成本，风险低于错误合并；
-- **abstention**：是合法安全输出。没有足够证据时宁可不建议，也不为了 recall 强行归链。
-
-当前 deterministic v1 case set 共 10 个 case，独立 workflow 当前结果：
+当前结果：
 
 ```text
-cases                         10
-positive cases                 4
-negative cases                 6
-recommendation precision   1.000
-positive recall             1.000
-false merge rate            0.000
-false split rate            0.000
-abstention rate             0.600
+correct                                  280 / 280
+precision                                1.0
+positive recall                          1.0
+false merge rate                         0.0
+false split rate                         0.0
+abstention rate                          0.557143
+safe coverage at zero false merge        0.442857
+unsafe force-best false merge rate       0.589744
 ```
 
-门槛：
+默认 gate 要求 `false_merge_rate == 0`、precision `== 1.0`、positive recall `>= 0.80`。Force-best comparator 说明“不允许 abstain”会显著放大错误合并风险；这仍然只是 synthetic adversarial safety floor，不是外部 identity SOTA。
 
-- `false_merge_rate == 0`；
-- recommendation precision `== 1.0`；
-- positive recall `>= 0.75`。
+## 6. ContextOS long-horizon correctness
 
-这套 v1 case 覆盖同一属性数值更新、跨 build 同 identity、属性差异、命名实体冲突、候选接近时 abstain、kind mismatch 和 retracted head 排除等安全边界。当前 resolver 只输出 `candidate_memory_keys + scores + reasons + margin`；API 是 read-only shadow path，UI 也不会自动填 key。用户必须先显式“采用建议 key”，再单独执行 proposal 批准。
+独立 Context workflow 包含：
 
-**10/10、precision 1.0 和 false-merge 0 只代表当前 deterministic safety floor，不代表真实项目分布上的 SOTA。** 下一阶段要扩展：
+```bash
+python scripts/context_memory_benchmark.py --messages 5000
+python scripts/context_correctness_benchmark.py
+python scripts/context_adversarial_benchmark.py
+```
 
-- 数百 / 数千个 hard-negative 与 paraphrase case；
-- cooldown / duration / amount / rate 等近邻属性；
-- 同前缀不同实体、别名、跨语言中英混合；
-- build / branch / environment 变化与 stale/disputed/retracted 组合；
-- risk-coverage / abstention calibration；
-- 与强 lexical、embedding、reranker / memory baseline 在相同 budget 下比较。
+Adversarial protocol 真实构造 **10k + 50k dense histories**，检查旧约束、远距离 identifier、状态覆盖、premise safety、缓存/编译边界等机制。ContextCompiler / ContextBudgetBroker 的 deterministic character budget 是 tokenizer-independent compatibility floor；provider-aware token packing/native count 是后续安全层。
 
-只有在这些 controlled protocol 下与强基线比较后，才有资格讨论 game-R&D memory SOTA。
+这些结果证明长上下文控制机制没有退化，不等于最终模型问答质量。
 
-## 7. Runtime / 产品 / deployment 回归
+## 7. 模型级 long-horizon protocol
 
-除了 Harness promotion、MemoryBench 与 IdentityBench，CI 继续运行：
+`lingjing-long-horizon-model-v1` 用同一 provider/model 比较 `baseline_last8` 与 `contextos`：
 
+```bash
+python scripts/long_horizon_model_benchmark.py
+```
+
+无参数只运行 4-case synthetic scorer/packing smoke，标签固定为：
+
+```text
+evidence_class = synthetic-protocol-smoke-not-model-quality-evidence
+quality_claim  = none-protocol-smoke
+```
+
+真实 held-out 最低要求 40 cases，QA/update/abstention/workflow 各至少 10，且至少 30 个 long-range anchor 位于 legacy last-eight 之外。即使完成真实 frozen held-out 自动评测，也只允许 `measured-heldout-anchor-rubric-only`，更广泛的语义质量结论仍要求 blind human adjudication。
+
+详见 [`LONG_HORIZON_MODEL_BENCHMARK.md`](./LONG_HORIZON_MODEL_BENCHMARK.md)。
+
+## 8. Multimodal correctness 与 live quality protocol
+
+CI 的 `Multimodal Context Benchmark` 验证：
+
+- text/image/video/audio 都能进入 bounded context；
+- full-log/text、hierarchical video segment、acoustic window 保留 raw-source provenance；
+- build/branch/commit/environment scope 在发送到 semantic backend **之前** fail-safe 过滤；
+- wrong-build / forbidden asset 不得消耗 multimodal budget，也不能从 sidecar 回流；
+- deterministic smoke 与 live semantic quality 明确分开。
+
+Real `game-rd-mm-v1` corpus 由真实私有素材 + 人工 query/relevance/temporal/scope 标注构建，repository 不内置伪造 held-out 数据。Scaffold/readiness/freeze 工具都不会自动生成 gold labels。
+
+Live single/matrix runner 报告 Recall@K、MRR、temporal IoU/hit rate、contamination、latency、bytes 和 worker-lane proxy；measured label 还要求 immutable deployment identity、warmup、重复 full-corpus runs、每次都看到 semantic backend，以及 **zero contamination**。
+
+详见 [`MULTIMODAL_QUALITY_BENCHMARK.md`](./MULTIMODAL_QUALITY_BENCHMARK.md) 与 external evidence runbook。
+
+## 9. GameAdapter / Integration Contracts
+
+`Integration Contracts` 独立 workflow 运行：
+
+```bash
+python scripts/game_adapter_conformance.py \
+  --execute-dry-run \
+  --durable-replay-smoke \
+  --require-conformance
+
+python scripts/memory_ingestion_load_benchmark.py \
+  --events 40 \
+  --workers 4 \
+  --require-complete
+
+python scripts/long_horizon_model_benchmark.py
+```
+
+GameAdapter ticket 绑定 adapter/action、完整 request semantics 和 scope；消费发生在 dispatch 前。`SqlGameAdapterReplayStore` 配合 Alembic `20260909_0007` 使用 ticket primary key + unique nonce 做跨进程原子 replay protection，store 不可用时 fail-closed。
+
+Synthetic adapter 输出固定保持：
+
+```text
+canonical_write_allowed = false
+verifier_status = not-run
+evidence_class = external-engine-observation-unverified
+```
+
+真实 Unity/Unreal/custom bridge 通过 conformance 也只证明 contract，不等于真实项目验证。详见 [`GAME_ADAPTER_PROTOCOL.md`](./GAME_ADAPTER_PROTOCOL.md)。
+
+## 10. Provider-aware token safety 与校准
+
+Provider path 支持：
+
+- deterministic multilingual/CJK/code-aware estimate；
+- operator-declared context profiles；
+- Gemini model metadata + `models.countTokens`；
+- Claude model metadata + `/v1/messages/count_tokens`；
+- Gemini/Claude metadata cold-start singleflight、success cache 和 negative cache；
+- OpenAI-compatible/custom **仅在 operator 显式提供 count endpoint 且标记 trusted 时**启用 exact count；
+- estimate/exact delta、exact-estimate ratio、native-count extra RTT 和 media accounting telemetry。
+
+Native count 在 `auto` 模式是 selective last-mile verifier，失败 fail-open；只有成功 exact count 明确超 safe input limit 时才阻断 generation。Token-count RTT 不是 generation TTFT，character estimate 也不是 provider billable cost。
+
+## 11. Runtime / 产品 / deployment 回归
+
+主 CI 包含：
+
+- dependency manifest consistency；
 - Python compile；
-- 完整 pytest（包含 MemoryBench / Identity safety / outbox recovery regression）；
-- 从空 SQLite 执行真实 `alembic upgrade head` 的 migration-chain regression，并验证 memory ingestion receipt schema 与 outbox event index；
-- standalone `Memory correctness benchmark`；
-- 独立 `Memory Identity Benchmark` workflow；
-- JavaScript syntax（`app.js` + `memory_panel.js` + `memory_identity_panel.js`）；
+- full pytest；
+- Harness self-evolution benchmark；
+- Memory correctness benchmark；
+- JavaScript syntax；
 - Backend product E2E；
 - Browser product E2E；
-- **Memory governance browser E2E**：显式 Project 绑定、proposal 审批/拒绝、revision/state/history、workspace role 重新授权，以及 identity suggestion 可见 / 不自动填 / 显式采用 / viewer 只读；
-- README / repository consistency；
-- GitHub README 真实浏览器图片加载与产品首页渲染检查。
+- Memory governance browser E2E；
+- README / repository consistency 与 browser visibility；
+- migration-chain regression，升级至 `20260909_0007` 并验证 memory-ingestion 与 GameAdapter replay schema。
 
-其中：
-
-- Browser product E2E 证明主产品交互闭环没有被算法改造破坏；
-- Memory governance browser E2E 证明用户真的可以完成长期记忆治理，并验证 identity suggestion 不会越过人工动作；
-- standalone Harness benchmark 证明 Harness generation 机制在干净进程中仍可成功；
-- MemoryBench 证明项目长期记忆的版本、治理、撤回、持久化和 ingestion cancellation 基本语义没有回归；
-- IdentityBench 证明当前 deterministic case set 下建议器满足 false-merge safety floor；
-- migration-chain regression 证明生产 schema migration 确实包含 proposal / receipt / outbox recovery 所需结构，而不是只依赖 dev/test `create_all`。
+Browser E2E 证明产品交互闭环没有被算法改造破坏；Memory governance E2E 证明 Project binding、proposal approve/reject、revision/state/history、workspace role re-authorization 和 identity suggestion 的显式人工动作都能走通。
 
 这些证据必须分别报告，不能揉成一个“综合性能分”。
 
-## 8. 外部比较规则
+## 12. 外部比较规则
 
-如果与任何 Agent / Harness / workflow / memory 系统比较，至少冻结：
+与任何 Agent / Harness / workflow / memory / retrieval 系统比较，至少冻结：
 
 1. 同一模型 / policy checkpoint；
 2. 同一系统提示与可用上下文；
@@ -246,12 +270,15 @@ abstention rate             0.600
 10. 同一 timeout / retry policy；
 11. 同一评分代码；
 12. 同一 train / held-out 隔离协议；
-13. 对 memory 比较额外冻结相同的 write policy、update policy、retention policy 和删除语义。
+13. 对 memory 比较额外冻结相同 write/update/retention/delete policy；
+14. 对 retrieval 比较额外冻结 corpus digest、deployment identity、warmup/repeat schedule 和 contamination gate。
 
-Pi、DeerFlow、DeepSeek Agent 生态等可以作为 Harness engineering / integration reference，但不能在不同底座、不同预算或不同环境下拿 README 数字直接横向宣称性能领先。
+不同底座、不同预算、不同环境的 README 数字不能直接横向宣称性能领先。
 
-## 9. 产品指标不是 Runtime / Memory Benchmark
+## 13. 产品指标不是 Runtime / Memory Benchmark
 
-产品层另外通过 `product_events` 观察真实任务闭环，例如首次任务完成率、首次交付耗时、中断率、失败率、恢复率、继续执行率、人工介入率、证据打开率、结果采纳率和人工验证反馈率。
+产品层通过 `product_events` 观察真实任务闭环，例如首次任务完成率、首次交付耗时、中断率、失败率、恢复率、继续执行率、人工介入率、证据打开率、结果采纳率和人工验证反馈率。
 
-这些指标回答“产品是否帮助研发任务完成”，不能和 shadow-arena Harness objective、MemoryBench correctness score 或 IdentityBench safety score 混成同一套分数。
+这些指标回答“产品是否帮助研发任务完成”，不能和 Harness objective、MemoryBench correctness、IdentityBench safety、synthetic Context smoke 或 retrieval protocol score 混成同一套分数。
+
+真实 held-out、GPU、PostgreSQL、provider cost/TTFT 或 Unity/Unreal 项目证据尚未提供时，必须明确写“未测”，不能用 CI smoke 补位。
