@@ -18,8 +18,9 @@ class ContextBudgetBroker:
     messages are merged into one bounded Context Kernel Pack so the legacy provider adapter's
     `history[-8:]` cannot silently discard long-range retrieval hits.
 
-    Budgets are character budgets, not pretend token counts. They are deliberately exposed as
-    telemetry until provider-specific tokenizer/context-window metadata is available.
+    Character budgets remain the deterministic compatibility floor and are exposed as
+    telemetry. Provider-aware token packing/counting is a later request-scoped stage, so this
+    broker stays tokenizer-independent instead of pretending character counts are exact tokens.
     """
 
     MODE = "context-budget-broker-v1"
