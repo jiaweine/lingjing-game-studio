@@ -16,6 +16,7 @@ from worldforge.runtime import (
     WorldForgeEngine,
     WorldForgePolicy,
 )
+from worldforge.runtime.engine import WorldForgeEngine as FrozenWorldForgeEngine
 
 
 def test_event_hash_chain(tmp_path):
@@ -196,11 +197,11 @@ def test_engine_completes_and_trace_valid(tmp_path):
     assert "subagent.deliberation" in types
 
 
-def test_engine_checkpoint_cursor_does_not_scan_complete_history(tmp_path, monkeypatch):
-    engine = WorldForgeEngine(tmp_path / "bounded-checkpoint.db")
+def test_frozen_kernel_checkpoint_cursor_does_not_scan_complete_history(tmp_path, monkeypatch):
+    engine = FrozenWorldForgeEngine(tmp_path / "bounded-checkpoint.db")
 
     # End-of-run integrity verification intentionally scans the chain. Stub that independent
-    # contract so any list_events() call left in the checkpoint hot path fails immediately.
+    # contract so any list_events() call left in the frozen checkpoint hot path fails immediately.
     monkeypatch.setattr(engine.events, "verify_chain", lambda _session_id: True)
 
     def forbid_history_scan(*_args, **_kwargs):
