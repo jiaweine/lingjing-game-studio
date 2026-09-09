@@ -9,6 +9,7 @@ from worldforge.benchmarks.multimodal_corpus import (
     resolve_dataset_paths,
     validate_corpus,
 )
+from worldforge.benchmarks.multimodal_workspace import validate_workspace
 
 
 def _dataset(path: str, sha256: str) -> dict:
@@ -60,6 +61,30 @@ def test_parent_traversal_cannot_verify_file_outside_corpus(tmp_path):
     assert any("path must stay inside the corpus root" in row for row in report["errors"])
     with pytest.raises(ValueError, match="corpus-relative"):
         resolve_dataset_paths(dataset, base_dir=corpus)
+
+
+def test_annotation_workspace_rejects_parent_traversal_before_freeze():
+    workspace = {
+        "workspace_version": "1.0",
+        "name": QUALITY_PROTOCOL["name"],
+        "protocol_version": QUALITY_PROTOCOL["protocol_version"],
+        "annotation_guideline_version": QUALITY_PROTOCOL["annotation_guideline_version"],
+        "heldout_policy": {"development_excluded": False},
+        "asset_catalog": [
+            {
+                "id": "asset-1",
+                "path": "../outside.txt",
+                "sha256": "a" * 64,
+                "meta": {"kind": "text"},
+            }
+        ],
+        "cases": [],
+    }
+
+    report = validate_workspace(workspace)
+
+    assert report["structurally_valid"] is False
+    assert any("path must stay inside the corpus root" in row for row in report["errors"])
 
 
 def test_symlink_cannot_escape_corpus_root(tmp_path):
