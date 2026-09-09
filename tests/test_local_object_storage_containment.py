@@ -61,3 +61,27 @@ def test_local_storage_round_trip_uses_same_contained_path(tmp_path):
 
     storage.delete(key)
     assert not path.exists()
+
+
+def test_local_asset_bundle_failure_removes_prior_objects(tmp_path, monkeypatch):
+    root = tmp_path / "objects"
+    storage = LocalObjectStorage(root)
+    source = tmp_path / "source.mp4"
+    frame = tmp_path / "frame.jpg"
+    source.write_bytes(b"video")
+    frame.write_bytes(b"frame")
+    asset_id = "a" * 32
+    source_key = f"workspace/assets/{asset_id}/source.mp4"
+    frame_key = f"workspace/assets/{asset_id}/frames/00.jpg"
+
+    storage.put_file(source_key, source, "video/mp4")
+    assert storage.local_path(source_key).read_bytes() == b"video"
+
+    def fail_copy(_source, _target):
+        raise OSError("injected derivative write failure")
+
+    monkeypatch.setattr("worldforge.storage.shutil.copyfile", fail_copy)
+    with pytest.raises(OSError, match="injected derivative write failure"):
+        storage.put_file(frame_key, frame, "image/jpeg")
+
+    assert not (root / "workspace" / "assets" / asset_id).exists()
