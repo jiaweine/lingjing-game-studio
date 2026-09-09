@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from worldforge.product.store import DEMO_USER_ID, DEMO_WORKSPACE_ID
+from worldforge.storage import ObjectStorage, _asset_bundle_prefix
 
 
 class _Upload:
@@ -20,15 +21,16 @@ class _Upload:
         return self._chunks.pop(0)
 
 
-class _FailingStorage:
+class _FailingStorage(ObjectStorage):
     name = "fake"
 
     def __init__(self) -> None:
         self.put_count = 0
         self.objects: dict[str, bytes] = {}
         self.deleted: list[str] = []
+        self.deleted_prefixes: list[str] = []
 
-    def put_file(self, key, source, _content_type):
+    def _put_file(self, key, source, _content_type):
         self.put_count += 1
         if self.put_count == 2:
             raise RuntimeError("injected frame upload failure")
@@ -38,6 +40,14 @@ class _FailingStorage:
     def delete(self, key):
         self.deleted.append(str(key))
         self.objects.pop(str(key), None)
+
+    def delete_prefix(self, prefix):
+        prefix = str(prefix)
+        self.deleted_prefixes.append(prefix)
+        for key in list(self.objects):
+            if key.startswith(prefix):
+                self.deleted.append(key)
+                self.objects.pop(key, None)
 
 
 @pytest.mark.asyncio
@@ -78,5 +88,17 @@ async def test_asset_upload_rolls_back_source_when_frame_upload_fails(monkeypatc
 
     assert storage.put_count == 2
     assert storage.objects == {}
+    assert len(storage.deleted_prefixes) == 1
+    assert storage.deleted_prefixes[0].startswith(f"{DEMO_WORKSPACE_ID}/assets/")
     assert len(storage.deleted) == 1
     assert storage.deleted[0].endswith("/source.mp4")
+
+
+def test_asset_bundle_prefix_is_strictly_scoped_to_generated_asset_namespace():
+    asset_id = "a" * 32
+    assert _asset_bundle_prefix(
+        f"workspace/assets/{asset_id}/frames/00.jpg"
+    ) == f"workspace/assets/{asset_id}/"
+    assert _asset_bundle_prefix("workspace/assets/not-a-generated-id/source.bin") is None
+    assert _asset_bundle_prefix(f"workspace/exports/{asset_id}/source.bin") is None
+    assert _asset_bundle_prefix(f"/workspace/assets/{asset_id}/source.bin") is None
