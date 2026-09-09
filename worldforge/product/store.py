@@ -154,7 +154,7 @@ class ConversationStore:
             Column("workspace_id", String(64), nullable=True, index=True),
             Column("user_id", String(64), nullable=True),
             Column("request_id", String(64), nullable=False, index=True),
-            Column("action", String(120), nullable=False, index=True),
+            Column("action", String(120), nullable=False),
             Column("resource_type", String(80), nullable=True),
             Column("resource_id", String(96), nullable=True),
             Column("payload", Text, nullable=False, default="{}"),
@@ -1054,12 +1054,31 @@ class ConversationStore:
             raise ValueError("只能评价任务交付结果")
         now = time.time()
         values = {"verdict": verdict, "evidence_useful": None if evidence_useful is None else int(evidence_useful), "human_verified": int(human_verified), "note": note.strip()[:2000], "updated_at": now}
+        predicate = and_(
+            self.result_feedback.c.message_id == message_id,
+            self.result_feedback.c.user_id == user_id,
+        )
         with self.engine.begin() as connection:
-            existing = connection.execute(select(self.result_feedback.c.message_id).where(and_(self.result_feedback.c.message_id == message_id, self.result_feedback.c.user_id == user_id))).first()
-            if existing:
-                connection.execute(update(self.result_feedback).where(and_(self.result_feedback.c.message_id == message_id, self.result_feedback.c.user_id == user_id)).values(**values))
-            else:
-                connection.execute(insert(self.result_feedback).values(message_id=message_id, user_id=user_id, workspace_id=workspace_id, conversation_id=message["conversation_id"], created_at=now, **values))
+            result = connection.execute(
+                update(self.result_feedback).where(predicate).values(**values)
+            )
+            if result.rowcount == 0:
+                try:
+                    with connection.begin_nested():
+                        connection.execute(
+                            insert(self.result_feedback).values(
+                                message_id=message_id,
+                                user_id=user_id,
+                                workspace_id=workspace_id,
+                                conversation_id=message["conversation_id"],
+                                created_at=now,
+                                **values,
+                            )
+                        )
+                except IntegrityError:
+                    connection.execute(
+                        update(self.result_feedback).where(predicate).values(**values)
+                    )
         feedback = self.get_feedback(message_id, user_id=user_id, workspace_id=workspace_id) or {}
         gate = self.feedback_gate(message["conversation_id"], workspace_id=workspace_id)
         if gate.get("message_id") == message_id:
