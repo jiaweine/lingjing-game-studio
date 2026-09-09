@@ -243,8 +243,8 @@ def validate_workspace(workspace: dict[str, Any]) -> dict[str, Any]:
         asset_ids.add(asset_id)
         if not path:
             errors.append(f"{prefix}: missing path")
-        elif Path(path).is_absolute():
-            errors.append(f"{prefix}: path must be corpus-relative")
+        elif Path(path).is_absolute() or ".." in Path(path).parts:
+            errors.append(f"{prefix}: path must stay inside the corpus root")
         elif path in paths:
             errors.append(f"{prefix}: duplicate path {path!r}")
         paths.add(path)
