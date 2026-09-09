@@ -40,6 +40,7 @@ jobs:
             tests/test_fanout_backpressure.py \
             tests/test_run_stream_backpressure.py \
             tests/test_run_manager_lifecycle.py \
+            tests/test_run_manager_terminal_authority.py \
             tests/test_runtime.py \
             tests/test_self_evolving_trace_summary.py \
             tests/test_run_session_listing.py \
