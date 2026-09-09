@@ -108,6 +108,61 @@ def test_run_manager_status_is_reconstructed_from_durable_terminal_events(tmp_pa
     assert manager.tasks == {}
 
 
+def test_late_cancel_cannot_overwrite_persisted_completed_status(tmp_path):
+    async def scenario():
+        manager = RunManager(tmp_path / "runs")
+        session_id = "wf-completed-before-wrapper-finished"
+        manager.engine.events.create_session(session_id)
+        manager.engine.events.append(session_id, "run.started", {})
+        manager.engine.events.append(
+            session_id,
+            "run.completed",
+            {"summary": {"status": "completed", "score": 42.0}},
+        )
+
+        release = asyncio.Event()
+        task = asyncio.create_task(release.wait())
+        manager._track_task(session_id, task)
+
+        result = await manager.cancel(session_id)
+        assert result["status"] == "completed"
+        assert result["summary"] == {"status": "completed", "score": 42.0}
+        assert task.cancelled() is False
+        assert task.done() is False
+        assert [
+            event.event_type
+            for event in manager.engine.events.list_events(session_id)
+        ] == ["run.started", "run.completed"]
+
+        release.set()
+        await task
+        await asyncio.sleep(0)
+        assert session_id not in manager.tasks
+
+    asyncio.run(scenario())
+
+
+def test_nonterminal_cancel_persists_single_cancel_event(tmp_path):
+    async def scenario():
+        manager = RunManager(tmp_path / "runs")
+        session_id = "wf-active-cancel"
+        manager.engine.events.create_session(session_id)
+        manager.engine.events.append(session_id, "run.started", {})
+
+        release = asyncio.Event()
+        task = asyncio.create_task(release.wait())
+        manager._track_task(session_id, task)
+
+        result = await manager.cancel(session_id)
+        assert result["status"] == "cancelled"
+        await asyncio.gather(task, return_exceptions=True)
+        events = manager.engine.events.list_events(session_id)
+        assert [event.event_type for event in events] == ["run.started", "run.cancelled"]
+        assert manager.status(session_id)["status"] == "cancelled"
+
+    asyncio.run(scenario())
+
+
 def test_run_manager_status_never_loads_complete_event_history(tmp_path, monkeypatch):
     manager = RunManager(tmp_path / "runs")
     session_id = "wf-bounded-status"
