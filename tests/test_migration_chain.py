@@ -6,11 +6,14 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
+from worldforge.product.schema_invariants import install_product_schema_invariants
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_alembic_upgrade_head_includes_memory_ingestion_and_game_adapter_schema(tmp_path):
+    install_product_schema_invariants()
     database = tmp_path / "migration-chain.db"
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
