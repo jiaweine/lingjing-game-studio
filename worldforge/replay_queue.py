@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Generic, TypeVar
+from typing import Callable, Generic, TypeVar
 
 
 T = TypeVar("T")
@@ -12,17 +12,40 @@ class ReplayRequired(RuntimeError):
 
 
 class DurableReplayQueue(asyncio.Queue[T], Generic[T]):
-    """Bounded live-delivery queue that never hides overflow by dropping items.
+    """Bounded live queue that never hides overflow by silently dropping items.
 
-    ``offer`` marks the subscription stale when the queue is full. Consumers then receive
-    ``ReplayRequired`` instead of an apparently continuous stream, so the owner can recover
-    from its durable cursor. The queue intentionally does not decide whether recovery means
-    reconnecting the socket or replaying in place.
+    Without a durable replay callback, overflow raises ``ReplayRequired`` and the stream owner
+    must reconnect/replay from its own cursor. With ``replay_next`` + ``sequence_of``, the queue
+    can recover in place: stale buffered live items are discarded, durable events are returned
+    one at a time after the last delivered cursor, and normal live delivery resumes only after
+    durable storage reports that the gap is closed.
     """
 
-    def __init__(self, *, maxsize: int) -> None:
+    def __init__(
+        self,
+        *,
+        maxsize: int,
+        initial_cursor: int = 0,
+        replay_next: Callable[[int], T | None] | None = None,
+        sequence_of: Callable[[T], int] | None = None,
+    ) -> None:
         super().__init__(maxsize=max(1, int(maxsize)))
         self.overflowed = False
+        self.cursor = int(initial_cursor)
+        self._replay_next = replay_next
+        self._sequence_of = sequence_of
+        self._discarded_overflow_buffer = False
+
+    def _advance_cursor(self, item: T) -> None:
+        if self._sequence_of is not None:
+            self.cursor = max(self.cursor, int(self._sequence_of(item)))
+
+    def _discard_live_buffer(self) -> None:
+        while True:
+            try:
+                super().get_nowait()
+            except asyncio.QueueEmpty:
+                return
 
     def offer(self, item: T) -> bool:
         if self.overflowed:
@@ -31,13 +54,30 @@ class DurableReplayQueue(asyncio.Queue[T], Generic[T]):
             self.put_nowait(item)
         except asyncio.QueueFull:
             self.overflowed = True
+            self._discarded_overflow_buffer = False
             return False
         return True
 
     async def get(self) -> T:
         if self.overflowed:
-            raise ReplayRequired("bounded live stream overflowed")
+            if self._replay_next is None or self._sequence_of is None:
+                raise ReplayRequired("bounded live stream overflowed")
+            if not self._discarded_overflow_buffer:
+                self._discard_live_buffer()
+                self._discarded_overflow_buffer = True
+            replayed = self._replay_next(self.cursor)
+            if replayed is not None:
+                self._advance_cursor(replayed)
+                return replayed
+            self.overflowed = False
+            self._discarded_overflow_buffer = False
+
         item = await super().get()
         if self.overflowed:
-            raise ReplayRequired("bounded live stream overflowed")
+            # Overflow can happen after the await wakes but before this consumer resumes. Never
+            # expose that item as contiguous; the next call must recover from the durable cursor.
+            if self._replay_next is None or self._sequence_of is None:
+                raise ReplayRequired("bounded live stream overflowed")
+            return await self.get()
+        self._advance_cursor(item)
         return item
