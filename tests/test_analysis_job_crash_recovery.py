@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import update
 
+import worldforge.product.job_recovery as job_recovery
 from worldforge.product.job_recovery import (
     RECOVERY_REASON,
     fail_stale_running_jobs,
@@ -107,6 +108,49 @@ def test_recovery_does_not_clobber_job_completed_before_apply(tmp_path):
     assert store.get_conversation(
         conversation["id"], workspace_id=DEMO_WORKSPACE_ID
     )["status"] == "review"
+
+
+def test_recovery_snapshot_cannot_fail_a_newer_retry_attempt(tmp_path, monkeypatch):
+    store, _conversation, job = _running_job(tmp_path)
+    stale_snapshot = list_stale_running_jobs(
+        store,
+        stale_after_seconds=300,
+        now=1000.0,
+    )[0]
+    assert stale_snapshot["attempts"] == 1
+    assert stale_snapshot["worker_id"] == "worker-a"
+
+    queued = store.fail_job(job["id"], "attempt one failed", max_attempts=3)
+    assert queued is not None
+    assert queued["status"] == "queued"
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(store.jobs)
+            .where(store.jobs.c.id == job["id"])
+            .values(available_at=0.0)
+        )
+    second = store.claim_job("worker-b", job_id=job["id"])
+    assert second is not None
+    assert second["status"] == "running"
+    assert second["attempts"] == 2
+    assert second["worker_id"] == "worker-b"
+
+    # Simulate applying the stale scan snapshot after a newer attempt has started.
+    monkeypatch.setattr(
+        job_recovery,
+        "list_stale_running_jobs",
+        lambda *_args, **_kwargs: [stale_snapshot],
+    )
+    changed = fail_stale_running_jobs(
+        store,
+        stale_after_seconds=300,
+        now=1000.0,
+    )
+    assert changed == []
+    current = store.get_job(job["id"], workspace_id=DEMO_WORKSPACE_ID)
+    assert current["status"] == "running"
+    assert current["attempts"] == 2
+    assert current["worker_id"] == "worker-b"
 
 
 def test_recovery_scope_filter_does_not_cross_workspaces(tmp_path):
