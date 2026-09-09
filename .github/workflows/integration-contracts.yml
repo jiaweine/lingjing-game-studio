@@ -42,6 +42,7 @@ jobs:
             tests/test_run_manager_lifecycle.py \
             tests/test_runtime.py \
             tests/test_self_evolving_trace_summary.py \
+            tests/test_run_session_listing.py \
             tests/test_multimodal_corpus_path_containment.py \
             tests/test_local_object_storage_containment.py \
             tests/test_asset_upload_rollback.py \
