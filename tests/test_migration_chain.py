@@ -65,7 +65,7 @@ def test_alembic_upgrade_head_includes_memory_ingestion_and_game_adapter_schema(
 
     job_indexes = {row["name"]: row for row in inspector.get_indexes("analysis_jobs")}
     active_job_index = job_indexes["uq_analysis_jobs_active_conversation"]
-    assert active_job_index["unique"] is True
+    assert bool(active_job_index["unique"])
     assert active_job_index["column_names"] == ["workspace_id", "conversation_id"]
 
     with engine.connect() as connection:
