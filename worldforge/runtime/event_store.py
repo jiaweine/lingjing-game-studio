@@ -377,21 +377,48 @@ class EventStore:
         new_session_id: str,
         meta: dict[str, Any] | None = None,
     ) -> None:
+        at_seq = int(at_seq)
+        if source_session_id == new_session_id:
+            raise ValueError("fork target must differ from source session")
+
+        source_latest = self.latest_seq(source_session_id)
+        source_exists = (
+            self.session_meta(source_session_id) is not None or source_latest > 0
+        )
+        if not source_exists:
+            raise KeyError(f"unknown source session: {source_session_id}")
+        if at_seq < 0 or at_seq > source_latest:
+            raise ValueError(
+                f"fork seq {at_seq} outside source history 0..{source_latest}"
+            )
+
+        target_exists = (
+            self.session_meta(new_session_id) is not None
+            or self.latest_seq(new_session_id) > 0
+        )
+        if target_exists:
+            raise ValueError(f"fork target already exists: {new_session_id}")
+
         self.create_session(
             new_session_id,
             parent_session_id=source_session_id,
             parent_seq=at_seq,
             meta=meta,
         )
-        for event in self.list_events(source_session_id):
-            if event.seq > at_seq:
-                break
-            self.append(
-                new_session_id,
-                event.event_type,
-                {
-                    **event.payload,
-                    "_forked_from": source_session_id,
-                    "_source_seq": event.seq,
-                },
+        with self._conn() as c:
+            cursor = c.execute(
+                "SELECT * FROM events "
+                "WHERE session_id=? AND seq<=? ORDER BY seq",
+                (source_session_id, at_seq),
             )
+            for row in cursor:
+                event = self._event_from_row(row)
+                self.append(
+                    new_session_id,
+                    event.event_type,
+                    {
+                        **event.payload,
+                        "_forked_from": source_session_id,
+                        "_source_seq": event.seq,
+                    },
+                )
