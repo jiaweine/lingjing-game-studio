@@ -104,7 +104,19 @@ class RunManager:
         return {"session_id": session_id, "status": "cancelled"}
 
     def subscribe(self, session_id):
-        queue = DurableReplayQueue(maxsize=self.queue_size)
+        existing = self.engine.events.list_events(session_id)
+        initial_cursor = int(existing[-1].seq) if existing else 0
+
+        def replay_next(after_seq: int):
+            rows = self.engine.events.list_events(session_id, after_seq)
+            return rows[0].model_dump() if rows else None
+
+        queue = DurableReplayQueue(
+            maxsize=self.queue_size,
+            initial_cursor=initial_cursor,
+            replay_next=replay_next,
+            sequence_of=lambda payload: int(payload.get("seq") or 0),
+        )
         self.queues[session_id].append(queue)
         return queue
 
