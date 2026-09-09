@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
-import base64
 import pickle
 import sqlite3
 import threading
@@ -72,30 +72,70 @@ class EventStore:
             prev_hash=row["prev_hash"],
         )
 
-    def create_session(self, session_id: str, *, parent_session_id: str | None = None,
-                       parent_seq: int | None = None, meta: dict[str, Any] | None = None) -> None:
+    def create_session(
+        self,
+        session_id: str,
+        *,
+        parent_session_id: str | None = None,
+        parent_seq: int | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
         with self._lock, self._conn() as c:
             c.execute(
                 "INSERT OR REPLACE INTO sessions(session_id,parent_session_id,parent_seq,created_at,meta_json) VALUES(?,?,?,?,?)",
-                (session_id, parent_session_id, parent_seq, time.time(), json.dumps(meta or {}, ensure_ascii=False)),
+                (
+                    session_id,
+                    parent_session_id,
+                    parent_seq,
+                    time.time(),
+                    json.dumps(meta or {}, ensure_ascii=False),
+                ),
             )
 
-    def append(self, session_id: str, event_type: str, payload: dict[str, Any]) -> RuntimeEvent:
+    def append(
+        self,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> RuntimeEvent:
         with self._lock, self._conn() as c:
             row = c.execute(
-                "SELECT seq, hash FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1", (session_id,)
+                "SELECT seq, hash FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1",
+                (session_id,),
             ).fetchone()
             seq = int(row["seq"]) + 1 if row else 1
             prev_hash = row["hash"] if row else "GENESIS"
             ts = time.time()
-            payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            digest = hashlib.sha256(f"{session_id}|{seq}|{event_type}|{payload_json}|{ts:.6f}|{prev_hash}".encode()).hexdigest()
+            payload_json = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            digest = hashlib.sha256(
+                f"{session_id}|{seq}|{event_type}|{payload_json}|{ts:.6f}|{prev_hash}".encode()
+            ).hexdigest()
             c.execute(
                 "INSERT INTO events(session_id,seq,event_type,payload_json,ts,prev_hash,hash) VALUES(?,?,?,?,?,?,?)",
-                (session_id, seq, event_type, payload_json, ts, prev_hash, digest),
+                (
+                    session_id,
+                    seq,
+                    event_type,
+                    payload_json,
+                    ts,
+                    prev_hash,
+                    digest,
+                ),
             )
-        return RuntimeEvent(session_id=session_id, seq=seq, event_type=event_type, payload=payload,
-                            ts=ts, hash=digest, prev_hash=prev_hash)
+        return RuntimeEvent(
+            session_id=session_id,
+            seq=seq,
+            event_type=event_type,
+            payload=payload,
+            ts=ts,
+            hash=digest,
+            prev_hash=prev_hash,
+        )
 
     def latest_seq(self, session_id: str) -> int:
         with self._conn() as c:
@@ -105,7 +145,11 @@ class EventStore:
             ).fetchone()
         return int(row["seq"]) if row else 0
 
-    def next_event(self, session_id: str, after_seq: int = 0) -> RuntimeEvent | None:
+    def next_event(
+        self,
+        session_id: str,
+        after_seq: int = 0,
+    ) -> RuntimeEvent | None:
         with self._conn() as c:
             row = c.execute(
                 "SELECT * FROM events WHERE session_id=? AND seq>? ORDER BY seq LIMIT 1",
@@ -113,10 +157,42 @@ class EventStore:
             ).fetchone()
         return self._event_from_row(row) if row else None
 
-    def list_events(self, session_id: str, after_seq: int = 0) -> list[RuntimeEvent]:
+    def status_snapshot(self, session_id: str) -> dict[str, Any]:
+        """Read the bounded durable state needed by RunManager.status().
+
+        Event ``seq`` values are append-only and contiguous within a session, so the latest
+        sequence is also the durable event count. Status polling therefore needs only two
+        ``LIMIT 1`` lookups instead of loading or counting the complete run history.
+        """
+        terminal_types = ("run.completed", "run.failed", "run.cancelled")
+        with self._conn() as c:
+            last_row = c.execute(
+                "SELECT * FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            terminal_row = c.execute(
+                "SELECT * FROM events "
+                "WHERE session_id=? AND event_type IN (?,?,?) "
+                "ORDER BY seq DESC LIMIT 1",
+                (session_id, *terminal_types),
+            ).fetchone()
+        last_event = self._event_from_row(last_row) if last_row else None
+        terminal_event = self._event_from_row(terminal_row) if terminal_row else None
+        return {
+            "event_count": int(last_event.seq) if last_event else 0,
+            "last_event": last_event,
+            "terminal_event": terminal_event,
+        }
+
+    def list_events(
+        self,
+        session_id: str,
+        after_seq: int = 0,
+    ) -> list[RuntimeEvent]:
         with self._conn() as c:
             rows = c.execute(
-                "SELECT * FROM events WHERE session_id=? AND seq>? ORDER BY seq", (session_id, after_seq)
+                "SELECT * FROM events WHERE session_id=? AND seq>? ORDER BY seq",
+                (session_id, after_seq),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
@@ -126,21 +202,44 @@ class EventStore:
         for e in events:
             if e.prev_hash != prev:
                 return False
-            payload_json = json.dumps(e.payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            digest = hashlib.sha256(f"{e.session_id}|{e.seq}|{e.event_type}|{payload_json}|{e.ts:.6f}|{e.prev_hash}".encode()).hexdigest()
+            payload_json = json.dumps(
+                e.payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            digest = hashlib.sha256(
+                f"{e.session_id}|{e.seq}|{e.event_type}|{payload_json}|{e.ts:.6f}|{e.prev_hash}".encode()
+            ).hexdigest()
             if digest != e.hash:
                 return False
             prev = e.hash
         return True
 
-    def save_snapshot(self, session_id: str, seq: int, snapshot: dict[str, Any]) -> None:
+    def save_snapshot(
+        self,
+        session_id: str,
+        seq: int,
+        snapshot: dict[str, Any],
+    ) -> None:
         with self._lock, self._conn() as c:
             c.execute(
                 "INSERT OR REPLACE INTO snapshots(session_id,seq,snapshot_json,created_at) VALUES(?,?,?,?)",
-                (session_id, seq, base64.b85encode(pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL)).decode("ascii"), time.time()),
+                (
+                    session_id,
+                    seq,
+                    base64.b85encode(
+                        pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL)
+                    ).decode("ascii"),
+                    time.time(),
+                ),
             )
 
-    def get_snapshot(self, session_id: str, seq: int | None = None) -> dict[str, Any] | None:
+    def get_snapshot(
+        self,
+        session_id: str,
+        seq: int | None = None,
+    ) -> dict[str, Any] | None:
         q = "SELECT snapshot_json FROM snapshots WHERE session_id=?"
         params: list[Any] = [session_id]
         if seq is not None:
@@ -149,7 +248,11 @@ class EventStore:
         q += " ORDER BY seq DESC LIMIT 1"
         with self._conn() as c:
             r = c.execute(q, params).fetchone()
-        return pickle.loads(base64.b85decode(r["snapshot_json"].encode("ascii"))) if r else None
+        return (
+            pickle.loads(base64.b85decode(r["snapshot_json"].encode("ascii")))
+            if r
+            else None
+        )
 
     def list_sessions(self, limit: int = 30) -> list[dict[str, Any]]:
         with self._conn() as c:
@@ -161,17 +264,22 @@ class EventStore:
         for r in rows:
             count = 0
             with self._conn() as c:
-                cr = c.execute("SELECT COUNT(*) AS n FROM events WHERE session_id=?", (r["session_id"],)).fetchone()
+                cr = c.execute(
+                    "SELECT COUNT(*) AS n FROM events WHERE session_id=?",
+                    (r["session_id"],),
+                ).fetchone()
                 count = int(cr["n"]) if cr else 0
-            out.append({
-                "session_id": r["session_id"],
-                "parent_session_id": r["parent_session_id"],
-                "parent_seq": r["parent_seq"],
-                "created_at": r["created_at"],
-                "meta": json.loads(r["meta_json"] or "{}"),
-                "event_count": count,
-                "hash_chain_valid": self.verify_chain(r["session_id"]),
-            })
+            out.append(
+                {
+                    "session_id": r["session_id"],
+                    "parent_session_id": r["parent_session_id"],
+                    "parent_seq": r["parent_seq"],
+                    "created_at": r["created_at"],
+                    "meta": json.loads(r["meta_json"] or "{}"),
+                    "event_count": count,
+                    "hash_chain_valid": self.verify_chain(r["session_id"]),
+                }
+            )
         return out
 
     def session_meta(self, session_id: str) -> dict[str, Any] | None:
@@ -190,9 +298,28 @@ class EventStore:
             "meta": json.loads(r["meta_json"] or "{}"),
         }
 
-    def fork(self, source_session_id: str, at_seq: int, new_session_id: str, meta: dict[str, Any] | None = None) -> None:
-        self.create_session(new_session_id, parent_session_id=source_session_id, parent_seq=at_seq, meta=meta)
+    def fork(
+        self,
+        source_session_id: str,
+        at_seq: int,
+        new_session_id: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        self.create_session(
+            new_session_id,
+            parent_session_id=source_session_id,
+            parent_seq=at_seq,
+            meta=meta,
+        )
         for event in self.list_events(source_session_id):
             if event.seq > at_seq:
                 break
-            self.append(new_session_id, event.event_type, {**event.payload, "_forked_from": source_session_id, "_source_seq": event.seq})
+            self.append(
+                new_session_id,
+                event.event_type,
+                {
+                    **event.payload,
+                    "_forked_from": source_session_id,
+                    "_source_seq": event.seq,
+                },
+            )
