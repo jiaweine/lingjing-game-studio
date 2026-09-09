@@ -99,6 +99,10 @@ class EventStore:
         payload: dict[str, Any],
     ) -> RuntimeEvent:
         with self._lock, self._conn() as c:
+            # Sequence allocation and insert must share one cross-connection write transaction.
+            # A process-local lock cannot prevent two EventStore instances from otherwise
+            # reading the same latest seq and racing on the same (session_id, seq) key.
+            c.execute("BEGIN IMMEDIATE")
             row = c.execute(
                 "SELECT seq, hash FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1",
                 (session_id,),
