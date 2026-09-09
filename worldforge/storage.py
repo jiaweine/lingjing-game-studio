@@ -42,8 +42,18 @@ class LocalObjectStorage(ObjectStorage):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def _path(self, key) -> Path:
+        raw = str(key or "")
+        if not raw or "\x00" in raw:
+            raise ValueError("invalid object key")
+        root = self.root.resolve()
+        path = (root / raw).resolve()
+        if path == root or root not in path.parents:
+            raise ValueError("invalid object key")
+        return path
+
     def put_bytes(self, key, data, content_type):
-        path = self.root / key
+        path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return key
@@ -51,23 +61,19 @@ class LocalObjectStorage(ObjectStorage):
     def put_file(self, key, source, content_type):
         import shutil
 
-        path = self.root / key
+        path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, path)
         return key
 
     def local_path(self, key):
-        path = (self.root / key).resolve()
-        root = self.root.resolve()
-        if root not in path.parents and path != root:
-            raise ValueError("invalid object key")
-        return path
+        return self._path(key)
 
     def get_bytes(self, key):
-        return self.local_path(key).read_bytes()
+        return self._path(key).read_bytes()
 
     def delete(self, key):
-        path = self.local_path(key)
+        path = self._path(key)
         path.unlink(missing_ok=True)
         current = path.parent
         root = self.root.resolve()
@@ -79,7 +85,7 @@ class LocalObjectStorage(ObjectStorage):
             current = current.parent
 
     def healthcheck(self):
-        path = self.root / ".healthcheck"
+        path = self._path(".healthcheck")
         path.write_text("ok")
         path.unlink(missing_ok=True)
         return True
