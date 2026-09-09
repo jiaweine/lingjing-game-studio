@@ -74,10 +74,25 @@ class RunManager:
                     session_meta=session_scope,
                 )
             except Exception as exc:
+                # A canonical run can already be terminal while outer post-processing (for
+                # example harness evolution) is still executing. Durable terminal history is
+                # authoritative: never append a second terminal event that rewrites that fact.
+                snapshot = self.engine.events.status_snapshot(session_id)
+                terminal = snapshot["terminal_event"]
+                if terminal is None:
+                    event_type = "run.failed"
+                    payload = {"error": repr(exc)}
+                else:
+                    event_type = "run.postprocess_failed"
+                    payload = {
+                        "error": repr(exc),
+                        "terminal_event": terminal.event_type,
+                        "terminal_seq": terminal.seq,
+                    }
                 event = self.engine.events.append(
                     session_id,
-                    "run.failed",
-                    {"error": repr(exc)},
+                    event_type,
+                    payload,
                 )
                 await sink(event)
                 raise
