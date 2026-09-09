@@ -157,6 +157,47 @@ class EventStore:
             ).fetchone()
         return self._event_from_row(row) if row else None
 
+    def latest_event_of_type(
+        self,
+        session_id: str,
+        event_type: str,
+    ) -> RuntimeEvent | None:
+        """Return one indexed event without materializing unrelated trace payloads."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM events "
+                "WHERE session_id=? AND event_type=? "
+                "ORDER BY seq DESC LIMIT 1",
+                (session_id, str(event_type)),
+            ).fetchone()
+        return self._event_from_row(row) if row else None
+
+    def payload_value_counts(
+        self,
+        session_id: str,
+        event_type: str,
+        payload_key: str,
+    ) -> dict[str, int]:
+        """Count one payload field across one indexed event type.
+
+        Only matching ``payload_json`` values are read and decoded. This keeps trace-summary
+        consumers from loading large planner/counterfactual/checkpoint payloads they never use.
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT payload_json FROM events "
+                "WHERE session_id=? AND event_type=? ORDER BY seq",
+                (session_id, str(event_type)),
+            ).fetchall()
+        counts: dict[str, int] = {}
+        for row in rows:
+            value = json.loads(row["payload_json"]).get(payload_key)
+            if value is None:
+                continue
+            key = str(value)
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
     def status_snapshot(self, session_id: str) -> dict[str, Any]:
         """Read the bounded durable state needed by RunManager.status().
 
