@@ -228,13 +228,20 @@ class MemoryIngestionConsumer:
         self,
         event_id: int,
         *,
+        worker_id: str,
         status: str,
         message_id: str | None,
         project_id: str | None,
         proposal_count: int = 0,
         error: str = "",
         attempts: int = 1,
-    ) -> None:
+    ) -> bool:
+        """Finish only the exact claim that this worker still owns.
+
+        ``attempts`` is a monotonic fencing token. If the lease expired and another worker
+        reclaimed the receipt, the stale worker cannot regress the newer receipt state even if
+        its slow extraction/network call returns later.
+        """
         now = time.time()
         if status not in {"completed", "ignored", "failed"}:
             raise ValueError(f"invalid ingestion receipt status: {status}")
@@ -246,9 +253,16 @@ class MemoryIngestionConsumer:
             available_at = now
             completed_at = now
         with self.engine.begin() as connection:
-            connection.execute(
+            result = connection.execute(
                 update(self.receipts)
-                .where(self.receipts.c.event_id == int(event_id))
+                .where(
+                    and_(
+                        self.receipts.c.event_id == int(event_id),
+                        self.receipts.c.status == "processing",
+                        self.receipts.c.worker_id == str(worker_id)[:96],
+                        self.receipts.c.attempts == int(attempts),
+                    )
+                )
                 .values(
                     message_id=(message_id or None),
                     project_id=(project_id or None),
@@ -260,6 +274,7 @@ class MemoryIngestionConsumer:
                     updated_at=now,
                 )
             )
+        return bool(result.rowcount)
 
     def _authoritative_message(
         self,
@@ -421,33 +436,54 @@ class MemoryIngestionConsumer:
         event_id = int(event["id"])
         message_id: str | None = None
         project_id: str | None = None
+
+        def finish(
+            *,
+            status: str,
+            message_id: str | None,
+            project_id: str | None,
+            proposal_count: int = 0,
+            error: str = "",
+        ) -> bool:
+            return self._finish(
+                event_id,
+                worker_id=worker,
+                status=status,
+                message_id=message_id,
+                project_id=project_id,
+                proposal_count=proposal_count,
+                error=error,
+                attempts=attempts,
+            )
+
+        def result_after_finish(status: str, proposal_count: int, committed: bool) -> dict[str, Any]:
+            if not committed:
+                return {"claimed": True, "status": "lease-lost", "proposal_count": 0}
+            return {"claimed": True, "status": status, "proposal_count": proposal_count}
+
         try:
             try:
                 message_id, content, actor_id, project_id, scope = self._source_for_event(event)
             except RuntimeError as exc:
                 if str(exc) != "unbound-message":
                     raise
-                self._finish(
-                    event_id,
+                committed = finish(
                     status="ignored",
                     message_id=str(self._payload(event.get("payload")).get("message_id") or "") or None,
                     project_id=None,
                     error="conversation was not bound to a project at message commit",
-                    attempts=attempts,
                 )
-                return {"claimed": True, "status": "ignored", "proposal_count": 0}
+                return result_after_finish("ignored", 0, committed)
             except (KeyError, PermissionError, ValueError) as exc:
                 # Deleted/revoked/invalid authoritative sources are intentionally not retried:
                 # ingestion must never resurrect a source the product no longer authorizes.
-                self._finish(
-                    event_id,
+                committed = finish(
                     status="ignored",
                     message_id=str(self._payload(event.get("payload")).get("message_id") or "") or None,
                     project_id=project_id,
                     error=repr(exc),
-                    attempts=attempts,
                 )
-                return {"claimed": True, "status": "ignored", "proposal_count": 0}
+                return result_after_finish("ignored", 0, committed)
 
             proposals = self.consolidator.propose_user_message(
                 workspace_id=str(event.get("workspace_id") or ""),
@@ -459,42 +495,36 @@ class MemoryIngestionConsumer:
                 scope=scope,
             )
             proposal_count = sum(1 for row in proposals if row.get("status") == "pending")
-            self._finish(
-                event_id,
+            committed = finish(
                 status="completed",
                 message_id=message_id,
                 project_id=project_id,
                 proposal_count=proposal_count,
-                attempts=attempts,
             )
-            return {
-                "claimed": True,
-                "status": "completed",
-                "proposal_count": proposal_count,
-            }
+            return result_after_finish("completed", proposal_count, committed)
         except (LookupError, MemoryConflict) as exc:
-            self._finish(
-                event_id,
+            committed = finish(
                 status="failed",
                 message_id=message_id,
                 project_id=project_id,
                 error=repr(exc),
-                attempts=attempts,
             )
+            if not committed:
+                return result_after_finish("failed", 0, False)
             logger.warning(
                 "memory ingestion deferred",
                 extra={"event_id": event_id, "attempts": attempts, "error": repr(exc)},
             )
             return {"claimed": True, "status": "failed", "proposal_count": 0}
         except Exception as exc:
-            self._finish(
-                event_id,
+            committed = finish(
                 status="failed",
                 message_id=message_id,
                 project_id=project_id,
                 error=repr(exc),
-                attempts=attempts,
             )
+            if not committed:
+                return result_after_finish("failed", 0, False)
             logger.exception(
                 "memory ingestion failed",
                 extra={"event_id": event_id, "attempts": attempts},

@@ -44,21 +44,37 @@ def canonical_corpus_digest(dataset: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _resolve_corpus_relative_path(raw: str, *, base_dir: Path) -> Path:
+    """Resolve one manifest path while enforcing the corpus-root containment boundary."""
+    path = Path(str(raw or "").strip())
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError("asset path must be corpus-relative and may not escape corpus root")
+    root = Path(base_dir).resolve()
+    resolved = (root / path).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        # ``resolve`` follows any existing symlink components, so this also rejects a corpus
+        # symlink that points outside the frozen root.
+        raise ValueError("asset path resolves outside corpus root") from exc
+    return resolved
+
+
 def resolve_dataset_paths(
     dataset: dict[str, Any],
     *,
     base_dir: Path,
 ) -> dict[str, Any]:
-    """Resolve corpus-relative asset paths for runtime without changing the frozen manifest."""
+    """Resolve safe corpus-relative paths without changing the frozen manifest in place."""
     payload = copy.deepcopy(dict(dataset or {}))
     for case in list(payload.get("cases") or []):
         for asset in list(case.get("assets") or []):
             raw = str(asset.get("path") or "").strip()
             if not raw:
                 continue
-            path = Path(raw)
-            if not path.is_absolute():
-                asset["path"] = str((base_dir / path).resolve())
+            asset["path"] = str(
+                _resolve_corpus_relative_path(raw, base_dir=Path(base_dir))
+            )
     return payload
 
 
@@ -206,21 +222,30 @@ def validate_corpus(
                 asset_fingerprints[asset_id] = raw_sha
 
             raw_path = str(asset.get("path") or "").strip()
+            materialized: Path | None = None
             if not raw_path:
                 blockers.append(f"{asset_prefix}: missing corpus-relative path")
-            elif Path(raw_path).is_absolute():
-                blockers.append(
-                    f"{asset_prefix}: path must be corpus-relative for a frozen manifest"
+            elif Path(raw_path).is_absolute() or ".." in Path(raw_path).parts:
+                errors.append(
+                    f"{asset_prefix}: path must stay inside the corpus root"
                 )
+            elif base_dir is not None:
+                try:
+                    materialized = _resolve_corpus_relative_path(
+                        raw_path,
+                        base_dir=Path(base_dir),
+                    )
+                except ValueError:
+                    errors.append(
+                        f"{asset_prefix}: path resolves outside the corpus root"
+                    )
 
             if verify_files and raw_path and raw_sha:
                 if base_dir is None:
                     errors.append(
                         f"{asset_prefix}: base_dir is required when verify_files=True"
                     )
-                else:
-                    path = Path(raw_path)
-                    materialized = path if path.is_absolute() else base_dir / path
+                elif materialized is not None:
                     key = (str(materialized), raw_sha)
                     if key not in verified_files:
                         if not materialized.is_file():
@@ -235,6 +260,8 @@ def validate_corpus(
                         errors.append(
                             f"{asset_prefix}: file missing or sha256 mismatch for {raw_path!r}"
                         )
+                else:
+                    file_hash_failures += 1
 
         relevant = [dict(row or {}) for row in list(case.get("relevant") or [])]
         if not relevant:

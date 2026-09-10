@@ -17,19 +17,47 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-      - name: Install application dependencies
-        run: pip install -r requirements.txt
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
       - name: Frozen Kernel GameAdapter contract and durable replay smoke
         run: |
           python scripts/game_adapter_conformance.py \
             --execute-dry-run \
             --durable-replay-smoke \
             --require-conformance
-      - name: Memory ingestion multi-worker backlog smoke
+      - name: Concurrency fencing and evidence-boundary regressions
+        run: |
+          pytest -q \
+            tests/test_memory_ingestion_lease_fencing.py \
+            tests/test_product_governance_fencing.py \
+            tests/test_owner_concurrent_write_race.py \
+            tests/test_feedback_upsert_race.py \
+            tests/test_single_active_job_race.py \
+            tests/test_approval_creation_race.py \
+            tests/test_analysis_job_crash_recovery.py \
+            tests/test_analysis_job_recovery_cli.py \
+            tests/test_game_adapter_stress.py \
+            tests/test_fanout_backpressure.py \
+            tests/test_run_stream_backpressure.py \
+            tests/test_run_manager_lifecycle.py \
+            tests/test_run_manager_terminal_authority.py \
+            tests/test_runtime.py \
+            tests/test_self_evolving_trace_summary.py \
+            tests/test_run_session_listing.py \
+            tests/test_event_store_streaming_verification.py \
+            tests/test_event_store_fork_boundaries.py \
+            tests/test_event_store_cross_instance_append.py \
+            tests/test_multimodal_corpus_path_containment.py \
+            tests/test_local_object_storage_containment.py \
+            tests/test_asset_upload_rollback.py \
+            tests/test_storage_security.py \
+            tests/test_migration_chain.py \
+            tests/test_pending_approval_migration_guard.py
+      - name: Memory ingestion 1000-event 16-worker stress
         run: |
           python scripts/memory_ingestion_load_benchmark.py \
-            --events 40 \
-            --workers 4 \
+            --events 1000 \
+            --workers 16 \
             --require-complete
       - name: Long-horizon model evaluation protocol smoke
         run: python scripts/long_horizon_model_benchmark.py

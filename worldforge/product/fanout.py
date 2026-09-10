@@ -9,8 +9,12 @@ from collections import defaultdict
 from sqlalchemy import func, select
 
 from worldforge.context.memory_ingestion import MemoryIngestionConsumer
+from worldforge.replay_queue import DurableReplayQueue, ReplayRequired
 
 logger = logging.getLogger("worldforge.product.fanout")
+
+# Backward-compatible name for callers/tests that already treat overflow as a RuntimeError.
+FanoutQueueOverflow = ReplayRequired
 
 
 class TaskEventFanoutHub:
@@ -19,6 +23,10 @@ class TaskEventFanoutHub:
     ``message.accepted`` is also the durable memory-ingestion outbox. The hub already owns
     the always-on task-event cursor, so it opportunistically drains that independent consumer
     without tying proposal extraction to the analysis-job lifecycle.
+
+    Subscriber queues are intentionally bounded. If one client falls behind far enough to
+    overflow its queue, that subscription fails closed instead of silently dropping durable
+    events. The WebSocket reconnect path resumes with ``after_id`` and replays from the store.
     """
 
     def __init__(
@@ -35,7 +43,7 @@ class TaskEventFanoutHub:
         self.poll_interval = poll_interval
         self.batch_size = batch_size
         self.queue_size = queue_size
-        self.subscribers: dict[str, set[asyncio.Queue]] = defaultdict(set)
+        self.subscribers: dict[str, set[DurableReplayQueue]] = defaultdict(set)
         self._task: asyncio.Task | None = None
         self._cursor = 0
         self.poll_count = 0
@@ -67,8 +75,8 @@ class TaskEventFanoutHub:
             pass
         self._task = None
 
-    def subscribe(self, conversation_id: str) -> asyncio.Queue:
-        queue = asyncio.Queue(maxsize=self.queue_size)
+    def subscribe(self, conversation_id: str) -> DurableReplayQueue:
+        queue = DurableReplayQueue(maxsize=self.queue_size)
         self.subscribers[conversation_id].add(queue)
         return queue
 
@@ -102,6 +110,11 @@ class TaskEventFanoutHub:
             data["payload"] = json.loads(data.get("payload") or "{}")
             events.append(data)
         return events
+
+    def _fanout_event(self, event: dict) -> None:
+        conversation_id = str(event["conversation_id"])
+        for queue in tuple(self.subscribers.get(conversation_id, ())):
+            queue.offer(event)
 
     async def _drain_memory_ingestion(self, *, max_batches: int) -> None:
         if self.memory_ingestion is None:
@@ -147,16 +160,6 @@ class TaskEventFanoutHub:
 
             for event in events:
                 self._cursor = max(self._cursor, int(event["id"]))
-                conversation_id = str(event["conversation_id"])
-                for queue in tuple(self.subscribers.get(conversation_id, ())):
-                    if queue.full():
-                        try:
-                            queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
-                    try:
-                        queue.put_nowait(event)
-                    except asyncio.QueueFull:
-                        pass
+                self._fanout_event(event)
             if len(events) >= self.batch_size:
                 await asyncio.sleep(0)

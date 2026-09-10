@@ -177,9 +177,15 @@ def run_load_protocol(
             connection.execute(delete(product.jobs).where(product.jobs.c.id == job["id"]))
     setup_seconds = time.perf_counter() - setup_started
 
+    # Model external workers as independent processes: each worker gets its own
+    # ConversationStore/SQLAlchemy engine while all engines point at the same disposable DB.
+    # Sharing one default QueuePool across 16 synthetic workers artificially caps checkout at
+    # 15 connections (pool_size=5 + max_overflow=10) and can turn SQLite write contention into
+    # a pool timeout before the ingestion protocol itself is exercised.
+    worker_products = [_store(database_url, root) for _ in range(workers)]
     consumers = [
-        MemoryIngestionConsumer(product, auto_create_schema=True, lease_seconds=30.0)
-        for _ in range(workers)
+        MemoryIngestionConsumer(worker_product, auto_create_schema=True, lease_seconds=30.0)
+        for worker_product in worker_products
     ]
     load_started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -240,6 +246,7 @@ def run_load_protocol(
         ),
         "events": events,
         "workers": workers,
+        "worker_engine_topology": "one-engine-per-worker",
         "setup_seconds": round(setup_seconds, 6),
         "ingestion_seconds": round(load_seconds, 6),
         "throughput_events_per_second": round(events / max(load_seconds, 1e-9), 3),
@@ -268,6 +275,9 @@ def run_load_protocol(
             conversation_id=conversation["id"],
             project_id=project["id"],
         )
+    for worker_product in worker_products:
+        worker_product.engine.dispose()
+    product.engine.dispose()
     temp.cleanup()
     return result
 

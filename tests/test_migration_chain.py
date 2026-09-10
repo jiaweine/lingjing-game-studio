@@ -6,11 +6,14 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
+from worldforge.product.schema_invariants import install_product_schema_invariants
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_alembic_upgrade_head_includes_memory_ingestion_and_game_adapter_schema(tmp_path):
+    install_product_schema_invariants()
     database = tmp_path / "migration-chain.db"
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
@@ -63,6 +66,22 @@ def test_alembic_upgrade_head_includes_memory_ingestion_and_game_adapter_schema(
     }
     assert "uq_game_adapter_ticket_replays_nonce" in replay_unique_constraints
 
+    job_indexes = {row["name"]: row for row in inspector.get_indexes("analysis_jobs")}
+    active_job_index = job_indexes["uq_analysis_jobs_active_conversation"]
+    assert bool(active_job_index["unique"])
+    assert active_job_index["column_names"] == ["workspace_id", "conversation_id"]
+
+    approval_indexes = {
+        row["name"]: row for row in inspector.get_indexes("approval_requests")
+    }
+    pending_approval_index = approval_indexes["uq_approval_requests_pending_action"]
+    assert bool(pending_approval_index["unique"])
+    assert pending_approval_index["column_names"] == [
+        "workspace_id",
+        "conversation_id",
+        "action",
+    ]
+
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "20260909_0007"
+    assert revision == "20260909_0009"

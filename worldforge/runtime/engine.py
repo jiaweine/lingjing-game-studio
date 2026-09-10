@@ -213,8 +213,7 @@ class WorldForgeEngine:
 
             decision_started = time.perf_counter()
             checkpoint = env.snapshot()
-            events = self.events.list_events(session_id)
-            checkpoint_seq = events[-1].seq if events else 0
+            checkpoint_seq = self.events.latest_seq(session_id)
             self.events.save_snapshot(session_id, checkpoint_seq, checkpoint)
             await self._emit(session_id, "checkpoint.created", {
                 "tick": state.tick,

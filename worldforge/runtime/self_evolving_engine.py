@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
 from pathlib import Path
 
 from worldforge.envs import get_scenario
@@ -79,15 +78,7 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
                 return summary
 
             session_id = summary.session_id
-            events = self.events.list_events(session_id)
-            completed = next(
-                (
-                    event
-                    for event in reversed(events)
-                    if event.event_type == "run.completed"
-                ),
-                None,
-            )
+            completed = self.events.latest_event_of_type(session_id, "run.completed")
             if completed is None:
                 return summary
 
@@ -96,12 +87,11 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
                 return summary
             state = WorldState.model_validate(final_state_payload)
             findings = list(completed.payload.get("findings") or [])
-            action_counts: Counter[str] = Counter()
-            for event in events:
-                if event.event_type == "action.executed":
-                    action = event.payload.get("action")
-                    if action:
-                        action_counts[action] += 1
+            action_counts = self.events.payload_value_counts(
+                session_id,
+                "action.executed",
+                "action",
+            )
 
             should_evolve = bool(
                 summary.outcome != "victory"
@@ -123,7 +113,7 @@ class SelfEvolvingWorldForgeEngine(FrozenWorldForgeEngine):
                 outcome=summary.outcome,
                 anomalies=findings,
                 invalid_actions=summary.invalid_actions,
-                action_counts=dict(action_counts),
+                action_counts=action_counts,
             )
 
         await self._emit(
