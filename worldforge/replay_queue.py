@@ -50,6 +50,19 @@ class DurableReplayQueue(asyncio.Queue[T], Generic[T]):
     def offer(self, item: T) -> bool:
         if self.overflowed:
             return False
+        if self._sequence_of is not None:
+            sequence = int(self._sequence_of(item))
+            if sequence <= self.cursor:
+                # Duplicate/stale live delivery is already durable history the subscriber has
+                # consumed. Ignore it rather than exposing the same event twice.
+                return False
+            if self.cursor > 0 and sequence > self.cursor + 1:
+                # A producer observed a durable sequence gap (for example an external worker
+                # appended between subscribe's cursor snapshot and live registration). Enter the
+                # same fail-closed replay state used for bounded queue overflow.
+                self.overflowed = True
+                self._discarded_overflow_buffer = False
+                return False
         try:
             self.put_nowait(item)
         except asyncio.QueueFull:
