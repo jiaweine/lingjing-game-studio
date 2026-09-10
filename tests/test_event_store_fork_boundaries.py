@@ -84,3 +84,32 @@ def test_fork_allows_genesis_of_known_empty_source(tmp_path):
     assert target["parent_seq"] == 0
     assert store.latest_seq("empty-target") == 0
     assert store.verify_chain("empty-target") is True
+
+
+def test_fork_rolls_back_target_if_prefix_copy_fails(tmp_path, monkeypatch):
+    path = tmp_path / "fork-atomic.db"
+    store = EventStore(path)
+    store.create_session("source")
+    for index in range(3):
+        store.append("source", "world.state", {"tick": index})
+
+    original = store._append_in_connection
+    calls = 0
+
+    def fail_on_second_copy(c, session_id, event_type, payload):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("synthetic fork copy failure")
+        return original(c, session_id, event_type, payload)
+
+    monkeypatch.setattr(store, "_append_in_connection", fail_on_second_copy)
+
+    with pytest.raises(RuntimeError, match="synthetic fork copy failure"):
+        store.fork("source", 3, "target")
+
+    reader = EventStore(path)
+    assert reader.session_meta("target") is None
+    assert reader.latest_seq("target") == 0
+    assert reader.list_events("source")
+    assert reader.verify_chain("source") is True
