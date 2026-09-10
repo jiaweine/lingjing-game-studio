@@ -255,6 +255,12 @@ class EventStore:
         prev = "GENESIS"
         expected_seq = 1
         with self._conn() as c:
+            session = c.execute(
+                "SELECT 1 FROM sessions WHERE session_id=? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if session is None:
+                return False
             cursor = c.execute(
                 "SELECT session_id,seq,event_type,payload_json,ts,prev_hash,hash "
                 "FROM events WHERE session_id=? ORDER BY seq",
