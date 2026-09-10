@@ -27,16 +27,17 @@ def test_run_manager_recovers_overflowed_live_queue_from_durable_events(tmp_path
         assert [row["payload"]["step"] for row in recovered] == [1, 2, 3]
         assert queue.cursor == emitted[-1].seq
 
-        # One more durable event arrives after recovery catches up. Calling get must first
-        # observe that durable replay is complete, then resume ordinary live delivery.
+        # A final get closes the durable replay gap before returning to the live queue. Start it
+        # first so the producer can deliver the next event only after replay reports no backlog.
         async def emit_after_replay_check():
             await asyncio.sleep(0)
             event = manager.engine.events.append(session_id, "progress", {"step": 4})
             manager._fanout(session_id, event.model_dump())
             return event
 
+        waiter = asyncio.create_task(queue.get())
         emitter = asyncio.create_task(emit_after_replay_check())
-        live = await asyncio.wait_for(queue.get(), timeout=2)
+        live = await asyncio.wait_for(waiter, timeout=2)
         fourth = await emitter
         assert live["seq"] == fourth.seq
         assert live["payload"]["step"] == 4
@@ -86,10 +87,13 @@ def test_replay_queue_detects_sequence_gap_and_replays_missing_events():
         assert await queue.get() == durable[2]
         assert await queue.get() == durable[3]
         assert queue.cursor == 3
-        assert queue.overflowed is False
 
+        # The replay state is cleared only when the next get confirms there is no durable gap.
+        waiter = asyncio.create_task(queue.get())
+        await asyncio.sleep(0)
+        assert queue.overflowed is False
         assert queue.offer({"seq": 4, "payload": {"step": 4}}) is True
-        assert await queue.get() == {"seq": 4, "payload": {"step": 4}}
+        assert await waiter == {"seq": 4, "payload": {"step": 4}}
 
     asyncio.run(scenario())
 
