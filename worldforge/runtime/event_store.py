@@ -80,11 +80,17 @@ class EventStore:
         payload: dict[str, Any],
     ) -> RuntimeEvent:
         row = c.execute(
-            "SELECT seq, hash FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1",
+            "SELECT e.seq, e.hash "
+            "FROM sessions AS s "
+            "LEFT JOIN events AS e ON e.session_id=s.session_id "
+            "WHERE s.session_id=? "
+            "ORDER BY e.seq DESC LIMIT 1",
             (session_id,),
         ).fetchone()
-        seq = int(row["seq"]) + 1 if row else 1
-        prev_hash = row["hash"] if row else "GENESIS"
+        if row is None:
+            raise KeyError(f"unknown session: {session_id}")
+        seq = int(row["seq"]) + 1 if row["seq"] is not None else 1
+        prev_hash = row["hash"] if row["hash"] is not None else "GENESIS"
         ts = time.time()
         payload_json = json.dumps(
             payload,
