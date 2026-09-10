@@ -113,3 +113,13 @@ def test_fork_rolls_back_target_if_prefix_copy_fails(tmp_path, monkeypatch):
     assert reader.latest_seq("target") == 0
     assert reader.list_events("source")
     assert reader.verify_chain("source") is True
+
+
+def test_append_rejects_unknown_session(tmp_path):
+    store = EventStore(tmp_path / "orphan-event.db")
+
+    with pytest.raises(KeyError, match="unknown session"):
+        store.append("missing", "run.started", {})
+
+    assert store.latest_seq("missing") == 0
+    assert store.verify_chain("missing") is False
