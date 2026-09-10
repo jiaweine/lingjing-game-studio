@@ -58,3 +58,12 @@ def test_verify_chain_detects_sequence_gap(tmp_path):
         )
 
     assert store.verify_chain(session_id) is False
+
+
+def test_verify_chain_rejects_unknown_session(tmp_path):
+    store = EventStore(tmp_path / "unknown-chain.db")
+
+    assert store.verify_chain("does-not-exist") is False
+
+    store.create_session("known-empty")
+    assert store.verify_chain("known-empty") is True
