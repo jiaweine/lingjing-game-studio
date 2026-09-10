@@ -218,14 +218,15 @@ class EventStore:
         return counts
 
     def status_snapshot(self, session_id: str) -> dict[str, Any]:
-        """Read the bounded durable state needed by RunManager.status().
+        """Read a transactionally consistent, bounded durable status snapshot.
 
         Event ``seq`` values are append-only and contiguous within a session, so the latest
-        sequence is also the durable event count. Status polling therefore needs only two
-        ``LIMIT 1`` lookups instead of loading or counting the complete run history.
+        sequence is also the durable event count. Both status lookups share one read transaction
+        so a concurrent terminal append cannot produce a mixed-time last/terminal pair.
         """
         terminal_types = ("run.completed", "run.failed", "run.cancelled")
         with self._conn() as c:
+            c.execute("BEGIN")
             last_row = c.execute(
                 "SELECT * FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1",
                 (session_id,),
