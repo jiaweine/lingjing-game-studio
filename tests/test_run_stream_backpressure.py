@@ -61,3 +61,51 @@ def test_replay_queue_without_durable_callback_fails_closed_on_overflow():
         raise AssertionError("overflow without durable replay must require external replay")
 
     asyncio.run(scenario())
+
+
+def test_replay_queue_detects_sequence_gap_and_replays_missing_events():
+    async def scenario():
+        durable = {
+            2: {"seq": 2, "payload": {"step": 2}},
+            3: {"seq": 3, "payload": {"step": 3}},
+        }
+
+        def replay_next(after_seq: int):
+            return durable.get(after_seq + 1)
+
+        queue = DurableReplayQueue(
+            maxsize=2,
+            initial_cursor=1,
+            replay_next=replay_next,
+            sequence_of=lambda row: int(row["seq"]),
+        )
+
+        # Seq 2 never reached this live queue. Seeing seq 3 must not silently deliver a gap.
+        assert queue.offer({"seq": 3, "payload": {"step": 3}}) is False
+        assert queue.overflowed is True
+        assert await queue.get() == durable[2]
+        assert await queue.get() == durable[3]
+        assert queue.cursor == 3
+        assert queue.overflowed is False
+
+        assert queue.offer({"seq": 4, "payload": {"step": 4}}) is True
+        assert await queue.get() == {"seq": 4, "payload": {"step": 4}}
+
+    asyncio.run(scenario())
+
+
+def test_replay_queue_ignores_duplicate_live_sequence():
+    async def scenario():
+        queue = DurableReplayQueue(
+            maxsize=2,
+            initial_cursor=4,
+            replay_next=lambda _after: None,
+            sequence_of=lambda row: int(row["seq"]),
+        )
+
+        assert queue.offer({"seq": 4, "payload": {"step": 4}}) is False
+        assert queue.qsize() == 0
+        assert queue.offer({"seq": 5, "payload": {"step": 5}}) is True
+        assert await queue.get() == {"seq": 5, "payload": {"step": 5}}
+
+    asyncio.run(scenario())
