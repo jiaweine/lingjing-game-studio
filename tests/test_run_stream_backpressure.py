@@ -10,6 +10,7 @@ def test_run_manager_recovers_overflowed_live_queue_from_durable_events(tmp_path
     async def scenario():
         manager = RunManager(tmp_path / "runs", queue_size=2)
         session_id = "wf-overflow-test"
+        manager.engine.events.create_session(session_id)
         baseline = manager.engine.events.append(session_id, "run.started", {"step": 0})
         queue = manager.subscribe(session_id)
         assert queue.cursor == baseline.seq
