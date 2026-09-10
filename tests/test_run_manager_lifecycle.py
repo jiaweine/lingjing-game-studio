@@ -77,6 +77,7 @@ def test_run_manager_status_is_reconstructed_from_durable_terminal_events(tmp_pa
     manager = RunManager(tmp_path / "runs")
 
     completed_id = "wf-completed"
+    manager.engine.events.create_session(completed_id)
     manager.engine.events.append(completed_id, "run.started", {})
     manager.engine.events.append(
         completed_id,
@@ -88,6 +89,7 @@ def test_run_manager_status_is_reconstructed_from_durable_terminal_events(tmp_pa
     assert completed["summary"] == {"status": "completed", "score": 12.5}
 
     failed_id = "wf-failed"
+    manager.engine.events.create_session(failed_id)
     manager.engine.events.append(failed_id, "run.started", {})
     manager.engine.events.append(failed_id, "run.failed", {"error": "boom"})
     failed = manager.status(failed_id)
@@ -95,6 +97,7 @@ def test_run_manager_status_is_reconstructed_from_durable_terminal_events(tmp_pa
     assert failed["summary"] is None
 
     cancelled_id = "wf-cancelled"
+    manager.engine.events.create_session(cancelled_id)
     manager.engine.events.append(cancelled_id, "run.started", {})
     manager.engine.events.append(
         cancelled_id,
@@ -167,6 +170,7 @@ def test_run_manager_status_never_loads_complete_event_history(tmp_path, monkeyp
     manager = RunManager(tmp_path / "runs")
     session_id = "wf-bounded-status"
     store = manager.engine.events
+    store.create_session(session_id)
 
     store.append(session_id, "run.started", {})
     for index in range(64):
@@ -194,6 +198,7 @@ def test_run_manager_status_reports_stored_without_terminal_event(tmp_path, monk
     manager = RunManager(tmp_path / "runs")
     session_id = "wf-stored"
     store = manager.engine.events
+    store.create_session(session_id)
     store.append(session_id, "run.started", {})
     store.append(session_id, "world.state", {"tick": 1})
 
