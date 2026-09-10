@@ -72,6 +72,51 @@ class EventStore:
             prev_hash=row["prev_hash"],
         )
 
+    @staticmethod
+    def _append_in_connection(
+        c: sqlite3.Connection,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> RuntimeEvent:
+        row = c.execute(
+            "SELECT seq, hash FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        seq = int(row["seq"]) + 1 if row else 1
+        prev_hash = row["hash"] if row else "GENESIS"
+        ts = time.time()
+        payload_json = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(
+            f"{session_id}|{seq}|{event_type}|{payload_json}|{ts:.6f}|{prev_hash}".encode()
+        ).hexdigest()
+        c.execute(
+            "INSERT INTO events(session_id,seq,event_type,payload_json,ts,prev_hash,hash) VALUES(?,?,?,?,?,?,?)",
+            (
+                session_id,
+                seq,
+                event_type,
+                payload_json,
+                ts,
+                prev_hash,
+                digest,
+            ),
+        )
+        return RuntimeEvent(
+            session_id=session_id,
+            seq=seq,
+            event_type=event_type,
+            payload=payload,
+            ts=ts,
+            hash=digest,
+            prev_hash=prev_hash,
+        )
+
     def create_session(
         self,
         session_id: str,
@@ -103,43 +148,7 @@ class EventStore:
             # A process-local lock cannot prevent two EventStore instances from otherwise
             # reading the same latest seq and racing on the same (session_id, seq) key.
             c.execute("BEGIN IMMEDIATE")
-            row = c.execute(
-                "SELECT seq, hash FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1",
-                (session_id,),
-            ).fetchone()
-            seq = int(row["seq"]) + 1 if row else 1
-            prev_hash = row["hash"] if row else "GENESIS"
-            ts = time.time()
-            payload_json = json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            digest = hashlib.sha256(
-                f"{session_id}|{seq}|{event_type}|{payload_json}|{ts:.6f}|{prev_hash}".encode()
-            ).hexdigest()
-            c.execute(
-                "INSERT INTO events(session_id,seq,event_type,payload_json,ts,prev_hash,hash) VALUES(?,?,?,?,?,?,?)",
-                (
-                    session_id,
-                    seq,
-                    event_type,
-                    payload_json,
-                    ts,
-                    prev_hash,
-                    digest,
-                ),
-            )
-        return RuntimeEvent(
-            session_id=session_id,
-            seq=seq,
-            event_type=event_type,
-            payload=payload,
-            ts=ts,
-            hash=digest,
-            prev_hash=prev_hash,
-        )
+            return self._append_in_connection(c, session_id, event_type, payload)
 
     def latest_seq(self, session_id: str) -> int:
         with self._conn() as c:
@@ -385,31 +394,45 @@ class EventStore:
         if source_session_id == new_session_id:
             raise ValueError("fork target must differ from source session")
 
-        source_latest = self.latest_seq(source_session_id)
-        source_exists = (
-            self.session_meta(source_session_id) is not None or source_latest > 0
-        )
-        if not source_exists:
-            raise KeyError(f"unknown source session: {source_session_id}")
-        if at_seq < 0 or at_seq > source_latest:
-            raise ValueError(
-                f"fork seq {at_seq} outside source history 0..{source_latest}"
+        with self._lock, self._conn() as c:
+            # The same write transaction validates the source/target boundary and copies the
+            # prefix. This prevents another writer from extending the source between validation
+            # and copy, and makes a partial target impossible if any copy step fails.
+            c.execute("BEGIN IMMEDIATE")
+            source_row = c.execute(
+                "SELECT session_id FROM sessions WHERE session_id=?",
+                (source_session_id,),
+            ).fetchone()
+            if source_row is None:
+                raise KeyError(f"unknown source session: {source_session_id}")
+
+            latest_row = c.execute(
+                "SELECT seq FROM events WHERE session_id=? ORDER BY seq DESC LIMIT 1",
+                (source_session_id,),
+            ).fetchone()
+            source_latest = int(latest_row["seq"]) if latest_row else 0
+            if at_seq < 0 or at_seq > source_latest:
+                raise ValueError(
+                    f"fork seq {at_seq} outside source history 0..{source_latest}"
+                )
+
+            target_row = c.execute(
+                "SELECT session_id FROM sessions WHERE session_id=?",
+                (new_session_id,),
+            ).fetchone()
+            if target_row is not None:
+                raise ValueError(f"fork target already exists: {new_session_id}")
+
+            c.execute(
+                "INSERT INTO sessions(session_id,parent_session_id,parent_seq,created_at,meta_json) VALUES(?,?,?,?,?)",
+                (
+                    new_session_id,
+                    source_session_id,
+                    at_seq,
+                    time.time(),
+                    json.dumps(meta or {}, ensure_ascii=False),
+                ),
             )
-
-        target_exists = (
-            self.session_meta(new_session_id) is not None
-            or self.latest_seq(new_session_id) > 0
-        )
-        if target_exists:
-            raise ValueError(f"fork target already exists: {new_session_id}")
-
-        self.create_session(
-            new_session_id,
-            parent_session_id=source_session_id,
-            parent_seq=at_seq,
-            meta=meta,
-        )
-        with self._conn() as c:
             cursor = c.execute(
                 "SELECT * FROM events "
                 "WHERE session_id=? AND seq<=? ORDER BY seq",
@@ -417,7 +440,8 @@ class EventStore:
             )
             for row in cursor:
                 event = self._event_from_row(row)
-                self.append(
+                self._append_in_connection(
+                    c,
                     new_session_id,
                     event.event_type,
                     {
