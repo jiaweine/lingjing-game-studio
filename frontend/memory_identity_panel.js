@@ -1,3 +1,7 @@
+void import("./issue_lifecycle.js").catch(() => {});
+void import("./issue_comparison.js").catch(() => {});
+void import("./value_metrics.js").catch(() => {});
+
 const IDENTITY_REASON_LABELS = {
   "strong-stable-token-overlap": "稳定语义高度重合",
   "moderate-stable-token-overlap": "稳定语义部分重合",
