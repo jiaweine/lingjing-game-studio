@@ -72,7 +72,12 @@ def _fixture(tmp_path, monkeypatch):
                 "actor_id": DEMO_USER_ID,
                 "project_id": "project-demo",
                 "scope": {"commit_ref": "old"},
-                "memory_snapshot": {"scope": {"commit_ref": "old"}, "memory_refs": []},
+                "memory_snapshot": {
+                    "scope": {"commit_ref": "old"},
+                    "memory_refs": [
+                        {"id": "old-memory", "revision": 1, "retrieval_score": 0.9}
+                    ],
+                },
             },
         },
     )
@@ -152,10 +157,9 @@ def test_signed_successful_workflow_enqueues_exact_commit_revalidation(tmp_path,
     assert f"Commit={HEAD_SHA}" in job["payload"]["text"]
     assert "CI 成功本身不代表问题已修复" in job["payload"]["text"]
     assert job["payload"]["project_context"]["scope"]["commit_ref"] == HEAD_SHA
-    assert (
-        job["payload"]["project_context"]["memory_snapshot"]["scope"]["commit_ref"]
-        == HEAD_SHA
-    )
+    snapshot = job["payload"]["project_context"]["memory_snapshot"]
+    assert snapshot["scope"]["commit_ref"] == HEAD_SHA
+    assert snapshot["memory_refs"] == []
 
     delivery = store.get_github_webhook_delivery("delivery-1")
     assert delivery["status"] == "enqueued"
@@ -180,7 +184,7 @@ def test_webhook_delivery_is_replay_safe(tmp_path, monkeypatch):
     assert store.get_github_webhook_delivery("delivery-repeat")["enqueued_count"] == 1
 
 
-def test_received_delivery_recovers_existing_same_delivery_job_after_crash(tmp_path, monkeypatch):
+def test_received_delivery_recovers_existing_same_delivery_job_after_lease_expiry(tmp_path, monkeypatch):
     client, store, conversation, _link, scheduled = _fixture(tmp_path, monkeypatch)
     delivery_id = "delivery-crash-resume"
     assert store.begin_github_webhook_delivery(
@@ -201,7 +205,12 @@ def test_received_delivery_recovers_existing_same_delivery_job_after_crash(tmp_p
     )
     before = _job_ids(store, conversation["id"])
     assert before[-1] == existing_job["id"]
-    assert store.get_github_webhook_delivery(delivery_id)["status"] == "received"
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(store.github_webhook_deliveries)
+            .where(store.github_webhook_deliveries.c.delivery_id == delivery_id)
+            .values(claimed_at=time.time() - 61.0)
+        )
 
     body = json.dumps(_workflow_payload(), separators=(",", ":")).encode("utf-8")
     response = client.post(
@@ -219,6 +228,24 @@ def test_received_delivery_recovers_existing_same_delivery_job_after_crash(tmp_p
     delivery = store.get_github_webhook_delivery(delivery_id)
     assert delivery["status"] == "enqueued"
     assert delivery["enqueued_count"] == 1
+
+
+def test_fresh_received_delivery_cannot_be_concurrently_reclaimed(tmp_path, monkeypatch):
+    _client, store, _conversation, _link, _scheduled = _fixture(tmp_path, monkeypatch)
+    delivery_id = "delivery-live-lease"
+    kwargs = dict(
+        delivery_id=delivery_id,
+        event="workflow_run",
+        action="completed",
+        repository="owner/game",
+        head_sha=HEAD_SHA,
+        workflow_run_id="991",
+        workflow_name="Game CI",
+        workflow_url="https://github.com/owner/game/actions/runs/991",
+        conclusion="success",
+    )
+    assert store.begin_github_webhook_delivery(**kwargs) is True
+    assert store.begin_github_webhook_delivery(**kwargs) is False
 
 
 def test_stale_index_binding_is_rechecked_against_current_link_metadata(tmp_path, monkeypatch):
