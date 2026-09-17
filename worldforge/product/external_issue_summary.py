@@ -44,6 +44,17 @@ def _parse_scope(text: str) -> dict[str, str] | None:
     return scope if any(scope.values()) else None
 
 
+def _payload_scope(payload: dict[str, Any]) -> dict[str, str] | None:
+    context = dict(payload.get("context") or {})
+    raw = dict(context.get("verification_scope") or {})
+    scope = {
+        "build_ref": _compact(raw.get("build_ref"), 160),
+        "branch_ref": _compact(raw.get("branch_ref"), 200),
+        "commit_ref": _compact(raw.get("commit_ref"), 160),
+    }
+    return scope if any(scope.values()) else None
+
+
 def _latest_issue_result(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, str] | None]:
     current_scope: dict[str, str] | None = None
     latest: tuple[dict[str, Any], dict[str, str] | None] | None = None
@@ -62,7 +73,10 @@ def _latest_issue_result(messages: list[dict[str, Any]]) -> tuple[dict[str, Any]
             or outcome.get("requires_project_verification")
         ):
             continue
-        latest = (message, dict(current_scope) if current_scope else None)
+        result_scope = _payload_scope(payload) or current_scope
+        if result_scope:
+            current_scope = dict(result_scope)
+        latest = (message, dict(result_scope) if result_scope else None)
     if latest is None:
         raise ValueError("当前任务还没有结构化的 Bug/回归结果；请先重新执行一次问题任务")
     return latest
