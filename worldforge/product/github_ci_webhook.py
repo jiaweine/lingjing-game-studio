@@ -60,6 +60,26 @@ def _execution_principal(store, match: dict, latest_job: dict) -> Principal | No
     )
 
 
+def _binding_is_current(store, match: dict, *, repository: str, head_sha: str) -> bool:
+    """Recheck authoritative linkage metadata before trusting the indexed CI binding."""
+    try:
+        link = store.get_external_issue_link(
+            str(match["link_id"]),
+            conversation_id=str(match["conversation_id"]),
+            workspace_id=str(match["workspace_id"]),
+        )
+    except KeyError:
+        return False
+    if str(link.get("repository") or "").strip().lower() != repository:
+        return False
+    context = dict((link.get("meta") or {}).get("github_context") or {})
+    current = {
+        str(context.get("head_commit_sha") or "").strip().lower(),
+        str(context.get("selected_commit_sha") or "").strip().lower(),
+    }
+    return head_sha in current
+
+
 def build_github_ci_webhook_router(
     *,
     store,
@@ -123,9 +143,13 @@ def build_github_ci_webhook_router(
             store.complete_github_webhook_delivery(delivery_id, status="invalid_payload")
             raise HTTPException(400, "GitHub workflow_run 缺少有效 repository/head_sha")
 
-        matches = store.find_github_ci_matches(repository=repository, head_sha=head_sha)
+        indexed_matches = store.find_github_ci_matches(repository=repository, head_sha=head_sha)
         unique_matches: dict[tuple[str, str], dict] = {}
-        for match in matches:
+        stale_count = 0
+        for match in indexed_matches:
+            if not _binding_is_current(store, match, repository=repository, head_sha=head_sha):
+                stale_count += 1
+                continue
             key = (str(match["workspace_id"]), str(match["conversation_id"]))
             unique_matches.setdefault(key, match)
 
@@ -141,6 +165,7 @@ def build_github_ci_webhook_router(
         }
         enqueued = 0
         deferred = 0
+        recovered = 0
         for match in unique_matches.values():
             latest = store.latest_job(
                 match["conversation_id"], workspace_id=match["workspace_id"]
@@ -148,6 +173,8 @@ def build_github_ci_webhook_router(
             if not latest:
                 deferred += 1
                 continue
+            latest_trigger = dict((latest.get("payload") or {}).get("ci_trigger") or {})
+            same_delivery_job = str(latest_trigger.get("delivery_id") or "") == delivery_id
             principal = _execution_principal(store, match, latest)
             if principal is None:
                 deferred += 1
@@ -161,33 +188,39 @@ def build_github_ci_webhook_router(
             except ValueError:
                 deferred += 1
                 continue
-            store.add_event(
-                match["conversation_id"],
-                "ci.revalidation.queued",
-                {
-                    "job_id": job["id"],
-                    "repository": repository,
-                    "head_sha": head_sha,
-                    "workflow_run_id": workflow_run_id,
-                    "workflow_name": workflow_name,
-                    "workflow_url": workflow_url,
-                },
-                workspace_id=match["workspace_id"],
-            )
-            store.add_audit(
-                request_id=f"github:{delivery_id}"[:64],
-                action="github_ci.revalidation.enqueue",
-                workspace_id=match["workspace_id"],
-                user_id=principal.user_id,
-                resource_type="conversation",
-                resource_id=match["conversation_id"],
-                payload={
-                    "job_id": job["id"],
-                    "repository": repository,
-                    "head_sha": head_sha,
-                    "workflow_run_id": workflow_run_id,
-                },
-            )
+
+            if not same_delivery_job:
+                store.add_event(
+                    match["conversation_id"],
+                    "ci.revalidation.queued",
+                    {
+                        "job_id": job["id"],
+                        "repository": repository,
+                        "head_sha": head_sha,
+                        "workflow_run_id": workflow_run_id,
+                        "workflow_name": workflow_name,
+                        "workflow_url": workflow_url,
+                    },
+                    workspace_id=match["workspace_id"],
+                )
+                store.add_audit(
+                    request_id=f"github:{delivery_id}"[:64],
+                    action="github_ci.revalidation.enqueue",
+                    workspace_id=match["workspace_id"],
+                    user_id=principal.user_id,
+                    resource_type="conversation",
+                    resource_id=match["conversation_id"],
+                    payload={
+                        "job_id": job["id"],
+                        "repository": repository,
+                        "head_sha": head_sha,
+                        "workflow_run_id": workflow_run_id,
+                    },
+                )
+            else:
+                recovered += 1
+            # Re-scheduling the same queued job is intentional on a resumed `received`
+            # delivery: claim_job remains the single-executor concurrency gate.
             await schedule_retry(job, background_tasks, principal)
             enqueued += 1
 
@@ -205,6 +238,8 @@ def build_github_ci_webhook_router(
             "matched": matched,
             "enqueued": enqueued,
             "deferred": deferred,
+            "recovered": recovered,
+            "stale": stale_count,
         }
 
     return router
