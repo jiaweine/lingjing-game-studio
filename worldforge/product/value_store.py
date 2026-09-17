@@ -168,14 +168,6 @@ class ConversationStore(_BaseConversationStore):
             if str(row.get("status") or "") == "verified"
         }
 
-        first_verified_at: dict[str, float] = {}
-        for row in feedback:
-            conversation_id = str(row["conversation_id"])
-            timestamp = float(row.get("updated_at") or row.get("created_at") or 0.0)
-            previous = first_verified_at.get(conversation_id)
-            if timestamp > 0 and (previous is None or timestamp < previous):
-                first_verified_at[conversation_id] = timestamp
-
         provider_results = 0
         exact_token_results = 0
         estimated_input_tokens = 0
@@ -183,6 +175,7 @@ class ConversationStore(_BaseConversationStore):
         provider_keys: set[str] = set()
         provider_models: set[str] = set()
         latest_outcomes: dict[str, dict[str, Any]] = {}
+        latest_outcome_message_ids: dict[str, str] = {}
         for row in message_rows:
             try:
                 payload = json.loads(row.payload or "{}")
@@ -191,7 +184,9 @@ class ConversationStore(_BaseConversationStore):
 
             outcome = payload.get("outcome")
             if isinstance(outcome, dict):
-                latest_outcomes[str(row.conversation_id)] = dict(outcome)
+                conversation_id = str(row.conversation_id)
+                latest_outcomes[conversation_id] = dict(outcome)
+                latest_outcome_message_ids[conversation_id] = str(row.id)
 
             usage = self._provider_usage(payload)
             if usage is None:
@@ -207,12 +202,30 @@ class ConversationStore(_BaseConversationStore):
                 exact_input_tokens += int(usage["exact_input_tokens"])
                 exact_token_results += 1
 
-        verified_issue_ids = {
+        authoritative_issue_ids = {
             conversation_id
-            for conversation_id in currently_verified & set(first_verified_at)
+            for conversation_id in currently_verified
             if self._is_issue_lifecycle(latest_outcomes.get(conversation_id))
             and bool(latest_outcomes[conversation_id].get("verified"))
         }
+
+        # A previous "human verified" click may only mean that an earlier insufficient-evidence
+        # answer was correctly cautious. Time-to-Verified-Issue must therefore be anchored to
+        # the human confirmation of the *current verifier-authoritative issue result*, not the
+        # earliest confirmation on any historical assistant message in the conversation.
+        first_verified_at: dict[str, float] = {}
+        for row in feedback:
+            conversation_id = str(row["conversation_id"])
+            if conversation_id not in authoritative_issue_ids:
+                continue
+            if str(row["message_id"]) != latest_outcome_message_ids.get(conversation_id):
+                continue
+            timestamp = float(row.get("updated_at") or row.get("created_at") or 0.0)
+            previous = first_verified_at.get(conversation_id)
+            if timestamp > 0 and (previous is None or timestamp < previous):
+                first_verified_at[conversation_id] = timestamp
+
+        verified_issue_ids = authoritative_issue_ids & set(first_verified_at)
         verified_durations: list[float] = []
         for conversation_id in verified_issue_ids:
             created = float(conversation_by_id[conversation_id].get("created_at") or 0.0)
