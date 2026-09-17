@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from worldforge.api.app import app
+from worldforge.api.app import app, product_store
 from worldforge.product.control import github_repository_client
 from worldforge.product.github_repository_client import GitHubPullRequestContext
 
@@ -30,7 +30,7 @@ def test_github_context_requires_exactly_one_code_reference():
     ).status_code == 400
 
 
-def test_github_context_resolves_pr_on_server_and_persists_head_sha(monkeypatch):
+def test_github_context_resolves_pr_on_server_and_persists_indexed_head_sha(monkeypatch):
     client, conversation, link = _linked_issue()
     calls = []
 
@@ -68,3 +68,17 @@ def test_github_context_resolves_pr_on_server_and_persists_head_sha(monkeypatch)
         f"/api/conversations/{conversation['id']}/external-links"
     ).json()[0]
     assert persisted["meta"]["github_context"] == context
+
+    route = product_store.get_github_code_context_route(
+        link["id"],
+        conversation_id=conversation["id"],
+        workspace_id=conversation["workspace_id"],
+    )
+    assert route["repository"] == "owner/game"
+    assert route["pull_request_number"] == 12
+    assert route["head_sha"] == "a" * 40
+    assert product_store.find_github_commit_routes(
+        repository="owner/game",
+        commit_sha="a" * 40,
+        workspace_id=conversation["workspace_id"],
+    )[0]["conversation_id"] == conversation["id"]
