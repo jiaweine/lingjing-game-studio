@@ -23,7 +23,7 @@ def test_github_issue_link_is_durable_and_idempotent(tmp_path):
         conversation["id"],
         workspace_id=DEMO_WORKSPACE_ID,
         created_by=DEMO_USER_ID,
-        repository="jiaweine/lingjing-game-studio",
+        repository="Jiaweine/Lingjing-Game-Studio",
         issue_number=29,
         title="Push verified results back into GitHub/Jira/CI workflows",
     )
