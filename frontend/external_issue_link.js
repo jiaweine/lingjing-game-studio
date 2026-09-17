@@ -74,9 +74,11 @@ function installExternalLinkStyle() {
   style.textContent = `
     .external-issue-card{margin:12px 0 16px;padding:13px;border:1px solid rgba(26,39,64,.10);border-radius:14px;background:rgba(255,255,255,.72)}
     .external-issue-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.external-issue-head small{display:block;color:#8b93a2;font-size:9px}.external-issue-head b{display:block;margin-top:2px;font-size:12px}.external-issue-head span{font-size:9px;color:#5961a8;background:#eef1ff;padding:3px 6px;border-radius:999px}
-    .external-issue-form{display:flex;gap:6px;margin-top:9px}.external-issue-form input,.external-code-form input{min-width:0;flex:1;border:1px solid rgba(26,39,64,.12);border-radius:9px;padding:8px 9px;background:#fff;color:#20283a;font:inherit;font-size:10px;outline:none}.external-issue-form input:focus,.external-code-form input:focus{border-color:#858ceb;box-shadow:0 0 0 2px rgba(105,112,220,.10)}.external-issue-form button,.external-code-form button{border:0;border-radius:9px;padding:8px 9px;background:#222a42;color:#fff;font-size:10px;font-weight:650;cursor:pointer}.external-issue-form button:disabled,.external-code-form button:disabled{opacity:.45;cursor:not-allowed}
+    .external-issue-form,.external-code-form,.external-ci-form{display:flex;gap:6px;margin-top:7px}.external-issue-form{margin-top:9px}.external-issue-form input,.external-code-form input,.external-ci-form input{min-width:0;flex:1;border:1px solid rgba(26,39,64,.12);border-radius:9px;padding:8px 9px;background:#fff;color:#20283a;font:inherit;font-size:9px;outline:none}.external-issue-form input:focus,.external-code-form input:focus,.external-ci-form input:focus{border-color:#858ceb;box-shadow:0 0 0 2px rgba(105,112,220,.10)}
+    .external-issue-form button,.external-code-form button,.external-ci-form button,.external-ci-disable{border:0;border-radius:9px;padding:7px 8px;background:#222a42;color:#fff;font-size:8.5px;font-weight:650;cursor:pointer}.external-issue-form button:disabled,.external-code-form button:disabled,.external-ci-form button:disabled,.external-ci-disable:disabled{opacity:.45;cursor:not-allowed}
     .external-issue-note{margin:6px 1px 0;color:#858d9d;font-size:8.5px;line-height:1.45}.external-issue-list{display:grid;gap:7px;margin-top:9px}.external-issue-empty{padding:8px;border-radius:9px;background:#f7f8fb;color:#81899a;font-size:9px}.external-issue-row{padding:8px 9px;border-radius:9px;background:#f7f8fb}.external-issue-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}.external-issue-top a{min-width:0;color:#39415a;text-decoration:none}.external-issue-top a b{display:block;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.external-issue-top a small{display:block;margin-top:2px;color:#858d9d;font-size:8.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.external-issue-remove{border:0;background:transparent;color:#9b5353;cursor:pointer;font-size:9px;padding:4px}.external-issue-remove:disabled{opacity:.4;cursor:not-allowed}
-    .external-code-context{margin-top:7px;padding:7px 8px;border-radius:8px;background:#fff;color:#66708a;font-size:8px;line-height:1.5}.external-code-context a{color:#4d5680;text-decoration:none;font-weight:650}.external-code-context code{font-size:7.5px}.external-code-form{display:flex;gap:5px;margin-top:6px}.external-code-form input{padding:6px 7px;font-size:8.5px}.external-code-form button{padding:6px 7px;font-size:8.5px}
+    .external-code-context{margin-top:7px;padding:7px 8px;border-radius:8px;background:#fff;color:#66708a;font-size:8px;line-height:1.5}.external-code-context a{color:#4d5680;text-decoration:none;font-weight:650}.external-code-context code{font-size:7.5px}.external-code-form input,.external-code-form button{padding:6px 7px;font-size:8.5px}
+    .external-ci-box{margin-top:7px;padding:7px 8px;border:1px solid rgba(60,76,118,.08);border-radius:9px;background:#fdfdff}.external-ci-status{display:flex;gap:8px;justify-content:space-between;align-items:center;font-size:8.5px;color:#59627a}.external-ci-status b{color:#34405e}.external-ci-note{margin-top:5px;font-size:7.8px;line-height:1.45;color:#8a91a1}.external-ci-enabled{color:#287054;font-weight:700}.external-ci-disabled{color:#8a91a1}.external-ci-disable{background:#fff;color:#7a4b4b;border:1px solid rgba(122,75,75,.14);padding:5px 7px}
     .external-issue-actions{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;padding-top:7px;border-top:1px solid rgba(26,39,64,.07)}.external-issue-push{border:1px solid rgba(47,57,83,.13);border-radius:8px;padding:5px 7px;background:#fff;color:#39415a;font-size:8.5px;font-weight:600;cursor:pointer}.external-issue-push[data-kind="verification"]{background:#222a42;color:#fff;border-color:#222a42}.external-issue-push:disabled{opacity:.42;cursor:not-allowed}.external-comment-link{margin-left:auto;align-self:center;color:#66708a;text-decoration:none;font-size:8px}.external-sync-state{margin-top:5px;color:#838b9b;font-size:8px}
   `;
   document.head.appendChild(style);
@@ -91,15 +93,12 @@ function ensureExternalLinkCard() {
   card.id = "externalIssueLinkCard";
   card.className = "external-issue-card";
   card.innerHTML = `
-    <div class="external-issue-head">
-      <div><small>工作流关联</small><b>GitHub Issue</b></div>
-      <span>显式 Push</span>
-    </div>
+    <div class="external-issue-head"><div><small>工作流关联</small><b>GitHub Issue</b></div><span>验证闭环</span></div>
     <form class="external-issue-form" id="externalIssueLinkForm">
       <input id="externalIssueRef" maxlength="500" autocomplete="off" placeholder="owner/repo#123 或粘贴 Issue URL" />
       <button id="externalIssueLinkBtn" type="submit">绑定</button>
     </form>
-    <p class="external-issue-note">关联后可补充 PR/Commit 版本上下文并显式 Push 结果；不会自动改 label、assignee、状态或关闭 Issue。</p>
+    <p class="external-issue-note">绑定 Issue → 补充 PR/Commit → 可显式 Push；CI 自动验证必须单独开启且限定 exact workflow，不会自动关闭 Issue。</p>
     <div class="external-issue-list" id="externalIssueList"><div class="external-issue-empty">尚未关联外部 Issue。</div></div>
   `;
   const issueScopeCard = document.getElementById("issueScopeCard");
@@ -118,9 +117,7 @@ function ensureExternalLinkCard() {
       const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/external-links`, {
         method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify(parsed),
       });
-      if (!response.ok) {
-        let detail = "绑定失败"; try { detail = (await response.json()).detail || detail; } catch {} throw new Error(detail);
-      }
+      if (!response.ok) { let detail = "绑定失败"; try { detail = (await response.json()).detail || detail; } catch {} throw new Error(detail); }
       const input = document.getElementById("externalIssueRef"); if (input) input.value = "";
       externalLinkToast("GitHub Issue 已关联"); await loadExternalLinks(true);
     } catch (error) { externalLinkToast(error.message || "绑定失败"); }
@@ -139,13 +136,14 @@ function githubContextHtml(link) {
   const pull = context.pull_request;
   const commit = context.commit;
   const parts = [];
-  if (pull?.url) {
-    parts.push(`<a href="${externalLinkEsc(pull.url)}" target="_blank" rel="noopener noreferrer">PR #${externalLinkEsc(pull.number)}</a> · ${externalLinkEsc(pull.head_ref || "head")} → ${externalLinkEsc(pull.base_ref || "base")} · <code>${externalLinkEsc(String(pull.head_sha || "").slice(0, 8))}</code>`);
-  }
-  if (commit?.url) {
-    parts.push(`<a href="${externalLinkEsc(commit.url)}" target="_blank" rel="noopener noreferrer">Commit ${externalLinkEsc(String(commit.sha || "").slice(0, 8))}</a> · ${externalLinkEsc(commit.message || "")}`);
-  }
-  return parts.length ? parts.join("<br>") : "尚未绑定 PR / Commit；CI 重验前建议先建立明确版本上下文。";
+  if (pull?.url) parts.push(`<a href="${externalLinkEsc(pull.url)}" target="_blank" rel="noopener noreferrer">PR #${externalLinkEsc(pull.number)}</a> · ${externalLinkEsc(pull.head_ref || "head")} → ${externalLinkEsc(pull.base_ref || "base")} · <code>${externalLinkEsc(String(pull.head_sha || "").slice(0, 8))}</code>`);
+  if (commit?.url) parts.push(`<a href="${externalLinkEsc(commit.url)}" target="_blank" rel="noopener noreferrer">Commit ${externalLinkEsc(String(commit.sha || "").slice(0, 8))}</a> · ${externalLinkEsc(commit.message || "")}`);
+  return parts.length ? parts.join("<br>") : "尚未绑定 PR / Commit；CI 自动验证必须先建立明确版本上下文。";
+}
+
+function hasGithubCodeContext(link) {
+  const context = link?.meta?.github_context || {};
+  return Boolean(context.head_commit_sha || context.selected_commit_sha);
 }
 
 async function saveGithubCodeContext(link, input, button) {
@@ -154,15 +152,30 @@ async function saveGithubCodeContext(link, input, button) {
   if (!parsed) return externalLinkToast("请输入同仓库 PR URL / PR #12 / Commit URL / SHA");
   button.disabled = true;
   try {
-    const response = await fetch(
-      `/api/conversations/${encodeURIComponent(conversationId)}/external-links/${encodeURIComponent(link.id)}/github-context`,
-      {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify(parsed)},
-    );
-    if (!response.ok) {
-      let detail = "代码上下文关联失败"; try { detail = (await response.json()).detail || detail; } catch {} throw new Error(detail);
-    }
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/external-links/${encodeURIComponent(link.id)}/github-context`, {
+      method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify(parsed),
+    });
+    if (!response.ok) { let detail = "代码上下文关联失败"; try { detail = (await response.json()).detail || detail; } catch {} throw new Error(detail); }
     input.value = ""; externalLinkToast("GitHub 代码版本已关联"); await loadExternalLinks(true);
   } catch (error) { externalLinkToast(error.message || "代码上下文关联失败"); }
+  finally { button.disabled = !externalLinkCanEdit(); }
+}
+
+async function setGithubCiSubscription(link, enabled, workflowName, button) {
+  const conversationId = externalLinkCurrentConversationId();
+  if (!conversationId || !link?.id) return;
+  if (enabled && !hasGithubCodeContext(link)) return externalLinkToast("先绑定 PR 或 Commit，再开启 CI 自动验证");
+  const name = String(workflowName || "").trim();
+  if (enabled && !name) return externalLinkToast("请输入 exact GitHub workflow 名称");
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/external-links/${encodeURIComponent(link.id)}/ci-subscription`, {
+      method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({enabled, workflow_name: name || link?.ci_subscription?.workflow_name || null}),
+    });
+    if (!response.ok) { let detail = "CI 自动验证设置失败"; try { detail = (await response.json()).detail || detail; } catch {} throw new Error(detail); }
+    externalLinkToast(enabled ? `已开启 CI 自动验证：${name}` : "已关闭 CI 自动验证");
+    await loadExternalLinks(true);
+  } catch (error) { externalLinkToast(error.message || "CI 自动验证设置失败"); }
   finally { button.disabled = !externalLinkCanEdit(); }
 }
 
@@ -171,18 +184,24 @@ async function pushExternalSummary(linkId, kind, button) {
   if (!conversationId || !linkId) return;
   button.disabled = true;
   try {
-    const response = await fetch(
-      `/api/conversations/${encodeURIComponent(conversationId)}/external-links/${encodeURIComponent(linkId)}/push`,
-      {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({kind})},
-    );
-    if (!response.ok) {
-      let detail = "Push 失败"; try { detail = (await response.json()).detail || detail; } catch {} throw new Error(detail);
-    }
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/external-links/${encodeURIComponent(linkId)}/push`, {
+      method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({kind}),
+    });
+    if (!response.ok) { let detail = "Push 失败"; try { detail = (await response.json()).detail || detail; } catch {} throw new Error(detail); }
     const result = await response.json();
     externalLinkToast(result.recovered ? "已恢复并更新原 GitHub 评论" : (result.updated ? "GitHub 评论已更新" : "GitHub 评论已发布"));
     await loadExternalLinks(true);
   } catch (error) { externalLinkToast(error.message || "Push 失败"); }
   finally { button.disabled = !externalLinkCanEdit() || (kind === "verification" && !externalIssueLatestOutcome?.verified); }
+}
+
+function ciControlsHtml(link, canEdit) {
+  const subscription = link?.ci_subscription || {};
+  if (subscription.enabled) {
+    return `<div class="external-ci-box"><div class="external-ci-status"><span><span class="external-ci-enabled">CI 自动验证已开启</span> · <b>${externalLinkEsc(subscription.workflow_name || "")}</b></span><button class="external-ci-disable" data-ci-disable type="button" ${canEdit ? "" : "disabled"}>关闭</button></div><div class="external-ci-note">仅当该 exact workflow 成功，且 head SHA 命中当前 PR/Commit 时，才自动创建一轮修复验证。</div></div>`;
+  }
+  const disabled = !canEdit || !hasGithubCodeContext(link);
+  return `<div class="external-ci-box"><div class="external-ci-status"><span class="external-ci-disabled">CI 自动验证默认关闭</span></div><div class="external-ci-form"><input data-ci-workflow maxlength="240" autocomplete="off" placeholder="exact workflow，例如 Build Game" ${disabled ? "disabled" : ""}><button data-ci-enable type="button" ${disabled ? "disabled" : ""}>开启</button></div><div class="external-ci-note">不会监听任意 workflow；需 exact name + commit 双重匹配。开启人失去编辑权限后也不会继续自动执行。</div></div>`;
 }
 
 function renderExternalLinks(links) {
@@ -200,49 +219,40 @@ function renderExternalLinks(links) {
     const comment = latestComment(link);
     const commentLink = comment?.url ? `<a class="external-comment-link" href="${externalLinkEsc(comment.url)}" target="_blank" rel="noopener noreferrer">查看已推送评论</a>` : "";
     const verificationTitle = verificationReady ? "推送或更新最终验证评论" : "需先形成 Verifier 权威结论";
-    return `
-      <div class="external-issue-row" data-external-link-id="${externalLinkEsc(link.id)}">
-        <div class="external-issue-top">
-          <a href="${externalLinkEsc(link.external_url)}" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开"><b>${externalLinkEsc(label)}</b><small>${externalLinkEsc(title)}</small></a>
-          <button class="external-issue-remove" type="button" ${canEdit ? "" : "disabled"}>解除</button>
-        </div>
-        <div class="external-code-context">${githubContextHtml(link)}</div>
-        <div class="external-code-form"><input data-code-ref maxlength="500" autocomplete="off" placeholder="PR #12 / PR URL / Commit SHA" ${canEdit ? "" : "disabled"}><button data-code-save type="button" ${canEdit ? "" : "disabled"}>关联版本</button></div>
-        <div class="external-sync-state">${externalLinkEsc(link.sync_state === "linked" ? "已关联，尚未 Push" : `同步状态：${link.sync_state}`)}</div>
-        <div class="external-issue-actions">
-          <button class="external-issue-push" data-kind="reproduction" type="button" ${canEdit ? "" : "disabled"}>推送复现摘要</button>
-          <button class="external-issue-push" data-kind="verification" type="button" title="${externalLinkEsc(verificationTitle)}" ${canEdit && verificationReady ? "" : "disabled"}>推送验证结论</button>
-          ${commentLink}
-        </div>
-      </div>`;
+    return `<div class="external-issue-row" data-external-link-id="${externalLinkEsc(link.id)}">
+      <div class="external-issue-top"><a href="${externalLinkEsc(link.external_url)}" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开"><b>${externalLinkEsc(label)}</b><small>${externalLinkEsc(title)}</small></a><button class="external-issue-remove" type="button" ${canEdit ? "" : "disabled"}>解除</button></div>
+      <div class="external-code-context">${githubContextHtml(link)}</div>
+      <div class="external-code-form"><input data-code-ref maxlength="500" autocomplete="off" placeholder="PR #12 / PR URL / Commit SHA" ${canEdit ? "" : "disabled"}><button data-code-save type="button" ${canEdit ? "" : "disabled"}>关联版本</button></div>
+      ${ciControlsHtml(link, canEdit)}
+      <div class="external-sync-state">${externalLinkEsc(link.sync_state === "linked" ? "已关联，尚未 Push" : `同步状态：${link.sync_state}`)}</div>
+      <div class="external-issue-actions"><button class="external-issue-push" data-kind="reproduction" type="button" ${canEdit ? "" : "disabled"}>推送复现摘要</button><button class="external-issue-push" data-kind="verification" type="button" title="${externalLinkEsc(verificationTitle)}" ${canEdit && verificationReady ? "" : "disabled"}>推送验证结论</button>${commentLink}</div>
+    </div>`;
   }).join("");
 
-  list.querySelectorAll("[data-code-save]").forEach(codeButton => {
-    codeButton.addEventListener("click", () => {
-      const row = codeButton.closest("[data-external-link-id]");
-      const link = links.find(item => item.id === row?.dataset.externalLinkId);
-      const codeInput = row?.querySelector("[data-code-ref]");
-      if (link && codeInput) saveGithubCodeContext(link, codeInput, codeButton);
-    });
-  });
-  list.querySelectorAll(".external-issue-push").forEach(pushButton => {
-    pushButton.addEventListener("click", () => {
-      const row = pushButton.closest("[data-external-link-id]");
-      pushExternalSummary(row?.dataset.externalLinkId, pushButton.dataset.kind, pushButton);
-    });
-  });
-  list.querySelectorAll(".external-issue-remove").forEach(removeButton => {
-    removeButton.addEventListener("click", async () => {
-      const row = removeButton.closest("[data-external-link-id]");
-      const linkId = row?.dataset.externalLinkId; const conversationId = externalLinkCurrentConversationId();
-      if (!linkId || !conversationId) return; removeButton.disabled = true;
-      try {
-        const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/external-links/${encodeURIComponent(linkId)}`, {method: "DELETE", credentials: "same-origin"});
-        if (!response.ok) { let detail = "解除失败"; try { detail = (await response.json()).detail || detail; } catch {} throw new Error(detail); }
-        externalLinkToast("已解除 GitHub Issue 关联"); await loadExternalLinks(true);
-      } catch (error) { externalLinkToast(error.message || "解除失败"); removeButton.disabled = !externalLinkCanEdit(); }
-    });
-  });
+  list.querySelectorAll("[data-code-save]").forEach(codeButton => codeButton.addEventListener("click", () => {
+    const row = codeButton.closest("[data-external-link-id]"); const link = links.find(item => item.id === row?.dataset.externalLinkId); const codeInput = row?.querySelector("[data-code-ref]");
+    if (link && codeInput) saveGithubCodeContext(link, codeInput, codeButton);
+  }));
+  list.querySelectorAll("[data-ci-enable]").forEach(ciButton => ciButton.addEventListener("click", () => {
+    const row = ciButton.closest("[data-external-link-id]"); const link = links.find(item => item.id === row?.dataset.externalLinkId); const workflowInput = row?.querySelector("[data-ci-workflow]");
+    if (link && workflowInput) setGithubCiSubscription(link, true, workflowInput.value, ciButton);
+  }));
+  list.querySelectorAll("[data-ci-disable]").forEach(ciButton => ciButton.addEventListener("click", () => {
+    const row = ciButton.closest("[data-external-link-id]"); const link = links.find(item => item.id === row?.dataset.externalLinkId);
+    if (link) setGithubCiSubscription(link, false, link?.ci_subscription?.workflow_name, ciButton);
+  }));
+  list.querySelectorAll(".external-issue-push").forEach(pushButton => pushButton.addEventListener("click", () => {
+    const row = pushButton.closest("[data-external-link-id]"); pushExternalSummary(row?.dataset.externalLinkId, pushButton.dataset.kind, pushButton);
+  }));
+  list.querySelectorAll(".external-issue-remove").forEach(removeButton => removeButton.addEventListener("click", async () => {
+    const row = removeButton.closest("[data-external-link-id]"); const linkId = row?.dataset.externalLinkId; const conversationId = externalLinkCurrentConversationId();
+    if (!linkId || !conversationId) return; removeButton.disabled = true;
+    try {
+      const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/external-links/${encodeURIComponent(linkId)}`, {method: "DELETE", credentials: "same-origin"});
+      if (!response.ok) { let detail = "解除失败"; try { detail = (await response.json()).detail || detail; } catch {} throw new Error(detail); }
+      externalLinkToast("已解除 GitHub Issue 关联"); await loadExternalLinks(true);
+    } catch (error) { externalLinkToast(error.message || "解除失败"); removeButton.disabled = !externalLinkCanEdit(); }
+  }));
 }
 
 async function loadExternalLinks(force = false) {

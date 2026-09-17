@@ -26,6 +26,9 @@ def test_alembic_upgrade_head_includes_memory_adapter_and_external_workflow_sche
     assert "game_adapter_ticket_replays" in tables
     assert "external_issue_links" in tables
     assert "github_code_contexts" in tables
+    assert "github_ci_subscriptions" in tables
+    assert "github_ci_deliveries" in tables
+    assert "github_ci_workflow_filters" in tables
 
     receipt_columns = {row["name"] for row in inspector.get_columns("context_memory_ingestion_receipts")}
     assert {
@@ -120,6 +123,47 @@ def test_alembic_upgrade_head_includes_memory_adapter_and_external_workflow_sche
     assert "ix_github_code_contexts_repository_head_sha" in github_context_indexes
     assert "ix_github_code_contexts_repository_selected_sha" in github_context_indexes
 
+    ci_subscription_columns = {
+        row["name"] for row in inspector.get_columns("github_ci_subscriptions")
+    }
+    assert {"link_id", "workspace_id", "conversation_id", "enabled", "updated_by", "updated_at"} <= ci_subscription_columns
+    ci_subscription_indexes = {
+        row["name"] for row in inspector.get_indexes("github_ci_subscriptions")
+    }
+    assert "ix_github_ci_subscriptions_workspace_conversation" in ci_subscription_indexes
+
+    ci_delivery_columns = {
+        row["name"] for row in inspector.get_columns("github_ci_deliveries")
+    }
+    assert {
+        "delivery_id",
+        "repository",
+        "head_sha",
+        "workflow_run_id",
+        "workflow_name",
+        "conclusion",
+        "status",
+        "matched_routes",
+        "enqueued_jobs",
+        "error",
+        "received_at",
+        "processed_at",
+    } <= ci_delivery_columns
+    ci_delivery_indexes = {
+        row["name"] for row in inspector.get_indexes("github_ci_deliveries")
+    }
+    assert "ix_github_ci_deliveries_repository_head_sha" in ci_delivery_indexes
+    assert "ix_github_ci_deliveries_workflow_run" in ci_delivery_indexes
+
+    ci_filter_columns = {
+        row["name"] for row in inspector.get_columns("github_ci_workflow_filters")
+    }
+    assert {"link_id", "workflow_name", "updated_at"} <= ci_filter_columns
+    ci_filter_indexes = {
+        row["name"] for row in inspector.get_indexes("github_ci_workflow_filters")
+    }
+    assert "ix_github_ci_workflow_filters_name" in ci_filter_indexes
+
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "20260918_0009"
+    assert revision == "20260918_0011"
