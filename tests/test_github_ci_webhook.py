@@ -29,6 +29,7 @@ def _signed_headers(delivery_id: str, body: bytes, *, event: str = "workflow_run
 
 def _fixture(tmp_path, monkeypatch):
     monkeypatch.setenv("WORLDFORGE_GITHUB_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("WORLDFORGE_GITHUB_REVALIDATION_WORKFLOWS", "Game CI")
     store = ConversationStore(
         db_path=tmp_path / "product.db",
         asset_dir=tmp_path / "assets",
@@ -100,13 +101,13 @@ def _fixture(tmp_path, monkeypatch):
     return TestClient(app), store, conversation, link, scheduled
 
 
-def _workflow_payload(*, conclusion="success", head_sha=HEAD_SHA):
+def _workflow_payload(*, conclusion="success", head_sha=HEAD_SHA, workflow_name="Game CI"):
     return {
         "action": "completed",
         "repository": {"full_name": "Owner/Game"},
         "workflow_run": {
             "id": 991,
-            "name": "Game CI",
+            "name": workflow_name,
             "html_url": "https://github.com/owner/game/actions/runs/991",
             "head_sha": head_sha,
             "conclusion": conclusion,
@@ -167,6 +168,21 @@ def test_signed_successful_workflow_enqueues_exact_commit_revalidation(tmp_path,
     assert delivery["enqueued_count"] == 1
     events = store.list_events(conversation["id"], workspace_id=DEMO_WORKSPACE_ID)
     assert any(event["type"] == "ci.revalidation.queued" for event in events)
+
+
+def test_unapproved_workflow_is_recorded_but_never_enqueued(tmp_path, monkeypatch):
+    client, store, _conversation, _link, scheduled = _fixture(tmp_path, monkeypatch)
+    body = json.dumps(_workflow_payload(workflow_name="Docs CI")).encode("utf-8")
+    response = client.post(
+        "/integrations/github/webhook",
+        content=body,
+        headers=_signed_headers("delivery-docs", body),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ignored"] == "workflow"
+    assert scheduled == []
+    assert store.get_github_webhook_delivery("delivery-docs")["status"] == "ignored_workflow"
 
 
 def test_webhook_delivery_is_replay_safe(tmp_path, monkeypatch):
@@ -283,6 +299,32 @@ def test_stale_index_binding_is_rechecked_against_current_link_metadata(tmp_path
     assert scheduled == []
     delivery = store.get_github_webhook_delivery("delivery-stale-binding")
     assert delivery["status"] == "no_match"
+
+
+def test_current_viewer_role_cannot_be_bypassed_by_ci_webhook(tmp_path, monkeypatch):
+    client, store, _conversation, _link, scheduled = _fixture(tmp_path, monkeypatch)
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(store.memberships)
+            .where(
+                (store.memberships.c.workspace_id == DEMO_WORKSPACE_ID)
+                & (store.memberships.c.user_id == DEMO_USER_ID)
+            )
+            .values(role="viewer")
+        )
+    body = json.dumps(_workflow_payload()).encode("utf-8")
+    response = client.post(
+        "/integrations/github/webhook",
+        content=body,
+        headers=_signed_headers("delivery-viewer", body),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["matched"] == 1
+    assert response.json()["enqueued"] == 0
+    assert response.json()["deferred"] == 1
+    assert scheduled == []
+    assert store.get_github_webhook_delivery("delivery-viewer")["status"] == "deferred"
 
 
 def test_webhook_rejects_bad_signature_before_delivery_is_recorded(tmp_path, monkeypatch):
