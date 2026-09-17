@@ -129,3 +129,44 @@ def test_external_issue_metadata_rejects_provider_credentials(tmp_path):
     assert store.list_external_issue_links(
         conversation["id"], workspace_id=DEMO_WORKSPACE_ID
     ) == []
+
+
+def test_external_issue_push_metadata_is_non_secret_and_durable(tmp_path):
+    store = _store(tmp_path)
+    conversation = store.create_conversation(
+        title="GitHub 评论同步",
+        workspace_id=DEMO_WORKSPACE_ID,
+        created_by=DEMO_USER_ID,
+    )
+    link = store.link_github_issue(
+        conversation["id"],
+        workspace_id=DEMO_WORKSPACE_ID,
+        created_by=DEMO_USER_ID,
+        repository="owner/game",
+        issue_number=7,
+    )
+
+    updated = store.record_external_issue_push(
+        link["id"],
+        conversation_id=conversation["id"],
+        workspace_id=DEMO_WORKSPACE_ID,
+        push_kind="reproduction",
+        comment_id=4321,
+        comment_url="https://github.com/owner/game/issues/7#issuecomment-4321",
+    )
+
+    assert updated["sync_state"] == "reproduction_pushed"
+    assert updated["last_pushed_at"] is not None
+    comment = updated["meta"]["github_comments"]["reproduction"]
+    assert comment == {
+        "id": 4321,
+        "url": "https://github.com/owner/game/issues/7#issuecomment-4321",
+    }
+    assert "token" not in updated["meta"]
+
+    reloaded = store.get_external_issue_link(
+        link["id"],
+        conversation_id=conversation["id"],
+        workspace_id=DEMO_WORKSPACE_ID,
+    )
+    assert reloaded["meta"]["github_comments"]["reproduction"] == comment
