@@ -29,6 +29,8 @@ from .github_context_store import ConversationStore as _GitHubContextConversatio
 
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _WEBHOOK_PROCESSING_LEASE_SECONDS = 60.0
+_SCOPE_PREFIX = "【验证范围】"
+_CI_PREFIX = "【CI 自动重验】"
 
 
 class ConversationStore(_GitHubContextConversationStore):
@@ -269,6 +271,32 @@ class ConversationStore(_GitHubContextConversationStore):
             raise KeyError(delivery_id)
         return dict(row._mapping)
 
+    @staticmethod
+    def _ci_base_text(payload: dict[str, Any]) -> str:
+        existing = str(payload.get("ci_base_text") or "").strip()
+        if existing:
+            return existing[:12000]
+        rows = []
+        for raw in str(payload.get("text") or "").splitlines():
+            stripped = raw.strip()
+            if stripped.startswith(_SCOPE_PREFIX) or stripped.startswith(_CI_PREFIX):
+                continue
+            rows.append(raw)
+        return "\n".join(rows).strip()[:12000]
+
+    @staticmethod
+    def _scope_line(project_context: dict[str, Any], head_sha: str) -> str:
+        scope = dict(project_context.get("scope") or {})
+        pairs = [
+            ("Build", scope.get("build_ref")),
+            ("Branch", scope.get("branch_ref")),
+            ("Commit", head_sha),
+            ("Environment", scope.get("environment_ref")),
+        ]
+        return _SCOPE_PREFIX + " | ".join(
+            f"{key}={str(value).strip()}" for key, value in pairs if str(value or "").strip()
+        )
+
     def enqueue_ci_revalidation(
         self,
         *,
@@ -276,6 +304,12 @@ class ConversationStore(_GitHubContextConversationStore):
         conversation_id: str,
         trigger: dict[str, Any],
     ) -> dict[str, Any]:
+        conversation = self.get_conversation(conversation_id, workspace_id=workspace_id)
+        if conversation.get("archived_at") is not None:
+            raise ValueError("已归档任务不会被 CI 自动重验")
+        if str(conversation.get("status") or "") in {"waiting_approval", "stopped"}:
+            raise ValueError("当前任务状态不允许 CI 自动重验")
+
         latest = self.latest_job(conversation_id, workspace_id=workspace_id)
         if not latest:
             raise ValueError("任务没有可复用的历史执行")
@@ -290,16 +324,8 @@ class ConversationStore(_GitHubContextConversationStore):
             raise ValueError("CI commit SHA 无效")
 
         payload = copy.deepcopy(dict(latest.get("payload") or {}))
-        original_text = str(payload.get("text") or "").strip()
-        workflow_name = str(trigger.get("workflow_name") or "GitHub Actions")[:240]
-        run_id = str(trigger.get("workflow_run_id") or "")[:64]
-        scope_line = f"【验证范围】Commit={head_sha}"
-        ci_line = (
-            f"【CI 自动重验】{workflow_name} 已成功完成"
-            + (f"（run {run_id}）" if run_id else "")
-            + "。请在该 commit 上重新执行原验证目标；CI 成功本身不代表问题已修复，最终结论必须由 Verifier 和证据决定。"
-        )
-        payload["text"] = "\n\n".join(part for part in [original_text, scope_line, ci_line] if part)
+        base_text = self._ci_base_text(payload)
+        payload["ci_base_text"] = base_text
         payload["history_snapshot"] = build_history_snapshot(
             self.list_messages(conversation_id, workspace_id=workspace_id)
         )
@@ -320,6 +346,18 @@ class ConversationStore(_GitHubContextConversationStore):
                 snapshot["memory_refs"] = []
                 project_context["memory_snapshot"] = snapshot
             payload["project_context"] = project_context
+
+        workflow_name = str(trigger.get("workflow_name") or "GitHub Actions")[:240]
+        run_id = str(trigger.get("workflow_run_id") or "")[:64]
+        scope_line = self._scope_line(project_context, head_sha)
+        ci_line = (
+            f"{_CI_PREFIX}{workflow_name} 已成功完成"
+            + (f"（run {run_id}）" if run_id else "")
+            + "。请在该 commit 上重新执行原验证目标；CI 成功本身不代表问题已修复，最终结论必须由 Verifier 和证据决定。"
+        )
+        payload["text"] = "\n\n".join(
+            part for part in [base_text, scope_line, ci_line] if part
+        )[:12000]
 
         return self.enqueue_job(
             workspace_id=workspace_id,
