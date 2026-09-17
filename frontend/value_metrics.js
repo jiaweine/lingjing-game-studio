@@ -1,3 +1,5 @@
+void import("./external_issue_link.js").catch(() => {});
+
 let valueMetricsLoading = false;
 let valueMetricsLoadedAt = 0;
 
