@@ -11,7 +11,13 @@ from .store import ConversationStore as _BaseConversationStore
 
 
 class ConversationStore(_BaseConversationStore):
-    """Product store with customer-value metrics layered on existing durable data.
+    """Product store with issue-verification semantics and customer-value metrics.
+
+    Human feedback can confirm that an assistant result is correct, but that is not the same
+    thing as proving the underlying game issue is fixed. When a result carries the new
+    structured ``outcome`` contract, the conversation reaches ``verified`` only when that
+    outcome itself is verifier-authoritative. Legacy results without an outcome retain the old
+    quality-gate behavior for backward compatibility.
 
     Monetary cost is intentionally not inferred from model names or estimated tokens. The
     product only reports cost when an authoritative provider/billing source is eventually
@@ -46,6 +52,63 @@ class ConversationStore(_BaseConversationStore):
                 estimated_tokens if estimated_tokens and estimated_tokens > 0 else None
             ),
         }
+
+    def _latest_structured_outcome(
+        self, conversation_id: str, *, workspace_id: str
+    ) -> dict[str, Any] | None:
+        self.get_conversation(conversation_id, workspace_id=workspace_id)
+        with self.engine.connect() as connection:
+            row = connection.execute(
+                select(self.messages.c.payload)
+                .select_from(
+                    self.messages.join(
+                        self.conversations,
+                        self.messages.c.conversation_id == self.conversations.c.id,
+                    )
+                )
+                .where(
+                    and_(
+                        self.conversations.c.workspace_id == workspace_id,
+                        self.messages.c.conversation_id == conversation_id,
+                        self.messages.c.role == "assistant",
+                    )
+                )
+                .order_by(self.messages.c.created_at.desc(), self.messages.c.id.desc())
+                .limit(1)
+            ).first()
+        if not row:
+            return None
+        try:
+            payload = json.loads(row[0] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        outcome = payload.get("outcome")
+        return dict(outcome) if isinstance(outcome, dict) else None
+
+    def feedback_gate(self, conversation_id: str, *, workspace_id: str) -> dict[str, Any]:
+        gate = dict(super().feedback_gate(conversation_id, workspace_id=workspace_id))
+        outcome = self._latest_structured_outcome(
+            conversation_id, workspace_id=workspace_id
+        )
+        if not gate.get("approved") or outcome is None:
+            return gate
+        if bool(outcome.get("verified")):
+            return gate
+
+        label = str(outcome.get("label") or "尚未验证")
+        reason = str(outcome.get("reason") or "当前结果尚未形成项目级验证事实")
+        gate.update(
+            {
+                "approved": False,
+                "task_status": "review",
+                "issue_outcome": outcome,
+                "reason": (
+                    f"人工已确认这条交付本身正确，但问题结论仍为“{label}”。"
+                    f"{reason}"
+                ),
+            }
+        )
+        return gate
 
     def product_metrics(self, *, workspace_id: str) -> dict[str, Any]:
         metrics = dict(super().product_metrics(workspace_id=workspace_id))
