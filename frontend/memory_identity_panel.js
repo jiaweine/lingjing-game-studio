@@ -1,5 +1,5 @@
-import "./issue_lifecycle.js";
-import "./value_metrics.js";
+void import("./issue_lifecycle.js").catch(() => {});
+void import("./value_metrics.js").catch(() => {});
 
 const IDENTITY_REASON_LABELS = {
   "strong-stable-token-overlap": "稳定语义高度重合",
