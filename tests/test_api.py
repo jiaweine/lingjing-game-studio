@@ -54,6 +54,48 @@ def test_conversation_roundtrip():
     assert response.json()["title"] == "测试任务"
 
 
+def test_external_github_issue_linkage_roundtrip():
+    client = TestClient(app)
+    conversation = client.post(
+        "/api/conversations",
+        json={"title": "外部 Issue 关联", "scene": "battle_review"},
+    ).json()
+    conversation_id = conversation["id"]
+
+    created = client.post(
+        f"/api/conversations/{conversation_id}/external-links",
+        json={
+            "repository": "jiaweine/lingjing-game-studio",
+            "issue_number": 29,
+            "title": "Push verified results back into GitHub/Jira/CI workflows",
+        },
+    )
+    assert created.status_code == 200
+    link = created.json()
+    assert link["provider"] == "github"
+    assert link["external_key"] == "29"
+    assert link["external_url"].endswith("/jiaweine/lingjing-game-studio/issues/29")
+
+    listed = client.get(
+        f"/api/conversations/{conversation_id}/external-links"
+    )
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()] == [link["id"]]
+
+    control = client.get(f"/api/conversations/{conversation_id}/control")
+    assert control.status_code == 200
+    assert control.json()["external_links"][0]["id"] == link["id"]
+
+    removed = client.delete(
+        f"/api/conversations/{conversation_id}/external-links/{link['id']}"
+    )
+    assert removed.status_code == 200
+    assert removed.json() == {"ok": True}
+    assert client.get(
+        f"/api/conversations/{conversation_id}/external-links"
+    ).json() == []
+
+
 def test_product_job_can_be_cancelled():
     client = TestClient(app)
     conversation = client.post(
