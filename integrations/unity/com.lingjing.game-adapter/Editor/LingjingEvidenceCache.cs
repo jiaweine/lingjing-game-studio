@@ -59,7 +59,7 @@ namespace Lingjing.GameAdapter.Editor
             public DateTime created_utc;
         }
 
-        private sealed class CaptureRequest : IDisposable
+        private sealed class CaptureRequest
         {
             public readonly string[] Requested;
             public readonly ManualResetEventSlim Completed = new ManualResetEventSlim(false);
@@ -69,11 +69,6 @@ namespace Lingjing.GameAdapter.Editor
             public CaptureRequest(string[] requested)
             {
                 Requested = requested ?? Array.Empty<string>();
-            }
-
-            public void Dispose()
-            {
-                Completed.Dispose();
             }
         }
 
@@ -121,18 +116,24 @@ namespace Lingjing.GameAdapter.Editor
                 return CaptureOnMainThread(normalized);
             }
 
-            using (var request = new CaptureRequest(normalized))
+            var request = new CaptureRequest(normalized);
+            Requests.Enqueue(request);
+            if (!request.Completed.Wait(Math.Max(500, timeoutMilliseconds)))
             {
-                Requests.Enqueue(request);
-                if (!request.Completed.Wait(Math.Max(500, timeoutMilliseconds)))
-                {
-                    throw new TimeoutException("Unity main-thread evidence capture timed out.");
-                }
+                // Do not dispose here: the queued main-thread request can still complete later.
+                throw new TimeoutException("Unity main-thread evidence capture timed out.");
+            }
+            try
+            {
                 if (request.Error != null)
                 {
                     throw new InvalidOperationException("Unity evidence capture failed.", request.Error);
                 }
                 return request.Results ?? new List<EvidenceRecord>();
+            }
+            finally
+            {
+                request.Completed.Dispose();
             }
         }
 
@@ -264,21 +265,11 @@ namespace Lingjing.GameAdapter.Editor
 
         private static EvidenceRecord CaptureScreenshot()
         {
-            Texture2D texture = null;
+            var engineObject = string.Empty;
+            var texture = CaptureCameraFrame(out engineObject);
+            if (texture == null) return null;
             try
             {
-                if (EditorApplication.isPlaying)
-                {
-                    texture = ScreenCapture.CaptureScreenshotAsTexture();
-                }
-                if (texture == null)
-                {
-                    texture = CaptureCameraFrame();
-                }
-                if (texture == null)
-                {
-                    return null;
-                }
                 var bytes = texture.EncodeToPNG();
                 return BuildRecord(
                     "screenshot",
@@ -288,7 +279,7 @@ namespace Lingjing.GameAdapter.Editor
                     new EvidenceMetadata
                     {
                         mime = "image/png",
-                        engine_object = EditorApplication.isPlaying ? "GameView/Camera" : "SceneView/Camera",
+                        engine_object = engineObject,
                         byte_size = bytes.LongLength,
                         width = texture.width,
                         height = texture.height,
@@ -298,23 +289,23 @@ namespace Lingjing.GameAdapter.Editor
             }
             finally
             {
-                if (texture != null)
-                {
-                    UnityEngine.Object.DestroyImmediate(texture);
-                }
+                UnityEngine.Object.DestroyImmediate(texture);
             }
         }
 
-        private static Texture2D CaptureCameraFrame()
+        private static Texture2D CaptureCameraFrame(out string engineObject)
         {
             Camera camera = null;
+            engineObject = string.Empty;
             if (EditorApplication.isPlaying)
             {
                 camera = Camera.main;
+                if (camera != null) engineObject = "GameView/Camera.main";
             }
             if (camera == null && SceneView.lastActiveSceneView != null)
             {
                 camera = SceneView.lastActiveSceneView.camera;
+                if (camera != null) engineObject = "SceneView/Camera";
             }
             if (camera == null) return null;
 
