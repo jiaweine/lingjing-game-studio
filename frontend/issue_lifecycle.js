@@ -216,6 +216,10 @@ function normalizeVisibleStatuses() {
   const taskState = document.getElementById("taskState");
   if (taskState?.textContent === "等待人工复核") taskState.textContent = "需要确认";
   if (["执行中断", "已停止"].includes(taskState?.textContent || "")) taskState.textContent = "需处理";
+  const taskStateHint = document.getElementById("taskStateHint");
+  if (taskStateHint?.textContent === "系统复核已完成；人工确认正确后才会标记为已验证。") {
+    taskStateHint.textContent = "结果已生成；是否可标记为已验证取决于当前结论和人工复核。";
+  }
   document.querySelectorAll(".msg.assistant .msg-label .tag").forEach(tag => {
     if (tag.textContent === "交付") tag.textContent = "结果";
   });
