@@ -30,6 +30,8 @@ def test_product_metrics_include_verified_issue_value_signals(tmp_path):
                 },
             },
             "outcome": {
+                "issue_lifecycle": True,
+                "requires_project_verification": True,
                 "state": "verified",
                 "label": "已验证",
                 "verified": True,
@@ -77,6 +79,8 @@ def test_human_approval_does_not_turn_insufficient_evidence_into_verified_issue(
         "当前分析正确地指出证据还不够。",
         payload={
             "outcome": {
+                "issue_lifecycle": True,
+                "requires_project_verification": True,
                 "state": "insufficient_evidence",
                 "label": "证据不足",
                 "verified": False,
@@ -106,3 +110,50 @@ def test_human_approval_does_not_turn_insufficient_evidence_into_verified_issue(
     assert current["status"] == "review"
     assert metrics["verified_issue_count"] == 0
     assert metrics["weekly_verified_issues"] == 0
+
+
+def test_non_issue_analysis_keeps_human_quality_gate_but_not_verified_issue_metric(tmp_path):
+    store = _store(tmp_path)
+    conversation = store.create_conversation(
+        title="数值平衡分析",
+        workspace_id=DEMO_WORKSPACE_ID,
+        created_by=DEMO_USER_ID,
+    )
+    answer = store.add_message(
+        conversation["id"],
+        "assistant",
+        "数值分析完成，可以由设计师人工确认是否采纳。",
+        payload={
+            "outcome": {
+                "issue_lifecycle": False,
+                "requires_project_verification": False,
+                "intent": "balance",
+                "state": "analysis_complete",
+                "label": "分析完成",
+                "verified": False,
+            }
+        },
+        workspace_id=DEMO_WORKSPACE_ID,
+    )
+
+    store.upsert_feedback(
+        workspace_id=DEMO_WORKSPACE_ID,
+        user_id=DEMO_USER_ID,
+        message_id=answer["id"],
+        verdict="correct",
+        evidence_useful=True,
+        human_verified=True,
+        note="设计师确认该分析可采纳",
+    )
+
+    gate = store.feedback_gate(conversation["id"], workspace_id=DEMO_WORKSPACE_ID)
+    current = store.get_conversation(conversation["id"], workspace_id=DEMO_WORKSPACE_ID)
+    metrics = store.product_metrics(workspace_id=DEMO_WORKSPACE_ID)
+
+    assert gate["approved"] is True
+    assert gate["task_status"] == "verified"
+    assert current["status"] == "verified"
+    assert "issue_outcome" not in gate
+    assert metrics["verified_issue_count"] == 0
+    assert metrics["weekly_verified_issues"] == 0
+    assert metrics["median_time_to_verified_issue_seconds"] is None
