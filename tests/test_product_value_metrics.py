@@ -1,3 +1,7 @@
+import time
+
+from sqlalchemy import update
+
 from worldforge.product import ConversationStore
 from worldforge.product.store import DEMO_USER_ID, DEMO_WORKSPACE_ID
 
@@ -157,3 +161,83 @@ def test_non_issue_analysis_keeps_human_quality_gate_but_not_verified_issue_metr
     assert metrics["verified_issue_count"] == 0
     assert metrics["weekly_verified_issues"] == 0
     assert metrics["median_time_to_verified_issue_seconds"] is None
+
+
+def test_time_to_verified_issue_uses_authoritative_result_feedback(tmp_path):
+    store = _store(tmp_path)
+    conversation = store.create_conversation(
+        title="同一 Bug 先确认回答，再确认真实修复",
+        workspace_id=DEMO_WORKSPACE_ID,
+        created_by=DEMO_USER_ID,
+    )
+    cautious = store.add_message(
+        conversation["id"],
+        "assistant",
+        "当前证据不足。",
+        payload={
+            "outcome": {
+                "issue_lifecycle": True,
+                "requires_project_verification": True,
+                "state": "insufficient_evidence",
+                "label": "证据不足",
+                "verified": False,
+            }
+        },
+        workspace_id=DEMO_WORKSPACE_ID,
+    )
+    store.upsert_feedback(
+        workspace_id=DEMO_WORKSPACE_ID,
+        user_id=DEMO_USER_ID,
+        message_id=cautious["id"],
+        verdict="correct",
+        human_verified=True,
+        note="确认这条谨慎回答是正确的",
+    )
+
+    authoritative = store.add_message(
+        conversation["id"],
+        "assistant",
+        "真实项目 Verifier 已确认修复。",
+        payload={
+            "outcome": {
+                "issue_lifecycle": True,
+                "requires_project_verification": True,
+                "state": "verified",
+                "label": "已验证",
+                "verified": True,
+            }
+        },
+        workspace_id=DEMO_WORKSPACE_ID,
+    )
+    store.upsert_feedback(
+        workspace_id=DEMO_WORKSPACE_ID,
+        user_id=DEMO_USER_ID,
+        message_id=authoritative["id"],
+        verdict="correct",
+        human_verified=True,
+        note="确认最终 Verifier 结果",
+    )
+
+    base = time.time() - 1000
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(store.conversations)
+            .where(store.conversations.c.id == conversation["id"])
+            .values(created_at=base)
+        )
+        connection.execute(
+            update(store.result_feedback)
+            .where(store.result_feedback.c.message_id == cautious["id"])
+            .values(created_at=base + 10, updated_at=base + 10)
+        )
+        connection.execute(
+            update(store.result_feedback)
+            .where(store.result_feedback.c.message_id == authoritative["id"])
+            .values(created_at=base + 100, updated_at=base + 100)
+        )
+
+    metrics = store.product_metrics(workspace_id=DEMO_WORKSPACE_ID)
+
+    assert metrics["verified_issue_count"] == 1
+    assert metrics["weekly_verified_issues"] == 1
+    assert metrics["median_time_to_verified_issue_seconds"] == 100.0
