@@ -1,3 +1,5 @@
+import "./issue_lifecycle.js";
+
 const IDENTITY_REASON_LABELS = {
   "strong-stable-token-overlap": "稳定语义高度重合",
   "moderate-stable-token-overlap": "稳定语义部分重合",
