@@ -3,12 +3,6 @@ const nativeFetch = window.fetch.bind(window);
 const SCOPE_PREFIX = "【验证范围】";
 const VERIFY_PROMPT = "沿用本任务已经确认的复现条件，在当前修复版本上重新执行相同验证。请对比修复前后的关键证据，并明确给出：仍可复现 / 已无法复现 / 证据不足；最后生成发布前回归清单。";
 
-function esc(value) {
-  return String(value ?? "").replace(/[&<>"']/g, char => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[char]));
-}
-
 function compact(value, max = 160) {
   return String(value || "").trim().replace(/\s+/g, " ").slice(0, max);
 }
@@ -183,6 +177,26 @@ function syncButtonState() {
   button.title = !hasResult ? "先完成一次问题复现，再验证修复版本" : "沿用当前任务的复现上下文重新验证";
 }
 
+function normalizeVisibleStatuses() {
+  const replacements = [
+    ["待复核", "需要确认"],
+    ["等待确认", "需要确认"],
+    ["需修正", "需处理"],
+    ["已停止", "需处理"],
+  ];
+  document.querySelectorAll(".conv-item small").forEach(element => {
+    let value = element.textContent || "";
+    for (const [from, to] of replacements) value = value.replace(from, to);
+    if (element.textContent !== value) element.textContent = value;
+  });
+  const taskState = document.getElementById("taskState");
+  if (taskState?.textContent === "等待人工复核") taskState.textContent = "需要确认";
+  if (["执行中断", "已停止"].includes(taskState?.textContent || "")) taskState.textContent = "需处理";
+  document.querySelectorAll(".msg.assistant .msg-label .tag").forEach(tag => {
+    if (tag.textContent === "交付") tag.textContent = "结果";
+  });
+}
+
 function hydrateFromConversation(conversation) {
   installCard();
   const scopes = allMessageScopes(conversation?.messages || []);
@@ -191,6 +205,7 @@ function hydrateFromConversation(conversation) {
   if (scopes.length) setScope(scopes.at(-1));
   updateScopeSummary(scopes);
   syncButtonState();
+  normalizeVisibleStatuses();
 }
 
 window.fetch = async (input, init = {}) => {
@@ -225,6 +240,12 @@ window.fetch = async (input, init = {}) => {
     if (current) current.textContent = scopeLabel(submittedScope);
     const baseline = document.getElementById("issueBaselineScope");
     if (baseline && baseline.textContent === "未绑定版本") baseline.textContent = scopeLabel(submittedScope);
+    const comparison = document.getElementById("issueScopeComparison");
+    if (comparison && baseline) {
+      const baselineScope = parseScopeLine(`${SCOPE_PREFIX}Build=${baseline.textContent}`);
+      comparison.textContent = baseline.textContent !== scopeLabel(submittedScope) ? "已进入修复版本对比" : "当前仍在初始复现版本";
+      void baselineScope;
+    }
     setLifecycleHint("版本范围已随任务消息保存；后续修复验证会继续留在同一问题上下文。", "ok");
   }
 
@@ -238,10 +259,12 @@ window.fetch = async (input, init = {}) => {
 function refreshFromRenderedMessages() {
   installCard();
   syncButtonState();
+  normalizeVisibleStatuses();
 }
 
 installStyle();
 installCard();
+normalizeVisibleStatuses();
 
 const observer = new MutationObserver(refreshFromRenderedMessages);
 observer.observe(document.documentElement, {subtree: true, childList: true, attributes: true, attributeFilter: ["disabled"]});
