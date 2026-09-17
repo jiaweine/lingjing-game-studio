@@ -173,7 +173,8 @@ function syncButtonState() {
   const send = document.getElementById("sendBtn");
   if (!button || !send) return;
   const hasResult = Boolean(document.querySelector(".msg.assistant[data-message-id]"));
-  button.disabled = !hasResult || send.disabled;
+  const shouldDisable = !hasResult || send.disabled;
+  if (button.disabled !== shouldDisable) button.disabled = shouldDisable;
   button.title = !hasResult ? "先完成一次问题复现，再验证修复版本" : "沿用当前任务的复现上下文重新验证";
 }
 
@@ -242,9 +243,9 @@ window.fetch = async (input, init = {}) => {
     if (baseline && baseline.textContent === "未绑定版本") baseline.textContent = scopeLabel(submittedScope);
     const comparison = document.getElementById("issueScopeComparison");
     if (comparison && baseline) {
-      const baselineScope = parseScopeLine(`${SCOPE_PREFIX}Build=${baseline.textContent}`);
-      comparison.textContent = baseline.textContent !== scopeLabel(submittedScope) ? "已进入修复版本对比" : "当前仍在初始复现版本";
-      void baselineScope;
+      comparison.textContent = baseline.textContent !== scopeLabel(submittedScope)
+        ? "已进入修复版本对比"
+        : "当前仍在初始复现版本";
     }
     setLifecycleHint("版本范围已随任务消息保存；后续修复验证会继续留在同一问题上下文。", "ok");
   }
