@@ -1,4 +1,4 @@
-from .github_push_store import ConversationStore
+from .github_context_store import ConversationStore
 from .media import extract_video_frames, extract_video_keyframes, probe_media
 from .contextual_analyzer_v3 import ProductAnalyzer
 

@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, inspect, text
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_alembic_upgrade_head_includes_memory_adapter_and_external_link_schema(tmp_path):
+def test_alembic_upgrade_head_includes_memory_adapter_and_external_workflow_schema(tmp_path):
     database = tmp_path / "migration-chain.db"
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
@@ -25,6 +25,7 @@ def test_alembic_upgrade_head_includes_memory_adapter_and_external_link_schema(t
     assert "context_memory_ingestion_receipts" in tables
     assert "game_adapter_ticket_replays" in tables
     assert "external_issue_links" in tables
+    assert "github_code_contexts" in tables
 
     receipt_columns = {row["name"] for row in inspector.get_columns("context_memory_ingestion_receipts")}
     assert {
@@ -94,6 +95,31 @@ def test_alembic_upgrade_head_includes_memory_adapter_and_external_link_schema(t
     }
     assert "uq_external_issue_link_target" in external_link_unique_constraints
 
+    github_context_columns = {
+        row["name"] for row in inspector.get_columns("github_code_contexts")
+    }
+    assert {
+        "link_id",
+        "workspace_id",
+        "conversation_id",
+        "repository",
+        "pull_request_number",
+        "head_sha",
+        "head_ref",
+        "base_sha",
+        "base_ref",
+        "selected_commit_sha",
+        "selected_commit_url",
+        "selected_commit_message",
+        "updated_at",
+    } <= github_context_columns
+    github_context_indexes = {
+        row["name"] for row in inspector.get_indexes("github_code_contexts")
+    }
+    assert "ix_github_code_contexts_workspace_conversation" in github_context_indexes
+    assert "ix_github_code_contexts_repository_head_sha" in github_context_indexes
+    assert "ix_github_code_contexts_repository_selected_sha" in github_context_indexes
+
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "20260918_0008"
+    assert revision == "20260918_0009"
