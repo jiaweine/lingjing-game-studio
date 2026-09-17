@@ -82,8 +82,11 @@ namespace Lingjing.GameAdapter.Editor
         private static readonly Dictionary<string, EvidenceRecord> Evidence = new Dictionary<string, EvidenceRecord>(StringComparer.Ordinal);
         private static readonly Queue<string> EvidenceOrder = new Queue<string>();
         private static readonly ConcurrentQueue<CaptureRequest> Requests = new ConcurrentQueue<CaptureRequest>();
+        private static readonly Regex AuthorizationValue = new Regex(
+            @"(?i)[""']?authorization[""']?\s*[:=]\s*[""']?(?:[A-Za-z]+\s+)?[^""'\s,;]+",
+            RegexOptions.Compiled);
         private static readonly Regex SensitiveValue = new Regex(
-            @"(?i)(authorization|access[_-]?token|refresh[_-]?token|token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,;]+",
+            @"(?i)[""']?(access[_-]?token|refresh[_-]?token|token|secret|password|api[_-]?key)[""']?\s*[:=]\s*[""']?[^""'\s,;]+",
             RegexOptions.Compiled);
         private static readonly int MainThreadId;
         private static string _snapshotJson = "{}";
@@ -377,6 +380,7 @@ namespace Lingjing.GameAdapter.Editor
         {
             var input = value ?? string.Empty;
             if (input.Length > 4000) input = input.Substring(0, 4000) + "…";
+            input = AuthorizationValue.Replace(input, "authorization=[REDACTED]");
             return SensitiveValue.Replace(input, "$1=[REDACTED]");
         }
 
