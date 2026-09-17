@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 
 from worldforge.api.app import app, product_store
+from worldforge.product.control import github_issue_publisher
+from worldforge.product.github_issue_publisher import PublishedIssueComment
 
 
 def test_health_and_runtime():
@@ -94,6 +96,97 @@ def test_external_github_issue_linkage_roundtrip():
     assert client.get(
         f"/api/conversations/{conversation_id}/external-links"
     ).json() == []
+
+
+def _create_push_fixture(*, verified: bool):
+    client = TestClient(app)
+    conversation = client.post(
+        "/api/conversations",
+        json={"title": "GitHub Push 测试", "scene": "battle_review"},
+    ).json()
+    conversation_id = conversation["id"]
+    product_store.add_message(
+        conversation_id,
+        "user",
+        "验证问题。\n\n【验证范围】Build=1.4.7 | Commit=abc123",
+        {},
+        workspace_id=conversation["workspace_id"],
+    )
+    product_store.add_message(
+        conversation_id,
+        "assistant",
+        "用户可见的问题验证结果。",
+        {
+            "outcome": {
+                "issue_lifecycle": True,
+                "requires_project_verification": True,
+                "state": "verified" if verified else "needs_verifier_decision",
+                "label": "已验证" if verified else "需要验证结论",
+                "verified": verified,
+                "reason": "独立 Verifier 已确认" if verified else "仍需独立 Verifier",
+            },
+            "evidence": [{"title": "回归日志", "locator": "/private/not-for-github.log"}],
+        },
+        workspace_id=conversation["workspace_id"],
+    )
+    link = client.post(
+        f"/api/conversations/{conversation_id}/external-links",
+        json={"repository": "owner/game", "issue_number": 7},
+    ).json()
+    return client, conversation, link
+
+
+def test_github_issue_push_requires_server_side_credential():
+    client, conversation, link = _create_push_fixture(verified=False)
+    response = client.post(
+        f"/api/conversations/{conversation['id']}/external-links/{link['id']}/push",
+        json={"kind": "reproduction"},
+    )
+    assert response.status_code == 503
+    assert "WORLDFORGE_GITHUB_TOKEN" in response.json()["detail"]
+
+
+def test_github_verification_push_is_blocked_before_verifier():
+    client, conversation, link = _create_push_fixture(verified=False)
+    response = client.post(
+        f"/api/conversations/{conversation['id']}/external-links/{link['id']}/push",
+        json={"kind": "verification"},
+    )
+    assert response.status_code == 409
+    assert "Verifier" in response.json()["detail"]
+
+
+def test_github_issue_push_posts_then_updates_same_comment(monkeypatch):
+    client, conversation, link = _create_push_fixture(verified=True)
+    calls = []
+
+    async def fake_publish_comment(**kwargs):
+        calls.append(kwargs)
+        return PublishedIssueComment(
+            comment_id=4321,
+            html_url="https://github.com/owner/game/issues/7#issuecomment-4321",
+            updated=kwargs.get("existing_comment_id") is not None,
+        )
+
+    monkeypatch.setattr(github_issue_publisher, "publish_comment", fake_publish_comment)
+    endpoint = (
+        f"/api/conversations/{conversation['id']}/external-links/{link['id']}/push"
+    )
+    first = client.post(endpoint, json={"kind": "verification"})
+    second = client.post(endpoint, json={"kind": "verification"})
+
+    assert first.status_code == 200
+    assert first.json()["updated"] is False
+    assert second.status_code == 200
+    assert second.json()["updated"] is True
+    assert calls[0]["existing_comment_id"] is None
+    assert calls[1]["existing_comment_id"] == 4321
+    assert "/private/not-for-github.log" not in calls[0]["body"]
+    persisted = client.get(
+        f"/api/conversations/{conversation['id']}/external-links"
+    ).json()[0]
+    assert persisted["sync_state"] == "verification_pushed"
+    assert persisted["meta"]["github_comments"]["verification"]["id"] == 4321
 
 
 def test_product_job_can_be_cancelled():
