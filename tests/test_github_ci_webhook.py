@@ -6,7 +6,7 @@ import time
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from worldforge.product import ConversationStore
 from worldforge.product.github_ci_webhook import build_github_ci_webhook_router
@@ -92,7 +92,7 @@ def _fixture(tmp_path, monkeypatch):
     app.include_router(
         build_github_ci_webhook_router(store=store, schedule_retry=schedule_retry)
     )
-    return TestClient(app), store, conversation, scheduled
+    return TestClient(app), store, conversation, link, scheduled
 
 
 def _workflow_payload(*, conclusion="success", head_sha=HEAD_SHA):
@@ -109,8 +109,31 @@ def _workflow_payload(*, conclusion="success", head_sha=HEAD_SHA):
     }
 
 
+def _trigger(delivery_id: str) -> dict:
+    return {
+        "source": "github_workflow_run",
+        "delivery_id": delivery_id,
+        "repository": "owner/game",
+        "head_sha": HEAD_SHA,
+        "workflow_run_id": "991",
+        "workflow_name": "Game CI",
+        "workflow_url": "https://github.com/owner/game/actions/runs/991",
+        "conclusion": "success",
+    }
+
+
+def _job_ids(store, conversation_id: str) -> list[str]:
+    with store.engine.connect() as connection:
+        rows = connection.execute(
+            select(store.jobs.c.id)
+            .where(store.jobs.c.conversation_id == conversation_id)
+            .order_by(store.jobs.c.created_at, store.jobs.c.id)
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def test_signed_successful_workflow_enqueues_exact_commit_revalidation(tmp_path, monkeypatch):
-    client, store, conversation, scheduled = _fixture(tmp_path, monkeypatch)
+    client, store, conversation, _link, scheduled = _fixture(tmp_path, monkeypatch)
     body = json.dumps(_workflow_payload(), separators=(",", ":")).encode("utf-8")
     response = client.post(
         "/integrations/github/webhook",
@@ -121,6 +144,7 @@ def test_signed_successful_workflow_enqueues_exact_commit_revalidation(tmp_path,
     assert response.status_code == 200
     assert response.json()["matched"] == 1
     assert response.json()["enqueued"] == 1
+    assert response.json()["stale"] == 0
     assert len(scheduled) == 1
     job, principal = scheduled[0]
     assert principal.user_id == DEMO_USER_ID
@@ -142,7 +166,7 @@ def test_signed_successful_workflow_enqueues_exact_commit_revalidation(tmp_path,
 
 
 def test_webhook_delivery_is_replay_safe(tmp_path, monkeypatch):
-    client, store, _conversation, scheduled = _fixture(tmp_path, monkeypatch)
+    client, store, _conversation, _link, scheduled = _fixture(tmp_path, monkeypatch)
     body = json.dumps(_workflow_payload(), separators=(",", ":")).encode("utf-8")
     headers = _signed_headers("delivery-repeat", body)
 
@@ -156,8 +180,86 @@ def test_webhook_delivery_is_replay_safe(tmp_path, monkeypatch):
     assert store.get_github_webhook_delivery("delivery-repeat")["enqueued_count"] == 1
 
 
+def test_received_delivery_recovers_existing_same_delivery_job_after_crash(tmp_path, monkeypatch):
+    client, store, conversation, _link, scheduled = _fixture(tmp_path, monkeypatch)
+    delivery_id = "delivery-crash-resume"
+    assert store.begin_github_webhook_delivery(
+        delivery_id=delivery_id,
+        event="workflow_run",
+        action="completed",
+        repository="owner/game",
+        head_sha=HEAD_SHA,
+        workflow_run_id="991",
+        workflow_name="Game CI",
+        workflow_url="https://github.com/owner/game/actions/runs/991",
+        conclusion="success",
+    ) is True
+    existing_job = store.enqueue_ci_revalidation(
+        workspace_id=DEMO_WORKSPACE_ID,
+        conversation_id=conversation["id"],
+        trigger=_trigger(delivery_id),
+    )
+    before = _job_ids(store, conversation["id"])
+    assert before[-1] == existing_job["id"]
+    assert store.get_github_webhook_delivery(delivery_id)["status"] == "received"
+
+    body = json.dumps(_workflow_payload(), separators=(",", ":")).encode("utf-8")
+    response = client.post(
+        "/integrations/github/webhook",
+        content=body,
+        headers=_signed_headers(delivery_id, body),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["recovered"] == 1
+    assert response.json()["enqueued"] == 1
+    assert _job_ids(store, conversation["id"]) == before
+    assert len(scheduled) == 1
+    assert scheduled[0][0]["id"] == existing_job["id"]
+    delivery = store.get_github_webhook_delivery(delivery_id)
+    assert delivery["status"] == "enqueued"
+    assert delivery["enqueued_count"] == 1
+
+
+def test_stale_index_binding_is_rechecked_against_current_link_metadata(tmp_path, monkeypatch):
+    client, store, conversation, link, scheduled = _fixture(tmp_path, monkeypatch)
+    current = store.get_external_issue_link(
+        link["id"],
+        conversation_id=conversation["id"],
+        workspace_id=DEMO_WORKSPACE_ID,
+    )
+    meta = dict(current["meta"])
+    context = dict(meta["github_context"])
+    context["head_commit_sha"] = "d" * 40
+    context.pop("selected_commit_sha", None)
+    meta["github_context"] = context
+    # Simulate a crash after authoritative linkage metadata changed but before its derived
+    # github_code_bindings index was refreshed.
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(store.external_issue_links)
+            .where(store.external_issue_links.c.id == link["id"])
+            .values(meta=json.dumps(meta, ensure_ascii=False), updated_at=time.time())
+        )
+
+    body = json.dumps(_workflow_payload(), separators=(",", ":")).encode("utf-8")
+    response = client.post(
+        "/integrations/github/webhook",
+        content=body,
+        headers=_signed_headers("delivery-stale-binding", body),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["matched"] == 0
+    assert response.json()["enqueued"] == 0
+    assert response.json()["stale"] == 1
+    assert scheduled == []
+    delivery = store.get_github_webhook_delivery("delivery-stale-binding")
+    assert delivery["status"] == "no_match"
+
+
 def test_webhook_rejects_bad_signature_before_delivery_is_recorded(tmp_path, monkeypatch):
-    client, store, _conversation, scheduled = _fixture(tmp_path, monkeypatch)
+    client, store, _conversation, _link, scheduled = _fixture(tmp_path, monkeypatch)
     body = json.dumps(_workflow_payload()).encode("utf-8")
     response = client.post(
         "/integrations/github/webhook",
@@ -176,7 +278,7 @@ def test_webhook_rejects_bad_signature_before_delivery_is_recorded(tmp_path, mon
 
 
 def test_failed_workflow_is_recorded_but_does_not_enqueue(tmp_path, monkeypatch):
-    client, store, _conversation, scheduled = _fixture(tmp_path, monkeypatch)
+    client, store, _conversation, _link, scheduled = _fixture(tmp_path, monkeypatch)
     body = json.dumps(_workflow_payload(conclusion="failure")).encode("utf-8")
     response = client.post(
         "/integrations/github/webhook",
