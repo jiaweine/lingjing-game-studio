@@ -5,6 +5,7 @@ Revises: 20260918_0008
 """
 
 import json
+import re
 
 from alembic import op
 import sqlalchemy as sa
@@ -13,6 +14,8 @@ revision = "20260918_0009"
 down_revision = "20260918_0008"
 branch_labels = None
 depends_on = None
+
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def upgrade() -> None:
@@ -59,6 +62,7 @@ def upgrade() -> None:
         sa.Column("matched_count", sa.Integer(), nullable=False),
         sa.Column("enqueued_count", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.Float(), nullable=False),
+        sa.Column("claimed_at", sa.Float(), nullable=False),
         sa.Column("completed_at", sa.Float(), nullable=True),
         sa.PrimaryKeyConstraint("delivery_id"),
     )
@@ -86,9 +90,9 @@ def upgrade() -> None:
         pull = dict(context.get("pull_request") or {})
         head_sha = str(context.get("head_commit_sha") or "").strip().lower() or None
         selected_sha = str(context.get("selected_commit_sha") or "").strip().lower() or None
-        if head_sha and len(head_sha) != 40:
+        if head_sha and not _FULL_SHA_RE.fullmatch(head_sha):
             head_sha = None
-        if selected_sha and len(selected_sha) != 40:
+        if selected_sha and not _FULL_SHA_RE.fullmatch(selected_sha):
             selected_sha = None
         try:
             pull_number = int(pull.get("number")) if pull.get("number") is not None else None
