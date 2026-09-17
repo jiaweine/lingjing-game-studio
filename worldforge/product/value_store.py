@@ -14,10 +14,9 @@ class ConversationStore(_BaseConversationStore):
     """Product store with issue-verification semantics and customer-value metrics.
 
     Human feedback can confirm that an assistant result is correct, but that is not the same
-    thing as proving the underlying game issue is fixed. When a result carries the new
-    structured ``outcome`` contract, the conversation reaches ``verified`` only when that
-    outcome itself is verifier-authoritative. Legacy results without an outcome retain the old
-    quality-gate behavior for backward compatibility.
+    thing as proving the underlying game issue is fixed. Only outcomes explicitly marked as an
+    issue lifecycle require verifier-authoritative project truth before the conversation can
+    close as ``verified``. Non-issue workflows retain the existing human quality gate.
 
     Monetary cost is intentionally not inferred from model names or estimated tokens. The
     product only reports cost when an authoritative provider/billing source is eventually
@@ -52,6 +51,15 @@ class ConversationStore(_BaseConversationStore):
                 estimated_tokens if estimated_tokens and estimated_tokens > 0 else None
             ),
         }
+
+    @staticmethod
+    def _is_issue_lifecycle(outcome: dict[str, Any] | None) -> bool:
+        if not outcome:
+            return False
+        return bool(
+            outcome.get("issue_lifecycle")
+            or outcome.get("requires_project_verification")
+        )
 
     def _latest_structured_outcome(
         self, conversation_id: str, *, workspace_id: str
@@ -90,7 +98,7 @@ class ConversationStore(_BaseConversationStore):
         outcome = self._latest_structured_outcome(
             conversation_id, workspace_id=workspace_id
         )
-        if not gate.get("approved") or outcome is None:
+        if not gate.get("approved") or not self._is_issue_lifecycle(outcome):
             return gate
         if bool(outcome.get("verified")):
             return gate
@@ -150,7 +158,7 @@ class ConversationStore(_BaseConversationStore):
                         self.messages.c.role == "assistant",
                     )
                 )
-                .order_by(self.messages.c.created_at)
+                .order_by(self.messages.c.created_at, self.messages.c.id)
             ).fetchall()
 
         conversation_by_id = {str(row["id"]): row for row in conversations}
@@ -168,25 +176,23 @@ class ConversationStore(_BaseConversationStore):
             if timestamp > 0 and (previous is None or timestamp < previous):
                 first_verified_at[conversation_id] = timestamp
 
-        verified_ids = currently_verified & set(first_verified_at)
-        verified_durations: list[float] = []
-        for conversation_id in verified_ids:
-            created = float(conversation_by_id[conversation_id].get("created_at") or 0.0)
-            verified = first_verified_at[conversation_id]
-            if created > 0 and verified >= created:
-                verified_durations.append(verified - created)
-
         provider_results = 0
         exact_token_results = 0
         estimated_input_tokens = 0
         exact_input_tokens = 0
         provider_keys: set[str] = set()
         provider_models: set[str] = set()
+        latest_outcomes: dict[str, dict[str, Any]] = {}
         for row in message_rows:
             try:
                 payload = json.loads(row.payload or "{}")
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
+
+            outcome = payload.get("outcome")
+            if isinstance(outcome, dict):
+                latest_outcomes[str(row.conversation_id)] = dict(outcome)
+
             usage = self._provider_usage(payload)
             if usage is None:
                 continue
@@ -201,12 +207,25 @@ class ConversationStore(_BaseConversationStore):
                 exact_input_tokens += int(usage["exact_input_tokens"])
                 exact_token_results += 1
 
+        verified_issue_ids = {
+            conversation_id
+            for conversation_id in currently_verified & set(first_verified_at)
+            if self._is_issue_lifecycle(latest_outcomes.get(conversation_id))
+            and bool(latest_outcomes[conversation_id].get("verified"))
+        }
+        verified_durations: list[float] = []
+        for conversation_id in verified_issue_ids:
+            created = float(conversation_by_id[conversation_id].get("created_at") or 0.0)
+            verified = first_verified_at[conversation_id]
+            if created > 0 and verified >= created:
+                verified_durations.append(verified - created)
+
         metrics.update(
             {
-                "verified_issue_count": len(verified_ids),
+                "verified_issue_count": len(verified_issue_ids),
                 "weekly_verified_issues": sum(
                     1
-                    for conversation_id in verified_ids
+                    for conversation_id in verified_issue_ids
                     if first_verified_at[conversation_id] >= week_start
                 ),
                 "median_time_to_verified_issue_seconds": (
