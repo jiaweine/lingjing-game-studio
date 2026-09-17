@@ -10,7 +10,7 @@ def test_unity_package_manifest_is_installable_editor_package():
     manifest = json.loads((PACKAGE / "package.json").read_text(encoding="utf-8"))
 
     assert manifest["name"] == "com.lingjing.game-adapter"
-    assert manifest["version"] == "0.1.0"
+    assert manifest["version"] == "0.2.0"
     assert manifest["unity"] == "2021.3"
 
     assembly = json.loads(
@@ -22,19 +22,57 @@ def test_unity_package_manifest_is_installable_editor_package():
     assert assembly["allowUnsafeCode"] is False
 
 
-def test_unity_activation_bridge_remains_loopback_and_non_mutating():
+def test_unity_bridge_remains_loopback_read_only_and_serves_evidence():
     server = (PACKAGE / "Editor" / "LingjingAdapterServer.cs").read_text(
         encoding="utf-8"
     )
 
     assert "http://127.0.0.1:{port}/" in server
     assert 'public bool supports_dry_run = true;' in server
+    assert 'public bool supports_screenshots = true;' in server
     assert 'public bool mutating_actions = false;' in server
     assert 'path == "/v1/adapter/capabilities"' in server
     assert 'path == "/v1/adapter/execute"' in server
+    assert 'const string evidencePrefix = "/v1/adapter/evidence/";' in server
+    assert "LingjingEvidenceCache.Capture(request.evidence_requests)" in server
     assert 'status = "dry-run"' in server
-    assert "Unity activation package is dry-run only" in server
+    assert "mutating actions are disabled" in server
     assert 'status = "succeeded"' not in server
+
+
+def test_unity_evidence_cache_is_bounded_main_thread_and_memory_only():
+    evidence = (PACKAGE / "Editor" / "LingjingEvidenceCache.cs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "EditorApplication.update += OnEditorUpdate;" in evidence
+    assert "Application.logMessageReceivedThreaded += OnLog;" in evidence
+    assert "ConcurrentQueue<CaptureRequest>" in evidence
+    assert "MaxEvidenceItems = 12" in evidence
+    assert "EvidenceTtl = TimeSpan.FromMinutes(10)" in evidence
+    assert "MaxLogEvidenceChars = 64 * 1024" in evidence
+    assert "[REDACTED]" in evidence
+    assert "Camera.main" in evidence
+    assert "1280.0 / sourceWidth" in evidence
+    assert "720.0 / sourceHeight" in evidence
+    assert "File.WriteAllBytes" not in evidence
+    assert "Application.persistentDataPath" not in evidence
+
+
+def test_unity_setup_exposes_evidence_preview_and_retrieval_conformance():
+    window = (PACKAGE / "Editor" / "LingjingAdapterWindow.cs").read_text(
+        encoding="utf-8"
+    )
+    conformance = (ROOT / "scripts" / "game_adapter_conformance.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'GUILayout.Button("Preview evidence")' in window
+    assert '" --execute-dry-run --fetch-evidence"' in window
+    assert 'parser.add_argument("--fetch-evidence", action="store_true")' in conformance
+    assert 'allowed_prefix = f"{base}/v1/adapter/evidence/"' in conformance
+    assert "hashlib.sha256(body).hexdigest()" in conformance
+    assert '"same_adapter_origin_required": True' in conformance
 
 
 def test_unity_package_docs_do_not_claim_project_verification():
