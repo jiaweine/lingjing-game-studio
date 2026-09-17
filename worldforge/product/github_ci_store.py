@@ -28,6 +28,7 @@ from .github_context_store import ConversationStore as _GitHubContextConversatio
 
 
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_WEBHOOK_PROCESSING_LEASE_SECONDS = 60.0
 
 
 class ConversationStore(_GitHubContextConversationStore):
@@ -92,6 +93,7 @@ class ConversationStore(_GitHubContextConversationStore):
             Column("matched_count", Integer, nullable=False, default=0),
             Column("enqueued_count", Integer, nullable=False, default=0),
             Column("created_at", Float, nullable=False),
+            Column("claimed_at", Float, nullable=False),
             Column("completed_at", Float, nullable=True),
         )
         Index(
@@ -215,18 +217,26 @@ class ConversationStore(_GitHubContextConversationStore):
                         matched_count=0,
                         enqueued_count=0,
                         created_at=now,
+                        claimed_at=now,
                         completed_at=None,
                     )
                 )
             return True
         except IntegrityError:
-            with self.engine.connect() as connection:
-                row = connection.execute(
-                    select(self.github_webhook_deliveries.c.status).where(
-                        self.github_webhook_deliveries.c.delivery_id == delivery_id
+            lease_cutoff = now - _WEBHOOK_PROCESSING_LEASE_SECONDS
+            with self.engine.begin() as connection:
+                result = connection.execute(
+                    update(self.github_webhook_deliveries)
+                    .where(
+                        and_(
+                            self.github_webhook_deliveries.c.delivery_id == delivery_id,
+                            self.github_webhook_deliveries.c.status == "received",
+                            self.github_webhook_deliveries.c.claimed_at <= lease_cutoff,
+                        )
                     )
-                ).first()
-            return bool(row and str(row[0]) == "received")
+                    .values(claimed_at=now)
+                )
+            return result.rowcount == 1
 
     def complete_github_webhook_delivery(
         self,
@@ -305,6 +315,9 @@ class ConversationStore(_GitHubContextConversationStore):
                 snapshot_scope = dict(snapshot.get("scope") or {})
                 snapshot_scope["commit_ref"] = head_sha
                 snapshot["scope"] = snapshot_scope
+                # A CI revalidation is a new version-scoped job, not a retry of the old job.
+                # Keep project identity but never carry frozen refs selected for the old commit.
+                snapshot["memory_refs"] = []
                 project_context["memory_snapshot"] = snapshot
             payload["project_context"] = project_context
 
@@ -313,6 +326,16 @@ class ConversationStore(_GitHubContextConversationStore):
             conversation_id=conversation_id,
             payload=payload,
         )
+
+    def unlink_external_issue(self, link_id: str, **kwargs) -> dict[str, Any]:
+        row = super().unlink_external_issue(link_id, **kwargs)
+        with self.engine.begin() as connection:
+            connection.execute(
+                delete(self.github_code_bindings).where(
+                    self.github_code_bindings.c.link_id == link_id
+                )
+            )
+        return row
 
     def delete_conversation(self, conversation_id: str, **kwargs):
         workspace_id = str(kwargs.get("workspace_id") or "")
