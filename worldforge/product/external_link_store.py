@@ -24,6 +24,16 @@ from .store import _id
 from .value_store import ConversationStore as _ValueConversationStore
 
 _GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+_SENSITIVE_META_KEY_PARTS = (
+    "token",
+    "secret",
+    "password",
+    "authorization",
+    "credential",
+    "cookie",
+    "api_key",
+    "apikey",
+)
 
 
 class ConversationStore(_ValueConversationStore):
@@ -98,6 +108,30 @@ class ConversationStore(_ValueConversationStore):
         return value
 
     @staticmethod
+    def _safe_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+        payload = dict(meta or {})
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    normalized = str(key).strip().lower().replace("-", "_")
+                    if any(part in normalized for part in _SENSITIVE_META_KEY_PARTS):
+                        raise ValueError("external issue metadata 不能包含 token/secret/credential")
+                    walk(child)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    walk(child)
+
+        walk(payload)
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("external issue metadata 必须可 JSON 序列化") from exc
+        if len(encoded.encode("utf-8")) > 16_384:
+            raise ValueError("external issue metadata 不能超过 16KB")
+        return payload
+
+    @staticmethod
     def _external_link_row(row: Any) -> dict[str, Any]:
         data = dict(row._mapping if hasattr(row, "_mapping") else row)
         try:
@@ -148,7 +182,7 @@ class ConversationStore(_ValueConversationStore):
         external_url = f"https://github.com/{repository}/issues/{external_key}"
         now = time.time()
         normalized_title = str(title or "").strip()[:240] or None
-        payload = json.dumps(dict(meta or {}), ensure_ascii=False)
+        payload = json.dumps(self._safe_meta(meta), ensure_ascii=False)
 
         with self.engine.begin() as connection:
             existing = connection.execute(
