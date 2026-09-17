@@ -2,18 +2,18 @@
 
 # 灵境 · Lingjing
 
-### Verifiable, stateful game R&D agent runtime
+### AI game debugging agent for bug reproduction, fix verification and regression
 
-**让 Agent 在同一个研发工作空间里接收目标与多模态素材，保持长期上下文与受治理的项目记忆，执行任务、验证结果、保留证据，并在受控边界内改进自己的 Harness。**
+**上传录像、日志、截图、配置与 Build 上下文，让灵境持续复现游戏问题、定位触发条件、绑定关键证据，并在修复后沿用同一条件重新验证。**
 
-`STATEFUL RUNTIME` · `MULTIMODAL` · `GOVERNED MEMORY` · `VERIFIABLE` · `RECOVERABLE` · `SELF-EVOLVING HARNESS`
+`BUG REPRODUCTION` · `EVIDENCE` · `FIX VERIFICATION` · `REGRESSION` · `STATEFUL` · `VERIFIABLE`
 
 <p>
   <a href="#-快速开始"><b>快速开始</b></a> ·
+  <a href="#-默认产品闭环"><b>默认产品闭环</b></a> ·
   <a href="#-产品能力"><b>产品能力</b></a> ·
   <a href="#-系统架构"><b>系统架构</b></a> ·
-  <a href="#-工作台"><b>工作台</b></a> ·
-  <a href="#-文档"><b>文档</b></a>
+  <a href="#-工作台"><b>工作台</b></a>
 </p>
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
@@ -23,15 +23,21 @@
 
 </div>
 
-![灵境游戏研发执行工作台总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png)
+![灵境游戏问题复现与验证工作台总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png)
 
 ---
 
 ## 🌌 灵境是什么
 
-灵境是一个面向游戏研发任务的 Agent Runtime 与协作工作台。它把**研发目标、素材、长期任务状态、项目记忆、世界状态、执行事件、验证结果、证据与恢复路径**放进同一条持久任务轨迹，让一次任务可以被持续观察、停止、恢复、复核和迭代。
+灵境首先是一个面向游戏 QA 与研发团队的 **Bug 复现、修复验证与回归交付 Agent**。用户把问题描述和多模态素材放进同一个持久任务后，系统持续保留执行状态、证据、项目上下文与验证结果，避免一次问题分析退化成一轮聊天或一份不可复核的结论。
 
-核心执行链路：
+默认用户不需要理解 ContextOS、Genome、Frozen Kernel 或 Counterfactual Search。产品首先承诺三件事：
+
+1. **能复现**：把“偶发”推进到稳定触发条件，或明确说明证据不足与不可复现边界；
+2. **有证据**：关键结论能回到录像片段、截图、日志、配置、finding 与 Verifier 结果；
+3. **能验证**：修复后可沿用同一任务和复现条件重新执行，并留下前后对比与回归清单。
+
+底层仍是一个 verifiable、stateful 的 game R&D agent runtime：
 
 > **Goal → Assets → ContextOS / Project Memory → State → Agent Decision → Counterfactual Search → Canonical Execution → Verification → Evidence → Delivery → Harness Evolution**
 
@@ -39,15 +45,34 @@
 
 ---
 
+## 🎯 默认产品闭环
+
+```text
+发现 Bug
+→ 上传录像 / 日志 / 配置 / Build 上下文
+→ 搜索稳定复现条件
+→ 输出复现卡 + 关键 Evidence
+→ 提交修复版本 / branch / commit
+→ 按原条件重新验证
+→ 输出前后对比 + 回归清单
+```
+
+工作台的默认信息层只强调 **执行、证据、结果、素材**。Project Memory governance、Harness Evolution、细粒度审计与算法机制仍然存在，但属于高级能力，不要求普通用户先理解。
+
+> 当前仓库已经提供 GameAdapter protocol、reference client、Frozen Kernel ticket gateway 与 conformance tests；**仓库本身不包含可直接导入的 Unity package、Unreal plugin，也不把 synthetic conformance 当作真实游戏项目验证**。真实 engine-backed 执行需要外部 engine bridge，并继续经过 Frozen Kernel 的独立验证边界。
+
+---
+
 ## ✨ 产品能力
 
 | 能力 | 说明 |
 |---|---|
-| **有状态执行** | 任务状态与事件持续保存，支持停止、恢复、rollback 与 replan |
+| **问题复现与持续执行** | 任务状态与事件持续保存，支持停止、安全重试、rollback 与 replan；复现上下文不会因为一次失败丢失 |
+| **多模态问题上下文** | 图片、视频、音频、日志、配置和文档可以进入同一个 workspace，并被后续修复验证继续使用 |
+| **可验证结果** | 关键结论可以回到截图、关键帧、日志、finding 与 Verifier 结果；memory/retrieval 不会自动升级为验证真相 |
+| **修复后重跑与交付** | 结构化复现卡、风险项、验证方案、回归清单与 evidence pack 可以留在同一任务轨迹 |
 | **长期 ContextOS** | 将 TaskState、历史检索、Project Memory 与 EvidenceControl 编译成 bounded context，避免长期任务退化成简单 last-N 对话 |
 | **受治理的项目记忆** | Project ↔ Conversation 显式绑定；proposal、revision、scope、撤回、争议与审批全部可审计，未批准建议不会自动成为项目事实 |
-| **多模态研发上下文** | 图片、视频、音频、日志、配置和文档可以进入同一个 workspace，并被后续任务继续使用 |
-| **可验证结果** | 关键结论可以回到截图、关键帧、日志、finding 与 Verifier 结果；memory/retrieval 不会自动升级为验证真相 |
 | **反事实搜索** | 在 clone world 中比较候选路径，再选择进入 canonical execution 的动作 |
 | **可进化 Harness** | Representation、Skill、runtime Memory、Specialist topology、Planner fusion、搜索预算与 mutation policy 都可以进入 Genome |
 | **受控外部引擎边界** | Unity/Unreal/custom bridge 通过短时 ticket 与 replay protection 接入，engine observation 仍需独立 Frozen Kernel verification |
@@ -172,12 +197,20 @@ README 只保留机制概览；算法、评估协议与研究背景分别见：
 
 ## 🎮 适合的工作
 
-- 战斗与 Boss 机制复现、极端 Build 风险检查；
+**默认主路径**：
+
+- 战斗、Boss、角色行为等偶发问题复现；
+- 录像 / 截图 / 日志 / 配置的跨模态证据核对；
+- 修复版本的同条件重跑与前后证据比较；
+- 结构化复现卡、回归清单和 evidence pack；
+- 跨 build / branch / commit 的持续问题上下文。
+
+**扩展工作流**：
+
+- 极端 Build 与数值风险检查；
 - 经济、成长、掉落与奖励循环异常分析；
-- 截图 / 视频 / 日志 / 配置的跨模态证据汇总；
 - 长任务执行、停止、重试、rollback 与 replan；
-- 跨 Conversation 的 Project Memory、状态更新、版本隔离与工作流持续上下文；
-- 结构化复现卡、风险清单、回归清单和 evidence pack；
+- 跨 Conversation 的 Project Memory、状态更新与版本隔离；
 - 基于真实失败轨迹搜索更合适的 Skill、runtime Memory、Specialist 与反事实策略。
 
 ---
@@ -248,7 +281,7 @@ migrations/                     Production schema evolution
 benchmarks/                     Frozen benchmark contracts / private-corpus scaffolds
 scripts/                        E2E、benchmark、corpus 与 conformance entrypoints
 tests/                          Runtime / Product / Context / Memory / integration 回归
-docs/                           架构、前端、评估、协议、运维与研究说明
+docs/                           架构、前端、评估、协议、运维、产品策略与研究说明
 ```
 
 ---
@@ -257,6 +290,7 @@ docs/                           架构、前端、评估、协议、运维与研
 
 | 文档 | 内容 |
 |---|---|
+| [`PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md) | ICP、Bug → Fix → Regression 主路径、Value Proof、产品指标与 P0/P1 roadmap |
 | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Product Control Plane、ContextOS、Memory、Harness、Frozen Kernel 与 GameAdapter 权威边界 |
 | [`BENCHMARKING.md`](docs/BENCHMARKING.md) | Harness / Memory / Identity / Context / Multimodal benchmark 与证据分层 |
 | [`LONG_HORIZON_MODEL_BENCHMARK.md`](docs/LONG_HORIZON_MODEL_BENCHMARK.md) | baseline-last8 ↔ ContextOS 模型级 held-out 协议 |
@@ -279,6 +313,6 @@ docs/                           架构、前端、评估、协议、运维与研
 
 <div align="center">
 
-**CONTROL THE EXECUTION · VERIFY THE RESULT · EVOLVE THE HARNESS**
+**REPRODUCE THE ISSUE · VERIFY THE FIX · KEEP THE EVIDENCE**
 
 </div>
