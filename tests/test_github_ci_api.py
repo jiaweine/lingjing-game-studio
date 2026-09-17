@@ -132,7 +132,7 @@ def test_signed_successful_workflow_enqueues_one_revalidation_and_dedupes(tmp_pa
         "Content-Type": "application/json",
     }
 
-    first = client.post("/api/integrations/github/webhook", content=body, headers=headers)
+    first = client.post("/integrations/github/webhook", content=body, headers=headers)
     assert first.status_code == 200
     assert first.json()["matched_routes"] == 1
     assert first.json()["enqueued_jobs"] == 1
@@ -144,7 +144,7 @@ def test_signed_successful_workflow_enqueues_one_revalidation_and_dedupes(tmp_pa
     assert latest["payload"]["project_context"]["scope"]["commit_ref"] == "a" * 40
     assert latest["payload"]["project_context"]["scope"]["environment_ref"] == "staging"
 
-    duplicate = client.post("/api/integrations/github/webhook", content=body, headers=headers)
+    duplicate = client.post("/integrations/github/webhook", content=body, headers=headers)
     assert duplicate.status_code == 200
     assert duplicate.json()["duplicate"] is True
     assert len(scheduled) == 1
@@ -158,7 +158,7 @@ def test_wrong_workflow_and_bad_signature_do_not_enqueue(tmp_path, monkeypatch):
 
     wrong = _workflow_body(workflow_name="Unit Tests")
     wrong_response = client.post(
-        "/api/integrations/github/webhook",
+        "/integrations/github/webhook",
         content=wrong,
         headers={
             "X-GitHub-Event": "workflow_run",
@@ -174,7 +174,7 @@ def test_wrong_workflow_and_bad_signature_do_not_enqueue(tmp_path, monkeypatch):
     before = store.latest_job(conversation["id"], workspace_id=DEMO_WORKSPACE_ID)["id"]
     bad = _workflow_body()
     bad_response = client.post(
-        "/api/integrations/github/webhook",
+        "/integrations/github/webhook",
         content=bad,
         headers={
             "X-GitHub-Event": "workflow_run",
