@@ -10,6 +10,7 @@ import httpx
 
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class GitHubRepositoryClientError(RuntimeError):
@@ -142,17 +143,24 @@ class GitHubRepositoryClient:
             head = dict(payload["head"])
             base = dict(payload["base"])
             html_url = str(payload["html_url"])
-            if not html_url.startswith(f"https://github.com/{repository}/pull/"):
+            resolved_number = int(payload["number"])
+            head_sha = str(head["sha"]).lower()
+            base_sha = str(base["sha"]).lower()
+            if resolved_number != number:
+                raise ValueError("unexpected pull request number")
+            if not html_url.lower().startswith(f"https://github.com/{repository}/pull/"):
                 raise ValueError("unexpected pull request url")
+            if not _FULL_SHA_RE.fullmatch(head_sha) or not _FULL_SHA_RE.fullmatch(base_sha):
+                raise ValueError("unexpected pull request sha")
             return GitHubPullRequestContext(
-                number=int(payload["number"]),
+                number=resolved_number,
                 title=str(payload.get("title") or "")[:240],
                 url=html_url,
                 state=str(payload.get("state") or "unknown")[:32],
                 merged=bool(payload.get("merged")),
-                head_sha=str(head["sha"]).lower(),
+                head_sha=head_sha,
                 head_ref=str(head.get("ref") or "")[:240],
-                base_sha=str(base["sha"]).lower(),
+                base_sha=base_sha,
                 base_ref=str(base.get("ref") or "")[:240],
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -175,9 +183,9 @@ class GitHubRepositoryClient:
             sha = str(payload["sha"]).lower()
             html_url = str(payload["html_url"])
             commit = dict(payload.get("commit") or {})
-            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            if not _FULL_SHA_RE.fullmatch(sha):
                 raise ValueError("unexpected commit sha")
-            if not html_url.startswith(f"https://github.com/{repository}/commit/"):
+            if not html_url.lower().startswith(f"https://github.com/{repository}/commit/"):
                 raise ValueError("unexpected commit url")
             message = str(commit.get("message") or "").splitlines()[0][:240]
             return GitHubCommitContext(sha=sha, url=html_url, message=message)
