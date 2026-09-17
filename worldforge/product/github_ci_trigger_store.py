@@ -167,36 +167,41 @@ class ConversationStore(_GitHubCIConversationStore):
         return links
 
     def unlink_external_issue(self, link_id: str, *, conversation_id: str, workspace_id: str):
-        row = super().unlink_external_issue(
-            link_id,
-            conversation_id=conversation_id,
-            workspace_id=workspace_id,
-        )
         with self.engine.begin() as connection:
             connection.execute(
                 delete(self.github_ci_workflow_filters).where(
                     self.github_ci_workflow_filters.c.link_id == link_id
                 )
             )
-        return row
+        return super().unlink_external_issue(
+            link_id,
+            conversation_id=conversation_id,
+            workspace_id=workspace_id,
+        )
 
     def delete_conversation(self, conversation_id: str, **kwargs):
         workspace_id = str(kwargs.get("workspace_id") or "")
-        result = super().delete_conversation(conversation_id, **kwargs)
         if workspace_id:
+            with self.engine.connect() as connection:
+                link_ids = [
+                    str(row[0])
+                    for row in connection.execute(
+                        select(self.github_ci_subscriptions.c.link_id).where(
+                            and_(
+                                self.github_ci_subscriptions.c.workspace_id == workspace_id,
+                                self.github_ci_subscriptions.c.conversation_id == conversation_id,
+                            )
+                        )
+                    ).fetchall()
+                ]
+        else:
+            link_ids = []
+        result = super().delete_conversation(conversation_id, **kwargs)
+        if link_ids:
             with self.engine.begin() as connection:
-                link_ids = connection.execute(
-                    select(self.github_ci_subscriptions.c.link_id).where(
-                        and_(
-                            self.github_ci_subscriptions.c.workspace_id == workspace_id,
-                            self.github_ci_subscriptions.c.conversation_id == conversation_id,
-                        )
+                connection.execute(
+                    delete(self.github_ci_workflow_filters).where(
+                        self.github_ci_workflow_filters.c.link_id.in_(link_ids)
                     )
-                ).fetchall()
-                if link_ids:
-                    connection.execute(
-                        delete(self.github_ci_workflow_filters).where(
-                            self.github_ci_workflow_filters.c.link_id.in_([str(row[0]) for row in link_ids])
-                        )
-                    )
+                )
         return result
