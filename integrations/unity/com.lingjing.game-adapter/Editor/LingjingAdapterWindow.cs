@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using UnityEditor;
@@ -22,7 +23,7 @@ namespace Lingjing.GameAdapter.Editor
         private static void Open()
         {
             var window = GetWindow<LingjingAdapterWindow>(true, "Lingjing Game Adapter", true);
-            window.minSize = new Vector2(520f, 390f);
+            window.minSize = new Vector2(540f, 430f);
             window.Show();
         }
 
@@ -43,7 +44,7 @@ namespace Lingjing.GameAdapter.Editor
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("Lingjing GameAdapter v1", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "This package exposes an Editor-only loopback bridge for activation and non-mutating dry-run verification. " +
+                "This package exposes an Editor-only loopback bridge for activation and read-only evidence capture. " +
                 "It does not grant Lingjing canonical write authority and it does not turn observations into verified truth.",
                 MessageType.Info
             );
@@ -93,6 +94,10 @@ namespace Lingjing.GameAdapter.Editor
                         {
                             TestConnection();
                         }
+                        if (GUILayout.Button("Preview evidence"))
+                        {
+                            PreviewEvidence();
+                        }
                         if (GUILayout.Button("Stop bridge"))
                         {
                             LingjingAdapterServer.Stop();
@@ -113,11 +118,12 @@ namespace Lingjing.GameAdapter.Editor
             {
                 EditorGUILayout.LabelField("Connect Lingjing", EditorStyles.boldLabel);
                 EditorGUILayout.LabelField("1. Start the local bridge.", EditorStyles.wordWrappedLabel);
-                EditorGUILayout.LabelField("2. Copy the endpoint into your Lingjing GameAdapter configuration.", EditorStyles.wordWrappedLabel);
-                EditorGUILayout.LabelField("3. Run the repository conformance command before using a real project workflow.", EditorStyles.wordWrappedLabel);
+                EditorGUILayout.LabelField("2. Preview evidence and confirm your current Scene/Game camera is capturable.", EditorStyles.wordWrappedLabel);
+                EditorGUILayout.LabelField("3. Copy the endpoint into your Lingjing GameAdapter configuration.", EditorStyles.wordWrappedLabel);
+                EditorGUILayout.LabelField("4. Run the repository conformance command before using a real project workflow.", EditorStyles.wordWrappedLabel);
                 EditorGUILayout.Space(4);
                 var command = BuildConformanceCommand();
-                EditorGUILayout.SelectableLabel(command, EditorStyles.textArea, GUILayout.Height(72));
+                EditorGUILayout.SelectableLabel(command, EditorStyles.textArea, GUILayout.Height(82));
                 if (GUILayout.Button("Copy conformance command"))
                 {
                     EditorGUIUtility.systemCopyBuffer = command;
@@ -127,7 +133,8 @@ namespace Lingjing.GameAdapter.Editor
 
             EditorGUILayout.Space(4);
             EditorGUILayout.HelpBox(
-                "Security: this activation bridge binds only to 127.0.0.1 and advertises mutating_actions=false. " +
+                "Security: the bridge binds only to 127.0.0.1 and advertises mutating_actions=false. " +
+                "Evidence stays in a short-lived Editor memory cache and still requires the same bearer token to download. " +
                 "Use a token when other local processes should not be able to probe the bridge.",
                 MessageType.Warning
             );
@@ -182,6 +189,32 @@ namespace Lingjing.GameAdapter.Editor
             }
         }
 
+        private void PreviewEvidence()
+        {
+            try
+            {
+                var records = LingjingEvidenceCache.Capture(new[] { "logs", "snapshot", "screenshot" });
+                var rows = new List<string>();
+                foreach (var record in records)
+                {
+                    var size = record.bytes != null ? record.bytes.LongLength : 0L;
+                    rows.Add($"{record.kind} {size} bytes sha256={record.sha256.Substring(0, 12)}…");
+                }
+                var screenshotCaptured = records.Exists(item => item.kind == "screenshot");
+                if (!screenshotCaptured)
+                {
+                    rows.Add("screenshot unavailable: open a Scene view or enter Play Mode with Camera.main");
+                }
+                _testMessage = "Read-only evidence preview:\n" + string.Join("\n", rows);
+                _testType = MessageType.Info;
+            }
+            catch (Exception exception)
+            {
+                _testMessage = $"Evidence preview failed: {exception.Message}";
+                _testType = MessageType.Error;
+            }
+        }
+
         private string BuildConformanceCommand()
         {
             var endpoint = LingjingAdapterServer.IsRunning
@@ -193,7 +226,7 @@ namespace Lingjing.GameAdapter.Editor
             return "python scripts/game_adapter_conformance.py" +
                    $" --endpoint {endpoint}" +
                    tokenPart +
-                   " --execute-dry-run" +
+                   " --execute-dry-run --fetch-evidence" +
                    " --signing-secret \"$LINGJING_GAME_ADAPTER_SIGNING_SECRET\"" +
                    " --build-ref <build> --branch-ref <branch>" +
                    " --require-conformance";
