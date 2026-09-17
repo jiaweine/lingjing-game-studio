@@ -98,7 +98,7 @@ def build_github_ci_router(
         )
         return subscription
 
-    @router.post("/api/integrations/github/webhook")
+    @router.post("/integrations/github/webhook")
     async def github_webhook(
         request: Request,
         background_tasks: BackgroundTasks,
