@@ -40,7 +40,7 @@ def test_unity_bridge_remains_loopback_read_only_and_serves_evidence():
     assert 'status = "succeeded"' not in server
 
 
-def test_unity_evidence_cache_is_bounded_main_thread_and_memory_only():
+def test_unity_evidence_cache_is_bounded_main_thread_memory_only_and_redacts_credentials():
     evidence = (PACKAGE / "Editor" / "LingjingEvidenceCache.cs").read_text(
         encoding="utf-8"
     )
@@ -51,7 +51,10 @@ def test_unity_evidence_cache_is_bounded_main_thread_and_memory_only():
     assert "MaxEvidenceItems = 12" in evidence
     assert "EvidenceTtl = TimeSpan.FromMinutes(10)" in evidence
     assert "MaxLogEvidenceChars = 64 * 1024" in evidence
-    assert "[REDACTED]" in evidence
+    assert "AuthorizationValue" in evidence
+    assert "(?:[A-Za-z]+\\s+)?" in evidence
+    assert '"authorization=[REDACTED]"' in evidence
+    assert '"$1=[REDACTED]"' in evidence
     assert "Camera.main" in evidence
     assert "1280.0 / sourceWidth" in evidence
     assert "720.0 / sourceHeight" in evidence
