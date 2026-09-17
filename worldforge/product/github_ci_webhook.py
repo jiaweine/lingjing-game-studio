@@ -26,6 +26,14 @@ def _webhook_secret() -> bytes:
     return value.encode("utf-8")
 
 
+def _allowed_workflows() -> set[str]:
+    return {
+        item.strip()
+        for item in os.getenv("WORLDFORGE_GITHUB_REVALIDATION_WORKFLOWS", "").split(",")
+        if item.strip()
+    }
+
+
 def _verify_signature(body: bytes, signature: str | None) -> None:
     signature = str(signature or "").strip().lower()
     if not signature.startswith("sha256="):
@@ -44,7 +52,7 @@ def _execution_principal(store, match: dict, latest_job: dict) -> Principal | No
     if not actor_id:
         return None
     membership = store.get_membership(match["workspace_id"], actor_id)
-    if not membership:
+    if not membership or str(membership.get("role") or "") == "viewer":
         return None
     try:
         user = store.get_user(actor_id)
@@ -142,6 +150,16 @@ def build_github_ci_webhook_router(
         if not repository or not head_sha or not _FULL_SHA_RE.fullmatch(head_sha):
             store.complete_github_webhook_delivery(delivery_id, status="invalid_payload")
             raise HTTPException(400, "GitHub workflow_run 缺少有效 repository/head_sha")
+
+        allowed = _allowed_workflows()
+        if not workflow_name or workflow_name not in allowed:
+            store.complete_github_webhook_delivery(delivery_id, status="ignored_workflow")
+            return {
+                "ok": True,
+                "ignored": "workflow",
+                "delivery_id": delivery_id,
+                "workflow_name": workflow_name,
+            }
 
         indexed_matches = store.find_github_ci_matches(repository=repository, head_sha=head_sha)
         unique_matches: dict[tuple[str, str], dict] = {}
