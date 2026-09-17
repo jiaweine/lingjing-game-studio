@@ -106,3 +106,26 @@ def test_github_issue_link_rejects_non_repository_identifiers(tmp_path):
             repository="owner/repo",
             issue_number=0,
         )
+
+
+def test_external_issue_metadata_rejects_provider_credentials(tmp_path):
+    store = _store(tmp_path)
+    conversation = store.create_conversation(
+        title="凭证不进任务数据",
+        workspace_id=DEMO_WORKSPACE_ID,
+        created_by=DEMO_USER_ID,
+    )
+
+    with pytest.raises(ValueError, match="token/secret/credential"):
+        store.link_github_issue(
+            conversation["id"],
+            workspace_id=DEMO_WORKSPACE_ID,
+            created_by=DEMO_USER_ID,
+            repository="owner/repo",
+            issue_number=9,
+            meta={"provider": {"access_token": "never-store-this"}},
+        )
+
+    assert store.list_external_issue_links(
+        conversation["id"], workspace_id=DEMO_WORKSPACE_ID
+    ) == []
