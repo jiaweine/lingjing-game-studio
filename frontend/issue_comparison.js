@@ -6,6 +6,12 @@ function compact(value) {
   return String(value || "").trim().replace(/\s+/g, " ");
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[char]));
+}
+
 function parseScope(text) {
   const line = String(text || "").split("\n").find(row => row.trim().startsWith(SCOPE_PREFIX));
   if (!line) return null;
@@ -124,14 +130,14 @@ function renderComparison(messages = []) {
     <div class="issue-comparison-head"><b>修复前后对比</b><span>${cycles.length} 轮验证${latest.source === "ci" ? " · CI 重验" : ""}</span></div>
     <div class="issue-comparison-grid">
       <div class="issue-comparison-side">
-        <small>修复前</small><strong>${scopeLabel(baseline.scope)}</strong>
-        <div class="issue-comparison-outcome">${baselineOutcome}</div>
-        <div class="issue-comparison-evidence">${evidenceSummary(baseline.evidence)}</div>
+        <small>修复前</small><strong>${escapeHtml(scopeLabel(baseline.scope))}</strong>
+        <div class="issue-comparison-outcome">${escapeHtml(baselineOutcome)}</div>
+        <div class="issue-comparison-evidence">${escapeHtml(evidenceSummary(baseline.evidence))}</div>
       </div>
       <div class="issue-comparison-side">
-        <small>修复后</small><strong>${scopeLabel(latest.scope)}</strong>
-        <div class="issue-comparison-outcome">${latestOutcome}</div>
-        <div class="issue-comparison-evidence">${evidenceSummary(latest.evidence)}</div>
+        <small>修复后</small><strong>${escapeHtml(scopeLabel(latest.scope))}</strong>
+        <div class="issue-comparison-outcome">${escapeHtml(latestOutcome)}</div>
+        <div class="issue-comparison-evidence">${escapeHtml(evidenceSummary(latest.evidence))}</div>
       </div>
     </div>
     <p class="issue-comparison-note">${authoritative
