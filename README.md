@@ -23,7 +23,7 @@
 
 </div>
 
-![灵境游戏问题复现与验证工作台总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png)
+![灵境游戏研发执行工作台总览](https://github.com/jiaweine/lingjing-game-studio/releases/download/readme-gallery-assets/cover.png)
 
 ---
 
