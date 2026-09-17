@@ -21,6 +21,16 @@ function parseScope(text) {
   return scope.build_ref || scope.branch_ref || scope.commit_ref ? scope : null;
 }
 
+function payloadScope(payload = {}) {
+  const raw = payload?.context?.verification_scope || {};
+  const scope = {
+    build_ref: compact(raw.build_ref),
+    branch_ref: compact(raw.branch_ref),
+    commit_ref: compact(raw.commit_ref),
+  };
+  return scope.build_ref || scope.branch_ref || scope.commit_ref ? scope : null;
+}
+
 function scopeLabel(scope) {
   if (!scope) return "未绑定版本";
   return [scope.build_ref, scope.branch_ref, scope.commit_ref].filter(Boolean).join(" · ") || "未绑定版本";
@@ -38,13 +48,17 @@ function verificationCycles(messages = []) {
       scope = parseScope(message.content) || scope;
       continue;
     }
-    if (message?.role !== "assistant" || !scope) continue;
+    if (message?.role !== "assistant") continue;
     const payload = message.payload || {};
+    const effectiveScope = payloadScope(payload) || scope;
+    if (!effectiveScope) continue;
+    scope = {...effectiveScope};
     cycles.push({
-      scope: {...scope},
+      scope: {...effectiveScope},
       outcome: payload.outcome || null,
       evidence: Array.isArray(payload.evidence) ? payload.evidence : [],
       created_at: message.created_at || null,
+      source: payload?.context?.ci_trigger ? "ci" : "interactive",
     });
   }
   return cycles;
@@ -107,7 +121,7 @@ function renderComparison(messages = []) {
   const authoritative = Boolean(latest.outcome?.verified);
   box.hidden = false;
   box.innerHTML = `
-    <div class="issue-comparison-head"><b>修复前后对比</b><span>${cycles.length} 轮验证</span></div>
+    <div class="issue-comparison-head"><b>修复前后对比</b><span>${cycles.length} 轮验证${latest.source === "ci" ? " · CI 重验" : ""}</span></div>
     <div class="issue-comparison-grid">
       <div class="issue-comparison-side">
         <small>修复前</small><strong>${scopeLabel(baseline.scope)}</strong>
