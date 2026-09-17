@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -17,6 +18,18 @@ from .github_issue_publisher import (
 
 class ExternalIssuePushRequest(BaseModel):
     kind: Literal["reproduction", "verification"]
+
+
+def _push_marker(
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    link_id: str,
+    push_kind: str,
+) -> str:
+    identity = f"{workspace_id}:{conversation_id}:{link_id}:{push_kind}".encode("utf-8")
+    digest = hashlib.sha256(identity).hexdigest()[:32]
+    return f"<!-- lingjing-external-push:{digest} -->"
 
 
 def build_external_issue_push_router(
@@ -77,12 +90,19 @@ def build_external_issue_push_router(
         except (TypeError, ValueError):
             existing_comment_id = None
 
+        marker = _push_marker(
+            workspace_id=principal.workspace_id,
+            conversation_id=conversation_id,
+            link_id=link_id,
+            push_kind=req.kind,
+        )
         try:
             published = await publisher.publish_comment(
                 repository=str(link["repository"]),
                 issue_number=int(link["external_key"]),
                 body=body,
                 existing_comment_id=existing_comment_id,
+                idempotency_marker=marker,
             )
         except GitHubIssuePublisherUnavailable as exc:
             raise HTTPException(503, str(exc)) from exc
@@ -111,12 +131,14 @@ def build_external_issue_push_router(
                 "push_kind": req.kind,
                 "comment_id": published.comment_id,
                 "updated": published.updated,
+                "recovered": published.recovered,
             },
         )
         return {
             "ok": True,
             "kind": req.kind,
             "updated": published.updated,
+            "recovered": published.recovered,
             "comment_id": published.comment_id,
             "comment_url": published.html_url,
             "link": updated_link,
