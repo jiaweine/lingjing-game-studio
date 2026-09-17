@@ -59,7 +59,7 @@
 
 工作台的默认信息层只强调 **执行、证据、结果、素材**。Project Memory governance、Harness Evolution、细粒度审计与算法机制仍然存在，但属于高级能力，不要求普通用户先理解。
 
-> 当前仓库已经提供 GameAdapter protocol、reference client、Frozen Kernel ticket gateway 与 conformance tests；**仓库本身不包含可直接导入的 Unity package、Unreal plugin，也不把 synthetic conformance 当作真实游戏项目验证**。真实 engine-backed 执行需要外部 engine bridge，并继续经过 Frozen Kernel 的独立验证边界。
+> 当前仓库已经提供 GameAdapter protocol、reference client、Frozen Kernel ticket gateway，并新增可通过 Unity Package Manager 导入的 **Unity Editor activation package**。该 package 当前只提供 `127.0.0.1` loopback、可选 bearer token 与 non-mutating dry-run conformance；它不是完整的项目自动化执行插件，也不会把 engine observation 升级为验证真相。Unreal plugin、项目级截图/运行日志/action handlers 与真实 Bug → Fix 项目证据仍需后续补齐，并继续经过 Frozen Kernel 独立验证边界。
 
 ---
 
@@ -273,6 +273,7 @@ worldforge/api/                 Runtime / Product API
 worldforge/product/             工作空间、协作、任务、素材与产品生命周期
 worldforge/context/             ContextOS、Project Memory、identity、evidence 与 token budget
 worldforge/integrations/        Governed external integration boundaries / GameAdapter
+integrations/unity/             Unity Editor activation package for GameAdapter v1
 worldforge/runtime/             Frozen Kernel + Evolvable Harness
 worldforge/providers/           Provider routing / native token safety
 worldforge/envs/                可验证游戏环境 / BalanceLab
