@@ -19,6 +19,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.exc import IntegrityError
 
 from .store import _id
 from .value_store import ConversationStore as _ValueConversationStore
@@ -105,7 +106,9 @@ class ConversationStore(_ValueConversationStore):
         value = str(repository or "").strip().strip("/")
         if not _GITHUB_REPOSITORY_RE.fullmatch(value):
             raise ValueError("GitHub repository 必须使用 owner/repo 格式")
-        return value
+        # GitHub owner/repository paths are case-insensitive. Persist one normalized identity so
+        # Owner/Game#1 and owner/game#1 cannot become two Lingjing links for the same issue.
+        return value.lower()
 
     @staticmethod
     def _safe_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
@@ -139,6 +142,22 @@ class ConversationStore(_ValueConversationStore):
         except (TypeError, ValueError, json.JSONDecodeError):
             data["meta"] = {}
         return data
+
+    def _target_condition(
+        self,
+        *,
+        workspace_id: str,
+        conversation_id: str,
+        repository: str,
+        external_key: str,
+    ):
+        return and_(
+            self.external_issue_links.c.workspace_id == workspace_id,
+            self.external_issue_links.c.conversation_id == conversation_id,
+            self.external_issue_links.c.provider == "github",
+            self.external_issue_links.c.repository == repository,
+            self.external_issue_links.c.external_key == external_key,
+        )
 
     def list_external_issue_links(
         self,
@@ -183,21 +202,20 @@ class ConversationStore(_ValueConversationStore):
         now = time.time()
         normalized_title = str(title or "").strip()[:240] or None
         payload = json.dumps(self._safe_meta(meta), ensure_ascii=False)
+        condition = self._target_condition(
+            workspace_id=workspace_id,
+            conversation_id=conversation_id,
+            repository=repository,
+            external_key=external_key,
+        )
 
-        with self.engine.begin() as connection:
+        with self.engine.connect() as connection:
             existing = connection.execute(
-                select(self.external_issue_links.c.id).where(
-                    and_(
-                        self.external_issue_links.c.workspace_id == workspace_id,
-                        self.external_issue_links.c.conversation_id == conversation_id,
-                        self.external_issue_links.c.provider == "github",
-                        self.external_issue_links.c.repository == repository,
-                        self.external_issue_links.c.external_key == external_key,
-                    )
-                )
+                select(self.external_issue_links.c.id).where(condition)
             ).first()
-            if existing:
-                link_id = str(existing[0])
+        if existing:
+            link_id = str(existing[0])
+            with self.engine.begin() as connection:
                 connection.execute(
                     update(self.external_issue_links)
                     .where(self.external_issue_links.c.id == link_id)
@@ -209,8 +227,15 @@ class ConversationStore(_ValueConversationStore):
                         updated_at=now,
                     )
                 )
-            else:
-                link_id = _id("link")
+            return self.get_external_issue_link(
+                link_id,
+                conversation_id=conversation_id,
+                workspace_id=workspace_id,
+            )
+
+        link_id = _id("link")
+        try:
+            with self.engine.begin() as connection:
                 connection.execute(
                     insert(self.external_issue_links).values(
                         id=link_id,
@@ -228,6 +253,28 @@ class ConversationStore(_ValueConversationStore):
                         created_at=now,
                         updated_at=now,
                         last_pushed_at=None,
+                    )
+                )
+        except IntegrityError:
+            # Two editors can bind the same issue at nearly the same time. The database unique
+            # constraint is the source of truth; after losing that race, converge on the row
+            # that won instead of surfacing a 500 or creating duplicate product state.
+            with self.engine.begin() as connection:
+                existing = connection.execute(
+                    select(self.external_issue_links.c.id).where(condition)
+                ).first()
+                if not existing:
+                    raise
+                link_id = str(existing[0])
+                connection.execute(
+                    update(self.external_issue_links)
+                    .where(self.external_issue_links.c.id == link_id)
+                    .values(
+                        external_url=external_url,
+                        external_title=normalized_title,
+                        sync_state="linked",
+                        meta=payload,
+                        updated_at=now,
                     )
                 )
 
