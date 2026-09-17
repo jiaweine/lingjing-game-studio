@@ -2,7 +2,7 @@
 
 The GameAdapter boundary lets a Unity, Unreal or custom-engine bridge execute an explicitly authorized action and return engine observations without becoming a source of canonical WorldForge truth.
 
-This repository contains the protocol, reference HTTP client, Frozen Kernel ticket gateway, durable replay-store implementation and synthetic conformance tests. It does **not** ship a Unity package, Unreal plugin, or evidence from a real game project.
+This repository contains the protocol, reference HTTP client, Frozen Kernel ticket gateway, durable replay-store implementation, synthetic conformance tests, and a conservative **Unity Editor activation package** under `integrations/unity/com.lingjing.game-adapter`. The Unity package removes the need to implement the transport contract before first connection, but it currently exposes only a loopback, non-mutating dry-run bridge. The repository still does **not** ship an Unreal plugin or evidence that a real game bug has been reproduced or fixed.
 
 ## Authority model
 
@@ -126,6 +126,28 @@ The bridge receives the signed request envelope, but the Frozen Kernel gateway i
 
 For snapshot-capable adapters, a successful or dry-run result must return both before/after snapshot digests. The result also echoes the adapter id, action id and ticket id; all three are checked before evidence is accepted.
 
+## Unity activation package
+
+The first-party Unity package lives at:
+
+```text
+integrations/unity/com.lingjing.game-adapter
+```
+
+It can be added through Unity Package Manager using the repository Git URL with that package path. In Unity, open **Lingjing → Game Adapter Setup** to start the local bridge, optionally generate a bearer token, test `/v1/adapter/capabilities`, copy the endpoint, and copy a matching conformance command.
+
+The activation package is intentionally conservative:
+
+- Editor-only;
+- binds only to `127.0.0.1`;
+- optional bearer token;
+- `supports_dry_run=true`;
+- `mutating_actions=false`;
+- stable project/editor snapshot digest;
+- external observation only, never verifier truth.
+
+This package is a productized transport/activation path, not yet a full project automation integration. Screenshot/runtime-log evidence providers and explicitly governed action handlers remain follow-up work.
+
 ## Conformance
 
 Synthetic contract + durable replay smoke:
@@ -162,4 +184,4 @@ A successful live conformance result is labeled `external-adapter-contract-probe
 
 ## What remains external
 
-To claim real Unity/Unreal execution evidence, an actual engine-side bridge/plugin and a real project/capture environment must be supplied outside this repository. Those results then need to pass the same Frozen Kernel verifier/evidence gates as every other execution source.
+The repository now includes a Unity Editor bridge for first connection and dry-run conformance, but real Unity/Unreal **project verification evidence** still requires an actual project/capture environment, project-specific evidence providers/actions, and independent Frozen Kernel verification. Unreal still requires an external bridge/plugin. None of those observations become verified facts until they pass the same Frozen Kernel verifier/evidence gates as every other execution source.
