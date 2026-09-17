@@ -1,4 +1,5 @@
 void import("./issue_lifecycle.js").catch(() => {});
+void import("./issue_comparison.js").catch(() => {});
 void import("./value_metrics.js").catch(() => {});
 
 const IDENTITY_REASON_LABELS = {
