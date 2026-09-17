@@ -65,6 +65,31 @@ def test_reproduction_summary_contains_only_product_safe_fields():
     assert "@\u200bteam" in body
 
 
+def test_ci_result_scope_overrides_stale_user_message_scope():
+    messages = _messages(verified=True)
+    messages[-1]["payload"]["context"]["verification_scope"] = {
+        "build_ref": "1.4.8",
+        "branch_ref": "fix/boss-phase-2",
+        "commit_ref": "d" * 40,
+        "environment_ref": "qa",
+    }
+    messages[-1]["payload"]["context"]["ci_trigger"] = {
+        "source": "github_workflow_run",
+        "head_sha": "d" * 40,
+    }
+
+    body = build_github_issue_summary(
+        conversation=_conversation(),
+        messages=messages,
+        push_kind="verification",
+    )
+
+    assert "Build `1.4.8`" in body
+    assert "Branch `fix/boss-phase-2`" in body
+    assert f"Commit `{'d' * 40}`" in body
+    assert "Commit `abc123`" not in body
+
+
 def test_verification_summary_requires_verifier_authoritative_outcome():
     with pytest.raises(ValueError, match="独立 Verifier"):
         build_github_issue_summary(
