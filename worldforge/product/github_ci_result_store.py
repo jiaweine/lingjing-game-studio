@@ -9,6 +9,12 @@ from .github_ci_store import ConversationStore as _GitHubCIConversationStore
 class ConversationStore(_GitHubCIConversationStore):
     """Attach integration-sourced verification scope to the durable assistant result."""
 
+    @staticmethod
+    def _ci_base_text(payload: dict[str, Any]) -> str:
+        # Reserve room under the 12k analysis-input ceiling for the generated version scope and
+        # verifier-boundary instruction. The suffix must never be truncated by a long original goal.
+        return _GitHubCIConversationStore._ci_base_text(payload)[:10_000]
+
     def complete_job_answer(
         self,
         job_id: str,
