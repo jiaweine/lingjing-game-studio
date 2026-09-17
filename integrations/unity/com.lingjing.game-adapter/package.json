@@ -1,0 +1,18 @@
+{
+  "name": "com.lingjing.game-adapter",
+  "version": "0.1.0",
+  "displayName": "Lingjing Game Adapter",
+  "description": "Editor-only loopback bridge for Lingjing GameAdapter v1 activation and non-mutating dry-run conformance.",
+  "unity": "2021.3",
+  "author": {
+    "name": "Lingjing"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "lingjing",
+    "game-adapter",
+    "qa",
+    "debugging",
+    "agent"
+  ]
+}
