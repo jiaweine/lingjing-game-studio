@@ -40,6 +40,12 @@ class ProductEventCreate(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
+class ExternalIssueLinkCreate(BaseModel):
+    repository: str = Field(min_length=3, max_length=240)
+    issue_number: int = Field(ge=1)
+    title: str | None = Field(default=None, max_length=240)
+
+
 ALLOWED_PRODUCT_EVENTS = {
     "task.search",
     "evidence.open",
@@ -357,9 +363,89 @@ def build_control_router(
                 "approvals": store.list_approvals(conversation_id, workspace_id=principal.workspace_id),
                 "feedback": store.list_feedback(conversation_id, workspace_id=principal.workspace_id),
                 "quality_gate": store.feedback_gate(conversation_id, workspace_id=principal.workspace_id),
+                "external_links": store.list_external_issue_links(
+                    conversation_id, workspace_id=principal.workspace_id
+                ),
             }
         except KeyError as exc:
             raise HTTPException(404, "任务不存在") from exc
+
+    @router.get("/api/conversations/{conversation_id}/external-links")
+    def external_link_list(
+        conversation_id: str,
+        principal: Principal = Depends(require_principal),
+    ):
+        try:
+            return store.list_external_issue_links(
+                conversation_id, workspace_id=principal.workspace_id
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "任务不存在") from exc
+
+    @router.post("/api/conversations/{conversation_id}/external-links")
+    def external_link_create(
+        conversation_id: str,
+        req: ExternalIssueLinkCreate,
+        request: Request,
+        principal: Principal = Depends(require_principal),
+    ):
+        require_editor(principal)
+        try:
+            row = store.link_github_issue(
+                conversation_id,
+                workspace_id=principal.workspace_id,
+                created_by=principal.user_id,
+                repository=req.repository,
+                issue_number=req.issue_number,
+                title=req.title,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "任务不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        audit(
+            request,
+            principal,
+            "external_issue.link",
+            "external_issue_link",
+            row["id"],
+            {
+                "provider": row["provider"],
+                "repository": row["repository"],
+                "external_key": row["external_key"],
+            },
+        )
+        return row
+
+    @router.delete("/api/conversations/{conversation_id}/external-links/{link_id}")
+    def external_link_delete(
+        conversation_id: str,
+        link_id: str,
+        request: Request,
+        principal: Principal = Depends(require_principal),
+    ):
+        require_editor(principal)
+        try:
+            row = store.unlink_external_issue(
+                link_id,
+                conversation_id=conversation_id,
+                workspace_id=principal.workspace_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "关联不存在") from exc
+        audit(
+            request,
+            principal,
+            "external_issue.unlink",
+            "external_issue_link",
+            link_id,
+            {
+                "provider": row["provider"],
+                "repository": row["repository"],
+                "external_key": row["external_key"],
+            },
+        )
+        return {"ok": True}
 
     @router.post("/api/jobs/{job_id}/retry")
     async def job_retry(
