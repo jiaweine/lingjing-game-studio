@@ -131,27 +131,29 @@ class ConversationStore(_GitHubContextConversationStore):
             "selected_commit_sha": selected_sha,
             "updated_at": time.time(),
         }
-        with self.engine.begin() as connection:
-            existing = connection.execute(
-                select(self.github_code_bindings.c.link_id).where(
-                    self.github_code_bindings.c.link_id == values["link_id"]
-                )
-            ).first()
-            if existing:
-                connection.execute(
-                    update(self.github_code_bindings)
-                    .where(self.github_code_bindings.c.link_id == values["link_id"])
-                    .values(**{key: value for key, value in values.items() if key != "link_id"})
-                )
-            else:
-                try:
-                    connection.execute(insert(self.github_code_bindings).values(**values))
-                except IntegrityError:
+        update_values = {key: value for key, value in values.items() if key != "link_id"}
+        try:
+            with self.engine.begin() as connection:
+                existing = connection.execute(
+                    select(self.github_code_bindings.c.link_id).where(
+                        self.github_code_bindings.c.link_id == values["link_id"]
+                    )
+                ).first()
+                if existing:
                     connection.execute(
                         update(self.github_code_bindings)
                         .where(self.github_code_bindings.c.link_id == values["link_id"])
-                        .values(**{key: value for key, value in values.items() if key != "link_id"})
+                        .values(**update_values)
                     )
+                else:
+                    connection.execute(insert(self.github_code_bindings).values(**values))
+        except IntegrityError:
+            with self.engine.begin() as connection:
+                connection.execute(
+                    update(self.github_code_bindings)
+                    .where(self.github_code_bindings.c.link_id == values["link_id"])
+                    .values(**update_values)
+                )
 
     def record_github_code_context(self, link_id: str, **kwargs) -> dict[str, Any]:
         link = super().record_github_code_context(link_id, **kwargs)
@@ -218,7 +220,13 @@ class ConversationStore(_GitHubContextConversationStore):
                 )
             return True
         except IntegrityError:
-            return False
+            with self.engine.connect() as connection:
+                row = connection.execute(
+                    select(self.github_webhook_deliveries.c.status).where(
+                        self.github_webhook_deliveries.c.delivery_id == delivery_id
+                    )
+                ).first()
+            return bool(row and str(row[0]) == "received")
 
     def complete_github_webhook_delivery(
         self,
@@ -261,6 +269,10 @@ class ConversationStore(_GitHubContextConversationStore):
         latest = self.latest_job(conversation_id, workspace_id=workspace_id)
         if not latest:
             raise ValueError("任务没有可复用的历史执行")
+        trigger_delivery = str(trigger.get("delivery_id") or "")
+        latest_trigger = dict((latest.get("payload") or {}).get("ci_trigger") or {})
+        if trigger_delivery and str(latest_trigger.get("delivery_id") or "") == trigger_delivery:
+            return latest
         if latest["status"] in {"queued", "running"}:
             raise ValueError("任务已有执行正在进行")
         head_sha = str(trigger.get("head_sha") or "").strip().lower()
