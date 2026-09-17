@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="theme-color" content="#f3f5f9" />
   <meta name="color-scheme" content="light" />
-  <title>灵境 · 游戏研发执行工作台</title>
+  <title>灵境 · 游戏 Bug 复现与验证</title>
   <link rel="stylesheet" href="/assets/app.css" />
   <link rel="stylesheet" href="/assets/design.css" />
 </head>
@@ -21,7 +21,7 @@
       </div>
       <div class="brand-copy">
         <b>灵境</b>
-        <span>游戏研发工作台</span>
+        <span>游戏 Bug 复现与验证</span>
       </div>
     </div>
 
@@ -46,45 +46,45 @@
   <aside class="leftbar">
     <button class="new-task" id="newTaskBtn" type="button">
       <span class="new-task-icon">＋</span>
-      <span>新建研发任务</span>
+      <span>新建问题任务</span>
       <kbd>N</kbd>
     </button>
 
     <div class="side-section">
-      <div class="side-title">任务模板</div>
+      <div class="side-title">常用工作流</div>
       <button class="scene-item active" data-scene="battle_review" type="button">
         <span class="scene-glyph"><i></i></span>
         <span class="scene-copy">
-          <b>战斗问题复现</b>
-          <small>定位触发条件与异常窗口</small>
+          <b>问题复现</b>
+          <small>从偶发问题找到稳定触发条件</small>
+        </span>
+      </button>
+      <button class="scene-item" data-scene="regression" type="button">
+        <span class="scene-glyph loop"><i></i></span>
+        <span class="scene-copy">
+          <b>修复验证</b>
+          <small>按原条件重跑并对比前后证据</small>
+        </span>
+      </button>
+      <button class="scene-item" data-scene="content_compare" type="button">
+        <span class="scene-glyph grid"><i></i></span>
+        <span class="scene-copy">
+          <b>证据交叉核对</b>
+          <small>录像、日志、配置放到一起确认</small>
         </span>
       </button>
       <button class="scene-item" data-scene="balance" type="button">
         <span class="scene-glyph bars"><i></i></span>
         <span class="scene-copy">
           <b>数值风险检查</b>
-          <small>极端组合与资源曲线</small>
-        </span>
-      </button>
-      <button class="scene-item" data-scene="regression" type="button">
-        <span class="scene-glyph loop"><i></i></span>
-        <span class="scene-copy">
-          <b>版本回归验证</b>
-          <small>复现、修复、再次核验</small>
+          <small>扩展工作流 · 极端组合与资源曲线</small>
         </span>
       </button>
       <button class="scene-item" data-scene="npc" type="button">
         <span class="scene-glyph diamond"><i></i></span>
         <span class="scene-copy">
           <b>角色行为检查</b>
-          <small>目标切换与连续交互</small>
-        </span>
-      </button>
-      <button class="scene-item" data-scene="content_compare" type="button">
-        <span class="scene-glyph grid"><i></i></span>
-        <span class="scene-copy">
-          <b>多素材交叉核对</b>
-          <small>录像、日志、配置一起看</small>
+          <small>扩展工作流 · 异常切换与连续交互</small>
         </span>
       </button>
     </div>
@@ -110,8 +110,8 @@
     <div class="mission-head">
       <div>
         <span class="eyebrow">当前任务</span>
-        <h1 id="conversationTitle">战斗问题复现</h1>
-        <p id="conversationMeta">把目标说清楚，系统会持续执行到得到可核验结果。</p>
+        <h1 id="conversationTitle">问题复现</h1>
+        <p id="conversationMeta">上传问题素材，系统会持续复现、留证，并在修复后按同一条件重跑验证。</p>
       </div>
       <div class="head-actions">
         <button class="ghost-button" id="retryTaskBtn" type="button" hidden>重新执行</button>
@@ -129,53 +129,53 @@
       <section class="welcome" id="welcomePanel">
         <div class="welcome-kicker">
           <span class="pulse-dot"></span>
-          <span>可直接交付研发目标</span>
+          <span>从问题到可验证结论</span>
         </div>
-        <h2>说目标，不用写流程。</h2>
+        <h2>把 Bug 交给灵境，拿回可复现、可验证的结论。</h2>
         <p class="welcome-lead">
-          灵境会读取当前素材、尝试复现、检查不同路径、遇到风险自动恢复，
-          最后把结果、证据与下一步留在同一个任务里。
+          上传录像、日志、截图或配置。灵境会尝试复现问题、找到触发条件并绑定关键证据；
+          修复后还能沿用同一任务重跑验证，最后留下团队可直接执行的回归结果。
         </p>
 
         <div class="quick-grid">
-          <button class="quick-card" data-prompt="帮我复现这个 Boss 第二阶段偶发秒杀问题，找出稳定触发条件，验证修复后再给我回归清单。" type="button">
+          <button class="quick-card" data-prompt="帮我复现这个 Boss 第二阶段偶发秒杀问题。先从录像和日志里找异常窗口，再尝试得到稳定触发条件，并把每个关键结论绑定证据。" type="button">
             <span class="quick-index">01</span>
             <div>
-              <b>复现偶发问题</b>
-              <small>找稳定触发条件，再验证修复</small>
+              <b>复现 Bug</b>
+              <small>从偶发问题找到稳定触发条件</small>
             </div>
             <span class="quick-arrow">↗</span>
           </button>
-          <button class="quick-card" data-prompt="帮我检查这组数值里最危险的组合，验证不同玩家打法下会不会失衡，并给出优先调整顺序。" type="button">
+          <button class="quick-card" data-prompt="把当前录像、日志和配置交叉核对，告诉我哪些证据真正支持这个问题的触发条件，哪些只是相关但还不能证明。" type="button">
             <span class="quick-index">02</span>
             <div>
-              <b>检查数值风险</b>
-              <small>覆盖极端打法与资源边界</small>
+              <b>核对证据</b>
+              <small>把结论和录像、日志、配置对应起来</small>
             </div>
             <span class="quick-arrow">↗</span>
           </button>
-          <button class="quick-card" data-prompt="对比当前版本和上一版，复现已有问题，确认修复是否有效，并生成发布前回归清单。" type="button">
+          <button class="quick-card" data-prompt="这是修复后的版本。请沿用之前确认的复现条件重新验证，比较修复前后的证据，并明确告诉我问题是否已经被验证解决。" type="button">
             <span class="quick-index">03</span>
             <div>
-              <b>验证版本修复</b>
-              <small>复现、对比、核验、留证</small>
+              <b>验证修复</b>
+              <small>按原复现条件重跑并做前后对比</small>
             </div>
             <span class="quick-arrow">↗</span>
           </button>
-          <button class="quick-card" data-prompt="结合截图、日志和连续对话，检查这个 NPC 的行为是否一致，找出突然跳变的条件。" type="button">
+          <button class="quick-card" data-prompt="基于已经确认的复现条件和修复验证结果，生成发布前回归清单，标出必须覆盖的路径、风险边界和需要保留的证据。" type="button">
             <span class="quick-index">04</span>
             <div>
-              <b>检查角色行为</b>
-              <small>定位不一致与异常切换</small>
+              <b>生成回归清单</b>
+              <small>把已验证路径变成可执行测试项</small>
             </div>
             <span class="quick-arrow">↗</span>
           </button>
         </div>
 
         <div class="welcome-proof">
-          <div><b>持续执行</b><span>不是一次回答</span></div>
-          <div><b>失败恢复</b><span>问题路径不会拖垮任务</span></div>
-          <div><b>结果留证</b><span>每个结论都有上下文</span></div>
+          <div><b>稳定复现</b><span>把“偶发”推进到明确条件</span></div>
+          <div><b>关键留证</b><span>结论能回到录像、日志与验证结果</span></div>
+          <div><b>修复验证</b><span>沿用同一条件重跑并生成回归结果</span></div>
         </div>
       </section>
 
@@ -202,10 +202,10 @@
       <div id="pendingAssets" class="pending-assets" hidden></div>
       <div class="composer" id="composer">
         <div class="composer-label">
-          <span>任务指令</span>
-          <small>描述你要完成的研发目标，后续可以继续追加要求。</small>
+          <span>问题与目标</span>
+          <small>描述现象、期望行为和已知条件；有录像、日志或配置可以直接一起上传。</small>
         </div>
-        <textarea id="messageInput" rows="1" placeholder="例如：复现第二阶段偶发秒杀，找出稳定触发条件，修复后再做回归验证…"></textarea>
+        <textarea id="messageInput" rows="1" placeholder="例如：Boss 第二阶段偶发秒杀，帮我找稳定触发条件；修复后再按同一条件验证并生成回归清单…"></textarea>
         <div class="composer-bottom">
           <div class="attach-actions">
             <button class="attach-btn" data-accept="image/*" type="button">图片</button>
@@ -217,13 +217,13 @@
           <div class="send-side">
             <span id="inputHint">Enter 执行 · Shift+Enter 换行</span>
             <button id="sendBtn" class="send-btn" type="button">
-              <span>开始执行</span><i>↗</i>
+              <span>开始复现</span><i>↗</i>
             </button>
           </div>
         </div>
         <input id="fileInput" type="file" multiple hidden />
       </div>
-      <div class="privacy-note">任务素材按工作空间隔离；推理资源由系统按任务输入自动路由。</div>
+      <div class="privacy-note">任务素材按工作空间隔离；未经独立验证的引擎观察不会被标记为已验证结论。</div>
     </div>
   </main>
 
@@ -231,7 +231,7 @@
     <div class="right-tabs">
       <button class="right-tab active" data-panel="progress" type="button">执行</button>
       <button class="right-tab" data-panel="evidence" type="button">证据</button>
-      <button class="right-tab" data-panel="deliverables" type="button">交付</button>
+      <button class="right-tab" data-panel="deliverables" type="button">结果</button>
       <button class="right-tab" data-panel="assets" type="button">素材</button>
       <button class="right-tab" data-panel="team" type="button">团队</button>
     </div>
@@ -243,12 +243,12 @@
             <div class="state-orb"><i></i></div>
             <div>
               <small>任务状态</small>
-              <b id="taskState">等待目标</b>
+              <b id="taskState">等待问题</b>
             </div>
             <em id="taskPercent">0%</em>
           </div>
           <div class="mini-progress"><i id="taskProgress"></i></div>
-          <p id="taskStateHint">提交目标后，这里会显示正在做什么。</p>
+          <p id="taskStateHint">提交问题后，这里会显示正在复现、核对还是验证。</p>
         </div>
 
         <div class="panel-label">执行记录</div>
@@ -256,7 +256,7 @@
           <div class="progress-empty">
             <span class="empty-mark">↗</span>
             <b>准备好了</b>
-            <p>提交一个目标，或者先上传素材。</p>
+            <p>描述问题，或者先上传录像、日志和配置。</p>
           </div>
         </div>
 
@@ -264,13 +264,13 @@
           <div class="sub-head">
             <div>
               <small>下一步</small>
-              <b>可以继续要求</b>
+              <b>把问题推进到验证</b>
             </div>
           </div>
           <div id="suggestionList" class="suggestion-list">
             <button type="button">把异常时间段单独展开</button>
-            <button type="button">生成回归测试清单</button>
-            <button type="button">整理成团队可直接执行的结论</button>
+            <button type="button">按当前条件验证修复版本</button>
+            <button type="button">生成发布前回归清单</button>
           </div>
         </div>
       </section>
@@ -278,28 +278,28 @@
       <section class="right-panel" id="panel-evidence">
         <div class="panel-intro">
           <span class="eyebrow">关键证据</span>
-          <b>关键证据</b>
-          <p>录像片段、截图、日志和复核结果都会和结论对应起来。</p>
+          <b>这个结论凭什么成立</b>
+          <p>录像片段、截图、日志、配置与复核结果都会和结论对应起来。</p>
         </div>
         <div id="evidenceList" class="evidence-list">
-          <div class="empty-side">完成一次任务后显示。</div>
+          <div class="empty-side">开始复现后显示关键证据。</div>
         </div>
       </section>
 
       <section class="right-panel" id="panel-deliverables">
         <div class="panel-intro">
-          <span class="eyebrow">研发交付</span>
-          <b>可直接交接的结果</b>
-          <p>复现卡、回归清单、风险项和证据包会随任务结果一起保留。</p>
+          <span class="eyebrow">验证结果</span>
+          <b>可直接交接的问题结论</b>
+          <p>复现条件、修复前后对比、回归清单与证据包会保留在同一个任务里。</p>
         </div>
-        <div id="deliverableList" class="deliverable-list"><div class="empty-side">完成一次任务后显示。</div></div>
+        <div id="deliverableList" class="deliverable-list"><div class="empty-side">得到可交付结论后显示。</div></div>
       </section>
 
       <section class="right-panel" id="panel-assets">
         <div class="panel-intro">
-          <span class="eyebrow">任务上下文</span>
+          <span class="eyebrow">问题上下文</span>
           <b>本次素材</b>
-          <p>同一个任务里可以持续追加，不需要重新解释背景。</p>
+          <p>同一个问题里可以持续追加录像、日志、配置和修复版本信息。</p>
         </div>
         <div id="assetList" class="asset-list">
           <div class="empty-side">还没有上传素材。</div>
@@ -331,7 +331,7 @@
 <div class="drop-mask" id="dropMask" hidden>
   <div class="drop-card">
     <span>＋</span>
-    <b>松开即可加入当前任务</b>
+    <b>松开即可加入当前问题</b>
     <small>支持图片、视频、音频、日志、配置与文档</small>
   </div>
 </div>
@@ -341,12 +341,12 @@
   <div class="modal auth-modal">
     <div class="auth-brand">
       <div class="brand-mark"><span></span><span></span><span></span></div>
-      <div><b>灵境</b><span>游戏研发工作台</span></div>
+      <div><b>灵境</b><span>游戏 Bug 复现与验证</span></div>
     </div>
 
     <div class="auth-copy">
-      <span class="eyebrow">你的执行空间</span>
-      <h2>把问题、执行过程和验证证据留在一个工作空间。</h2>
+      <span class="eyebrow">你的问题验证空间</span>
+      <h2>把 Bug、复现过程、修复验证和关键证据留在一个工作空间。</h2>
       <p>团队任务、素材、结果与审计记录按工作空间隔离。</p>
     </div>
 
