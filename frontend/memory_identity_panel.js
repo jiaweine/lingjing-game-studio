@@ -1,4 +1,5 @@
 import "./issue_lifecycle.js";
+import "./value_metrics.js";
 
 const IDENTITY_REASON_LABELS = {
   "strong-stable-token-overlap": "稳定语义高度重合",
