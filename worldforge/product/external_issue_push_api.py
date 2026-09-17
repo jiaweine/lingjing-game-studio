@@ -22,7 +22,7 @@ class ExternalIssuePushRequest(BaseModel):
 def build_external_issue_push_router(
     *,
     store,
-    require_editor: Callable,
+    require_principal: Callable,
     publisher: GitHubIssuePublisher,
 ) -> APIRouter:
     router = APIRouter()
@@ -35,8 +35,10 @@ def build_external_issue_push_router(
         link_id: str,
         req: ExternalIssuePushRequest,
         request: Request,
-        principal: Principal = Depends(require_editor),
+        principal: Principal = Depends(require_principal),
     ):
+        if principal.role == "viewer":
+            raise HTTPException(403, "只读成员不能向外部 Issue 推送结果")
         try:
             conversation = store.get_conversation(
                 conversation_id, workspace_id=principal.workspace_id
