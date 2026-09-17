@@ -129,6 +129,7 @@ def test_alembic_upgrade_head_includes_memory_adapter_external_and_ci_schema(tmp
         "matched_count",
         "enqueued_count",
         "created_at",
+        "claimed_at",
         "completed_at",
     } <= delivery_columns
     delivery_indexes = {
