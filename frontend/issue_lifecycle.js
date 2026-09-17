@@ -2,6 +2,8 @@ const nativeFetch = window.fetch.bind(window);
 
 const SCOPE_PREFIX = "【验证范围】";
 const VERIFY_PROMPT = "沿用本任务已经确认的复现条件，在当前修复版本上重新执行相同验证。请对比修复前后的关键证据，并明确给出：仍可复现 / 已无法复现 / 证据不足；最后生成发布前回归清单。";
+let lastAssistantCount = -1;
+let hydrateTimer = null;
 
 function compact(value, max = 160) {
   return String(value || "").trim().replace(/\s+/g, " ").slice(0, max);
@@ -107,6 +109,22 @@ function setLifecycleHint(message, kind = "") {
   element.dataset.kind = kind;
 }
 
+function renderOutcome(messages = []) {
+  const label = document.getElementById("issueOutcomeLabel");
+  const reason = document.getElementById("issueOutcomeReason");
+  const box = document.getElementById("issueOutcome");
+  if (!label || !reason || !box) return;
+  const latest = [...messages].reverse().find(message => message?.role === "assistant");
+  const outcome = latest?.payload?.outcome || null;
+  box.dataset.state = outcome?.state || "pending";
+  label.textContent = outcome?.label || (latest ? "需要确认" : "等待首次结果");
+  reason.textContent = outcome?.reason || (
+    latest
+      ? "这条历史结果还没有结构化验证状态；可继续补充证据或重新执行。"
+      : "完成一次复现分析后，这里会显示结论能否升级为项目级验证事实。"
+  );
+}
+
 function installStyle() {
   if (document.getElementById("issueLifecycleStyle")) return;
   const style = document.createElement("style");
@@ -116,6 +134,7 @@ function installStyle() {
     .issue-scope-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:10px}.issue-scope-head small{display:block;color:#7b8496;font-size:11px;margin-bottom:3px}.issue-scope-head b{font-size:13px}.issue-scope-badge{font-size:10px;padding:4px 7px;border-radius:999px;background:#eef1ff;color:#5961a8;white-space:nowrap}
     .issue-scope-fields{display:grid;grid-template-columns:1fr 1fr;gap:7px}.issue-scope-fields label:first-child{grid-column:1/-1}.issue-scope-fields span{display:block;font-size:10px;color:#7b8496;margin:0 0 4px 2px}.issue-scope-fields input{box-sizing:border-box;width:100%;border:1px solid rgba(26,39,64,.12);border-radius:9px;padding:8px 9px;background:#fff;color:#20283a;font:inherit;font-size:11px;outline:none}.issue-scope-fields input:focus{border-color:#858ceb;box-shadow:0 0 0 2px rgba(105,112,220,.10)}
     .issue-scope-history{margin-top:10px;padding-top:9px;border-top:1px solid rgba(26,39,64,.08);display:grid;grid-template-columns:1fr 1fr;gap:8px}.issue-scope-history small{display:block;color:#939aaa;font-size:9px}.issue-scope-history b{display:block;font-size:10px;line-height:1.4;margin-top:2px;word-break:break-all}.issue-scope-status{grid-column:1/-1;color:#757e91;font-size:10px}
+    .issue-outcome{margin-top:10px;padding:9px 10px;border-radius:10px;background:#f6f7fa;border:1px solid rgba(26,39,64,.08)}.issue-outcome small{display:block;color:#8a92a1;font-size:9px}.issue-outcome b{display:block;margin-top:2px;font-size:12px}.issue-outcome p{margin:4px 0 0;color:#737c8f;font-size:9.5px;line-height:1.5}.issue-outcome[data-state="insufficient_evidence"]{background:#fff9ee;border-color:rgba(181,126,35,.18)}.issue-outcome[data-state="insufficient_evidence"] b{color:#9b6a19}.issue-outcome[data-state="needs_verifier_decision"]{background:#f2f4ff}.issue-outcome[data-state="analysis_complete"]{background:#f2f8f5}
     .issue-verify-action{width:100%;margin-top:10px;border:0;border-radius:10px;padding:9px 10px;background:#222a42;color:#fff;font-weight:650;cursor:pointer}.issue-verify-action:disabled{opacity:.45;cursor:not-allowed}.issue-lifecycle-hint{margin:7px 2px 0;color:#7b8496;font-size:10px;line-height:1.45}.issue-lifecycle-hint[data-kind="error"]{color:#a34747}.issue-lifecycle-hint[data-kind="ok"]{color:#33735b}
   `;
   document.head.appendChild(style);
@@ -142,6 +161,10 @@ function installCard() {
       <div><small>初始复现</small><b id="issueBaselineScope">未绑定版本</b></div>
       <div><small>最近验证</small><b id="issueCurrentScope">未绑定版本</b></div>
       <div class="issue-scope-status" id="issueScopeComparison">可选：先绑定发生问题的 Build / Branch / Commit</div>
+    </div>
+    <div class="issue-outcome" id="issueOutcome" data-state="pending">
+      <small>当前结论</small><b id="issueOutcomeLabel">等待首次结果</b>
+      <p id="issueOutcomeReason">完成一次复现分析后，这里会显示结论能否升级为项目级验证事实。</p>
     </div>
     <button class="issue-verify-action" id="verifyFixBtn" type="button">用此版本重新验证修复</button>
     <div class="issue-lifecycle-hint" id="issueLifecycleHint">首次复现时填问题版本；修复后改成新版本，再点上面的按钮。</div>
@@ -200,13 +223,27 @@ function normalizeVisibleStatuses() {
 
 function hydrateFromConversation(conversation) {
   installCard();
-  const scopes = allMessageScopes(conversation?.messages || []);
+  const messages = conversation?.messages || [];
+  const scopes = allMessageScopes(messages);
   const jobScope = scopeFromJob(conversation?.job);
   if (jobScope && (!scopes.length || !sameScope(scopes.at(-1), jobScope))) scopes.push(jobScope);
   if (scopes.length) setScope(scopes.at(-1));
   updateScopeSummary(scopes);
+  renderOutcome(messages);
   syncButtonState();
   normalizeVisibleStatuses();
+}
+
+function fetchCurrentConversation() {
+  clearTimeout(hydrateTimer);
+  hydrateTimer = setTimeout(() => {
+    const id = currentConversationId();
+    if (!id) return;
+    nativeFetch(`/api/conversations/${encodeURIComponent(id)}`, {credentials: "same-origin"})
+      .then(response => response.ok ? response.json() : null)
+      .then(data => { if (data) hydrateFromConversation(data); })
+      .catch(() => {});
+  }, 100);
 }
 
 window.fetch = async (input, init = {}) => {
@@ -261,6 +298,11 @@ function refreshFromRenderedMessages() {
   installCard();
   syncButtonState();
   normalizeVisibleStatuses();
+  const assistantCount = document.querySelectorAll(".msg.assistant[data-message-id]").length;
+  if (assistantCount !== lastAssistantCount) {
+    lastAssistantCount = assistantCount;
+    if (assistantCount > 0) fetchCurrentConversation();
+  }
 }
 
 installStyle();
@@ -273,22 +315,12 @@ observer.observe(document.documentElement, {subtree: true, childList: true, attr
 const originalReplaceState = history.replaceState.bind(history);
 history.replaceState = (...args) => {
   const result = originalReplaceState(...args);
-  setTimeout(() => {
-    const id = currentConversationId();
-    if (!id) return;
-    nativeFetch(`/api/conversations/${encodeURIComponent(id)}`, {credentials: "same-origin"})
-      .then(response => response.ok ? response.json() : null)
-      .then(data => { if (data) hydrateFromConversation(data); })
-      .catch(() => {});
-  }, 0);
+  lastAssistantCount = -1;
+  fetchCurrentConversation();
   return result;
 };
 
 window.addEventListener("popstate", () => {
-  const id = currentConversationId();
-  if (!id) return;
-  nativeFetch(`/api/conversations/${encodeURIComponent(id)}`, {credentials: "same-origin"})
-    .then(response => response.ok ? response.json() : null)
-    .then(data => { if (data) hydrateFromConversation(data); })
-    .catch(() => {});
+  lastAssistantCount = -1;
+  fetchCurrentConversation();
 });
