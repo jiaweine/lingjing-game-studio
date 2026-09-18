@@ -12,6 +12,16 @@ def test_unity_package_manifest_is_installable_editor_package():
     assert manifest["name"] == "com.lingjing.game-adapter"
     assert manifest["version"] == "0.3.0"
     assert manifest["unity"] == "2021.3"
+    assert manifest["samples"] == [
+        {
+            "displayName": "Boss Shield Bug Repro",
+            "description": (
+                "Deterministic fixture for validating Lingjing probe observations "
+                "and independent Bug/Fix contract evaluation."
+            ),
+            "path": "Samples~/BossShieldBug",
+        }
+    ]
 
     assembly = json.loads(
         (PACKAGE / "Editor" / "Lingjing.GameAdapter.Editor.asmdef").read_text(
