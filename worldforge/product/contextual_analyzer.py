@@ -16,7 +16,10 @@ from worldforge.context.retrieval_sidecar import (
     apply_retrieval_hits,
 )
 from worldforge.context.temporal_evidence import merge_temporal_evidence
-from worldforge.context.verification_contract import build_verification_contract
+from worldforge.context.verification_contract import (
+    build_verification_contract,
+    engine_project_execution_asset_ids,
+)
 
 from .analyzer import ProductAnalyzer as BaseProductAnalyzer
 
@@ -145,10 +148,11 @@ class ProductAnalyzer(BaseProductAnalyzer):
         evidence_assessment = self.evidence_controller.assess(
             evidence_plan, semantic_result, multimodal_packet.assets
         )
+        engine_execution_asset_ids = engine_project_execution_asset_ids(raw_assets)
         verification_contract = build_verification_contract(
             evidence_plan,
             multimodal_packet.assets,
-            actual_project_execution_available=False,
+            actual_project_execution_available=bool(engine_execution_asset_ids),
         )
 
         semantic_ranges: dict[str, list[tuple[float, float]]] = {}
@@ -301,8 +305,18 @@ class ProductAnalyzer(BaseProductAnalyzer):
             len(rows) for rows in semantic_ranges.values()
         )
         context["semantic_text_chunk_hits"] = semantic_text_hits
+        context["engine_project_execution_asset_ids"] = list(
+            engine_execution_asset_ids
+        )
+        context["engine_project_execution_asset_count"] = len(
+            engine_execution_asset_ids
+        )
         context["runtime_verification_scope"] = (
-            "synthetic-builtin-scenario" if result.get("runtime") else "none"
+            "external-engine-observation"
+            if engine_execution_asset_ids
+            else "synthetic-builtin-scenario"
+            if result.get("runtime")
+            else "none"
         )
         context["synthetic_review_opt_in"] = bool(self.synthetic_review_enabled)
         result["context"] = context
