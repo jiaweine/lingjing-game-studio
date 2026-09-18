@@ -55,7 +55,9 @@ def evaluate_probe_snapshot(data: bytes | str) -> list[dict[str, Any]]:
     if not isinstance(snapshot, dict):
         raise EngineProbeVerificationError("engine snapshot must be a JSON object")
 
-    probes = snapshot.get("probes") or []
+    probes = snapshot.get("probes", [])
+    if probes is None:
+        probes = []
     if not isinstance(probes, list):
         raise EngineProbeVerificationError("engine snapshot probes must be a list")
     if len(probes) > 32:
