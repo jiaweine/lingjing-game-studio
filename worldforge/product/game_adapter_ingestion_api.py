@@ -274,9 +274,12 @@ def build_game_adapter_ingestion_router(
             raise HTTPException(409, "已归档任务不能连接引擎")
         try:
             endpoint = _normalize_loopback_endpoint(req.endpoint)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        try:
             adapter = adapter_factory(endpoint, token=req.token, timeout_seconds=10.0)
             capabilities = await adapter.capabilities()
-        except (ValueError, GameAdapterError) as exc:
+        except GameAdapterError as exc:
             raise HTTPException(409, str(exc)) from exc
         store.add_audit(
             request_id=getattr(request.state, "request_id", "game-adapter-probe"),
