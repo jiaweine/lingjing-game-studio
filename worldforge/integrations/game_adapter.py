@@ -475,12 +475,17 @@ class FrozenKernelGameAdapterGateway:
                 if key in {
                     "mime",
                     "size",
+                    "byte_size",
+                    "width",
+                    "height",
                     "duration",
                     "start",
                     "end",
                     "frame",
                     "stream",
                     "engine_object",
+                    "scene",
+                    "play_mode",
                 }
             }
             evidence.append(
