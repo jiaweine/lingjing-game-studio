@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -123,6 +124,8 @@ def _latest_scope(store, conversation_id: str, workspace_id: str) -> dict[str, A
 
 def _asset_descriptor(kind: str, data: bytes, meta: dict[str, Any]) -> tuple[str, str, str, dict[str, Any]]:
     if kind == "screenshot":
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise GameAdapterError("adapter screenshot is not a PNG payload")
         width = int(meta.get("width") or 0)
         height = int(meta.get("height") or 0)
         return (
@@ -135,6 +138,12 @@ def _asset_descriptor(kind: str, data: bytes, meta: dict[str, Any]) -> tuple[str
     lines = max(1, text.count("\n") + 1)
     preview = "\n".join(text.splitlines()[:8])[:4000]
     if kind == "snapshot":
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError) as exc:
+            raise GameAdapterError("adapter snapshot is not valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise GameAdapterError("adapter snapshot must be a JSON object")
         return (
             "unity-editor-snapshot.json",
             "application/json",
