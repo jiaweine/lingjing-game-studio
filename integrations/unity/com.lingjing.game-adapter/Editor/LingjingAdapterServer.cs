@@ -7,7 +7,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using UnityEditor;
 using UnityEngine;
 
 namespace Lingjing.GameAdapter.Editor
@@ -24,7 +23,7 @@ namespace Lingjing.GameAdapter.Editor
             public bool supports_dry_run = true;
             public bool supports_snapshot = true;
             public bool supports_logs = true;
-            public bool supports_screenshots = false;
+            public bool supports_screenshots = true;
             public bool supports_video = false;
             public bool supports_audio = false;
             public bool mutating_actions = false;
@@ -48,6 +47,7 @@ namespace Lingjing.GameAdapter.Editor
         private sealed class ExecuteRequestPayload
         {
             public string action_id;
+            public string[] evidence_requests;
             public bool dry_run;
             public TicketPayload ticket;
         }
@@ -55,17 +55,22 @@ namespace Lingjing.GameAdapter.Editor
         [Serializable]
         private sealed class EvidenceMetadata
         {
-            public string mime = "text/plain";
-            public string engine_object = "UnityEditor";
+            public string mime;
+            public string engine_object;
+            public long byte_size;
+            public int width;
+            public int height;
+            public string scene;
+            public string play_mode;
         }
 
         [Serializable]
         private sealed class EvidencePayload
         {
-            public string kind = "log";
+            public string kind;
             public string locator;
             public string sha256;
-            public EvidenceMetadata metadata = new EvidenceMetadata();
+            public EvidenceMetadata metadata;
         }
 
         [Serializable]
@@ -73,7 +78,8 @@ namespace Lingjing.GameAdapter.Editor
         {
             public bool loopback = true;
             public bool mutating_actions = false;
-            public string bridge_mode = "editor-dry-run";
+            public string bridge_mode = "editor-readonly-evidence";
+            public int evidence_count;
         }
 
         [Serializable]
@@ -95,8 +101,6 @@ namespace Lingjing.GameAdapter.Editor
         private static CancellationTokenSource _cancellation;
         private static string _token = string.Empty;
         private static CapabilitiesPayload _capabilities;
-        private static string _snapshotDigest;
-        private static string _projectLocator;
 
         internal static bool IsRunning
         {
@@ -180,8 +184,6 @@ namespace Lingjing.GameAdapter.Editor
                 adapter_id = $"unity-{hash.Substring(0, 16)}",
                 engine_version = Application.unityVersion,
             };
-            _snapshotDigest = Sha256($"{identity}|editor-dry-run-v1");
-            _projectLocator = $"unity://project/{hash.Substring(0, 16)}/editor-state";
         }
 
         private static async Task AcceptLoop(HttpListener listener, CancellationToken cancellationToken)
@@ -229,7 +231,19 @@ namespace Lingjing.GameAdapter.Editor
                     return;
                 }
 
+                const string evidencePrefix = "/v1/adapter/evidence/";
+                if (context.Request.HttpMethod == "GET" && path.StartsWith(evidencePrefix, StringComparison.Ordinal))
+                {
+                    var evidenceId = path.Substring(evidencePrefix.Length);
+                    HandleEvidence(context, evidenceId);
+                    return;
+                }
+
                 WriteJson(context.Response, 404, "{\"detail\":\"not found\"}");
+            }
+            catch (TimeoutException exception)
+            {
+                WriteJson(context.Response, 503, $"{{\"detail\":\"{EscapeJson(exception.Message)}\"}}");
             }
             catch (Exception exception)
             {
@@ -271,6 +285,7 @@ namespace Lingjing.GameAdapter.Editor
                 return;
             }
 
+            var beforeDigest = LingjingEvidenceCache.SnapshotDigest;
             if (!request.dry_run)
             {
                 var rejected = new ExecuteResultPayload
@@ -279,50 +294,109 @@ namespace Lingjing.GameAdapter.Editor
                     action_id = request.action_id,
                     ticket_id = request.ticket.ticket_id,
                     status = "rejected",
-                    before_snapshot_digest = _snapshotDigest,
-                    after_snapshot_digest = _snapshotDigest,
+                    before_snapshot_digest = beforeDigest,
+                    after_snapshot_digest = beforeDigest,
                     evidence = Array.Empty<EvidencePayload>(),
-                    message = "Unity activation package is dry-run only; mutating actions are disabled.",
+                    message = "Unity evidence package is read-only; mutating actions are disabled.",
                 };
                 WriteJson(context.Response, 200, JsonUtility.ToJson(rejected));
                 return;
             }
 
-            var evidenceText = $"Lingjing Unity bridge dry-run; adapter={_capabilities.adapter_id}; unity={_capabilities.engine_version}";
-            var evidence = new EvidencePayload
+            var captured = LingjingEvidenceCache.Capture(request.evidence_requests);
+            var evidence = new List<EvidencePayload>();
+            foreach (var record in captured)
             {
-                locator = _projectLocator,
-                sha256 = Sha256(evidenceText),
-            };
+                evidence.Add(new EvidencePayload
+                {
+                    kind = record.kind,
+                    locator = $"{Endpoint}/v1/adapter/evidence/{record.id}",
+                    sha256 = record.sha256,
+                    metadata = new EvidenceMetadata
+                    {
+                        mime = record.metadata?.mime ?? record.mime,
+                        engine_object = record.metadata?.engine_object ?? "UnityEditor",
+                        byte_size = record.metadata?.byte_size ?? record.bytes.LongLength,
+                        width = record.metadata?.width ?? 0,
+                        height = record.metadata?.height ?? 0,
+                        scene = record.metadata?.scene ?? string.Empty,
+                        play_mode = record.metadata?.play_mode ?? string.Empty,
+                    },
+                });
+            }
+            var afterDigest = LingjingEvidenceCache.SnapshotDigest;
+            var metrics = new MetricsPayload { evidence_count = evidence.Count };
             var result = new ExecuteResultPayload
             {
                 adapter_id = _capabilities.adapter_id,
                 action_id = request.action_id,
                 ticket_id = request.ticket.ticket_id,
                 status = "dry-run",
-                before_snapshot_digest = _snapshotDigest,
-                after_snapshot_digest = _snapshotDigest,
-                evidence = new[] { evidence },
-                message = "Unity Editor dry-run conformance completed. This is an external engine observation, not a verifier decision.",
+                before_snapshot_digest = beforeDigest,
+                after_snapshot_digest = afterDigest,
+                evidence = evidence.ToArray(),
+                metrics = metrics,
+                message = "Unity Editor read-only evidence captured. These are external engine observations, not a verifier decision.",
             };
             WriteJson(context.Response, 200, JsonUtility.ToJson(result));
         }
 
+        private static void HandleEvidence(HttpListenerContext context, string evidenceId)
+        {
+            if (string.IsNullOrEmpty(evidenceId) || !LingjingEvidenceCache.TryGet(evidenceId, out var record))
+            {
+                WriteJson(context.Response, 404, "{\"detail\":\"evidence expired or not found\"}");
+                return;
+            }
+            WriteBytes(
+                context.Response,
+                200,
+                record.bytes,
+                record.mime,
+                record.filename,
+                record.sha256);
+        }
+
         private static void WriteJson(HttpListenerResponse response, int statusCode, string json)
+        {
+            WriteBytes(
+                response,
+                statusCode,
+                Encoding.UTF8.GetBytes(json ?? "{}"),
+                "application/json; charset=utf-8",
+                null,
+                null);
+        }
+
+        private static void WriteBytes(
+            HttpListenerResponse response,
+            int statusCode,
+            byte[] bytes,
+            string contentType,
+            string filename,
+            string sha256)
         {
             if (response.OutputStream == null)
             {
                 return;
             }
-            var bytes = Encoding.UTF8.GetBytes(json ?? "{}");
+            var payload = bytes ?? Array.Empty<byte>();
             response.StatusCode = statusCode;
-            response.ContentType = "application/json; charset=utf-8";
-            response.ContentEncoding = Encoding.UTF8;
-            response.ContentLength64 = bytes.Length;
+            response.ContentType = string.IsNullOrEmpty(contentType) ? "application/octet-stream" : contentType;
+            response.ContentLength64 = payload.LongLength;
             response.Headers["Cache-Control"] = "no-store";
+            response.Headers["X-Content-Type-Options"] = "nosniff";
+            if (!string.IsNullOrEmpty(sha256))
+            {
+                response.Headers["X-Lingjing-Sha256"] = sha256;
+            }
+            if (!string.IsNullOrEmpty(filename))
+            {
+                response.Headers["Content-Disposition"] = $"inline; filename=\"{filename.Replace("\"", string.Empty)}\"";
+            }
             try
             {
-                response.OutputStream.Write(bytes, 0, bytes.Length);
+                response.OutputStream.Write(payload, 0, payload.Length);
             }
             finally
             {

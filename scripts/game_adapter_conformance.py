@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import time
 
+import httpx
 from sqlalchemy import create_engine
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,76 @@ from worldforge.integrations.game_adapter import (
     SqlGameAdapterReplayStore,
     SyntheticContractAdapter,
 )
+
+
+async def _fetch_evidence_probe(args, observation) -> dict:
+    if not args.endpoint:
+        raise SystemExit("--fetch-evidence requires --endpoint")
+    base = str(args.endpoint).rstrip("/")
+    allowed_prefix = f"{base}/v1/adapter/evidence/"
+    headers = {}
+    token = args.token or os.getenv("LINGJING_GAME_ADAPTER_TOKEN")
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+
+    items = []
+    async with httpx.AsyncClient(timeout=args.timeout) as client:
+        for evidence in observation.evidence:
+            locator = str(evidence.get("locator") or "")
+            expected = str(evidence.get("sha256") or "").lower()
+            row = {
+                "kind": str(evidence.get("kind") or "artifact"),
+                "locator": locator,
+                "status_code": None,
+                "bytes": 0,
+                "sha256": None,
+                "passed": False,
+            }
+            if not locator.startswith(allowed_prefix):
+                row["error"] = "locator-outside-adapter-evidence-prefix"
+                items.append(row)
+                continue
+            try:
+                response = await client.get(locator, headers=headers)
+            except httpx.HTTPError as exc:
+                row["error"] = f"request-failed:{type(exc).__name__}"
+                items.append(row)
+                continue
+            row["status_code"] = response.status_code
+            body = response.content
+            row["bytes"] = len(body)
+            if len(body) > 6 * 1024 * 1024:
+                row["error"] = "evidence-exceeds-6mb-conformance-limit"
+                items.append(row)
+                continue
+            actual = hashlib.sha256(body).hexdigest()
+            row["sha256"] = actual
+            header_sha = str(response.headers.get("x-lingjing-sha256") or "").lower()
+            row["content_type"] = response.headers.get("content-type")
+            row["passed"] = bool(
+                response.status_code == 200
+                and expected
+                and actual == expected
+                and (not header_sha or header_sha == actual)
+            )
+            if not row["passed"]:
+                row["error"] = "status-or-digest-mismatch"
+            items.append(row)
+
+    screenshot_present = any(
+        item["kind"] == "screenshot" and item["passed"] for item in items
+    )
+    passed = bool(items) and all(item["passed"] for item in items)
+    if args.require_screenshot:
+        passed = passed and screenshot_present
+    return {
+        "requested": True,
+        "same_adapter_origin_required": True,
+        "items": items,
+        "screenshot_present": screenshot_present,
+        "passed": passed,
+        "evidence_class": "retrievable-external-engine-observation-not-verifier-truth",
+    }
 
 
 async def _run(args) -> dict:
@@ -42,6 +114,7 @@ async def _run(args) -> dict:
         "protocol": "lingjing-game-adapter-v1",
         "capabilities": capabilities.to_dict(),
         "execution_probe": None,
+        "evidence_fetch_probe": None,
         "durable_replay_probe": None,
         "evidence_class": evidence_class,
         "quality_claim": "none-adapter-conformance-only",
@@ -62,7 +135,7 @@ async def _run(args) -> dict:
         "target": args.target,
         "mutating": False,
     }
-    evidence_requests = ("logs", "screenshot")
+    evidence_requests = ("logs", "snapshot", "screenshot")
     secret = args.signing_secret or os.getenv("LINGJING_GAME_ADAPTER_SIGNING_SECRET")
     if not secret:
         secret = "synthetic-conformance-secret-32-bytes" if not args.endpoint else None
@@ -107,6 +180,12 @@ async def _run(args) -> dict:
         observation = await gateway.execute(adapter, request)
         result["execution_probe"] = observation.to_dict()
 
+        evidence_fetch_passed = True
+        if args.fetch_evidence:
+            evidence_probe = await _fetch_evidence_probe(args, observation)
+            result["evidence_fetch_probe"] = evidence_probe
+            evidence_fetch_passed = bool(evidence_probe["passed"])
+
         durable_replay_passed = True
         if args.durable_replay_smoke:
             assert replay_database_url is not None
@@ -137,6 +216,7 @@ async def _run(args) -> dict:
             observation.status == "dry-run"
             and observation.canonical_write_allowed is False
             and observation.verifier_status == "not-run"
+            and evidence_fetch_passed
             and durable_replay_passed
         )
         return result
@@ -151,6 +231,8 @@ def main() -> None:
     parser.add_argument("--token")
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--execute-dry-run", action="store_true")
+    parser.add_argument("--fetch-evidence", action="store_true")
+    parser.add_argument("--require-screenshot", action="store_true")
     parser.add_argument("--durable-replay-smoke", action="store_true")
     parser.add_argument("--signing-secret")
     parser.add_argument("--build-ref", default="conformance")
@@ -162,6 +244,10 @@ def main() -> None:
 
     if args.durable_replay_smoke and not args.execute_dry_run:
         parser.error("--durable-replay-smoke requires --execute-dry-run")
+    if args.fetch_evidence and (not args.endpoint or not args.execute_dry_run):
+        parser.error("--fetch-evidence requires --endpoint and --execute-dry-run")
+    if args.require_screenshot and not args.fetch_evidence:
+        parser.error("--require-screenshot requires --fetch-evidence")
 
     payload = asyncio.run(_run(args))
     print(json.dumps(payload, ensure_ascii=False, indent=2))
