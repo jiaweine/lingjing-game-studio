@@ -438,6 +438,10 @@ def build_game_adapter_ingestion_router(
                     "scene": row["meta"].get("scene"),
                     "play_mode": row["meta"].get("play_mode"),
                     "engine_byte_size": row["meta"].get("byte_size"),
+                    "build": scope.get("build_ref"),
+                    "branch": scope.get("branch_ref"),
+                    "commit": scope.get("commit_ref"),
+                    "environment": scope.get("environment_ref"),
                 }
                 if row["kind"] == "snapshot" and probe_evaluations:
                     meta["probe_evaluations"] = probe_evaluations
