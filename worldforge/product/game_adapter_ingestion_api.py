@@ -378,16 +378,18 @@ def build_game_adapter_ingestion_router(
         except GameAdapterError as exc:
             raise HTTPException(409, str(exc)) from exc
 
-        assets: list[dict[str, Any]] = []
-        for row in fetched:
-            name, declared_mime, suffix, media_meta = _asset_descriptor(
-                row["kind"], row["data"], row["meta"]
-            )
-            object_key = (
-                f"{principal.workspace_id}/assets/{uuid.uuid4().hex}/engine{suffix}"
-            )
-            try:
+        object_keys: list[str] = []
+        pending_assets: list[dict[str, Any]] = []
+        try:
+            for row in fetched:
+                name, declared_mime, suffix, media_meta = _asset_descriptor(
+                    row["kind"], row["data"], row["meta"]
+                )
+                object_key = (
+                    f"{principal.workspace_id}/assets/{uuid.uuid4().hex}/engine{suffix}"
+                )
                 storage.put_bytes(object_key, row["data"], declared_mime)
+                object_keys.append(object_key)
                 meta = {
                     **media_meta,
                     "source_type": "game-adapter",
@@ -402,25 +404,32 @@ def build_game_adapter_ingestion_router(
                     "play_mode": row["meta"].get("play_mode"),
                     "engine_byte_size": row["meta"].get("byte_size"),
                 }
-                asset = store.add_asset(
-                    conversation_id,
-                    name=name,
-                    mime=declared_mime,
-                    path=object_key,
-                    size=len(row["data"]),
-                    meta=meta,
-                    workspace_id=principal.workspace_id,
-                    created_by=principal.user_id,
-                    storage_backend=storage.name,
+                pending_assets.append(
+                    {
+                        "name": name,
+                        "mime": declared_mime,
+                        "path": object_key,
+                        "size": len(row["data"]),
+                        "meta": meta,
+                        "storage_backend": storage.name,
+                    }
                 )
-            except Exception:
+            assets = store.add_assets_batch(
+                conversation_id,
+                assets=pending_assets,
+                workspace_id=principal.workspace_id,
+                created_by=principal.user_id,
+            )
+        except Exception:
+            for object_key in object_keys:
                 try:
                     storage.delete(object_key)
                 except Exception:
                     pass
-                raise
+            raise
+
+        for asset in assets:
             asset["url"] = f"/api/assets/{asset['id']}/file"
-            assets.append(asset)
 
         store.add_event(
             conversation_id,
