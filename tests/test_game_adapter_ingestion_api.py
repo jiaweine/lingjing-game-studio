@@ -405,3 +405,51 @@ def test_asset_descriptor_rejects_fake_screenshot_and_invalid_snapshot():
         _asset_descriptor("snapshot", b"{broken", {})
     with pytest.raises(Exception, match="JSON object"):
         _asset_descriptor("snapshot", b"[1,2,3]", {})
+
+
+def test_engine_capture_persists_build_branch_commit_environment_scope(tmp_path, monkeypatch):
+    store, _storage, conversation, client = _client(tmp_path, monkeypatch)
+    store.enqueue_job(
+        workspace_id=DEMO_WORKSPACE_ID,
+        conversation_id=conversation["id"],
+        payload={
+            "text": "verify fixed build",
+            "project_context": {
+                "scope": {
+                    "build_ref": "build-2.0.0",
+                    "branch_ref": "release/2.0",
+                    "commit_ref": "abc1234",
+                    "environment_ref": "unity-editor",
+                }
+            },
+        },
+    )
+
+    response = client.post(
+        f"/api/conversations/{conversation['id']}/game-adapter/capture",
+        json={
+            "endpoint": "http://127.0.0.1:9030",
+            "evidence_requests": ["snapshot"],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    asset = response.json()["assets"][0]
+    assert asset["meta"]["build"] == "build-2.0.0"
+    assert asset["meta"]["branch"] == "release/2.0"
+    assert asset["meta"]["commit"] == "abc1234"
+    assert asset["meta"]["environment"] == "unity-editor"
+
+    event = next(
+        row
+        for row in store.list_events(
+            conversation["id"], workspace_id=DEMO_WORKSPACE_ID
+        )
+        if row["type"] == "engine.evidence.ingested"
+    )
+    assert event["payload"]["scope"] == {
+        "build_ref": "build-2.0.0",
+        "branch_ref": "release/2.0",
+        "commit_ref": "abc1234",
+        "environment_ref": "unity-editor",
+    }
