@@ -44,6 +44,8 @@ function installEnginePanelStyle() {
     .engine-adapter-note{margin:7px 1px 0;color:#858d9d;font-size:8.5px;line-height:1.5}
     .engine-adapter-status{margin-top:7px;padding:7px 8px;border-radius:9px;background:#f7f8fb;color:#687187;font-size:8.5px;line-height:1.5}
     .engine-adapter-status strong{color:#34405a}.engine-adapter-status[data-state="ok"]{background:#f1f7f2;color:#42604b}.engine-adapter-status[data-state="error"]{background:#fff3f2;color:#8b4c46}
+    .asset-origin.engine{display:inline-block;margin-top:4px;padding:2px 5px;border-radius:999px;background:#eef7f1;color:#4f6b59;font-size:7.5px;font-weight:650}
+    .asset-card[data-engine-evidence="true"]{border-color:rgba(65,105,78,.18)}
   `;
   document.head.appendChild(style);
 }
