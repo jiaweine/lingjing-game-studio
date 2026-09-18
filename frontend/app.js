@@ -512,16 +512,23 @@ function renderPending() {
 
 function renderAssets() {
   $("assetList").innerHTML = state.assets.length
-    ? state.assets.map(asset => `
-        <div class="asset-card">
-          <div class="asset-icon">${ICON[kindOf(asset)] || "＋"}</div>
-          <div>
-            <b>${esc(asset.name)}</b>
-            <small>${esc(kindLabel(asset))}<br />${fmtSize(asset.size || 0)}</small>
+    ? state.assets.map(asset => {
+        const engineBacked = asset?.meta?.source_type === "game-adapter";
+        const origin = engineBacked
+          ? `<span class="asset-origin engine">Unity 引擎证据 · 未验证</span>`
+          : "";
+        return `
+          <div class="asset-card" ${engineBacked ? 'data-engine-evidence="true"' : ""}>
+            <div class="asset-icon">${ICON[kindOf(asset)] || "＋"}</div>
+            <div>
+              <b>${esc(asset.name)}</b>
+              <small>${esc(kindLabel(asset))}<br />${fmtSize(asset.size || 0)}</small>
+              ${origin}
+            </div>
           </div>
-        </div>
-      `).join("")
-    : '<div class="empty-side">还没有上传素材。</div>';
+        `;
+      }).join("")
+    : '<div class="empty-side">还没有上传或导入素材。</div>';
 }
 
 function renderEvidence(rows = []) {
@@ -1457,6 +1464,27 @@ async function bootWorkspace() {
     toast("当前工作空间还没有任务");
   }
 }
+
+window.addEventListener("lingjing:conversation-refresh", async event => {
+  const conversationId = event?.detail?.conversationId || state.conversation?.id;
+  if (!conversationId || conversationId !== state.conversation?.id) return;
+  const previousPendingIds = state.pending.map(asset => asset.id);
+  const importedIds = event?.detail?.assetIds || [];
+  try {
+    await openConversation(conversationId);
+    const pendingIds = [...new Set([...previousPendingIds, ...importedIds])];
+    state.pending = pendingIds
+      .map(id => state.assets.find(asset => asset.id === id))
+      .filter(Boolean);
+    renderPending();
+    if (importedIds.length) {
+      toast("引擎证据已加入下一轮任务上下文");
+    }
+  } catch (error) {
+    console.error(error);
+    toast("证据已导入，但任务刷新失败");
+  }
+});
 
 async function boot() {
   bindAuth();

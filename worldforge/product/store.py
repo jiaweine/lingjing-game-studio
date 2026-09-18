@@ -639,6 +639,67 @@ class ConversationStore:
                 connection.execute(update(self.conversations).where(and_(self.conversations.c.id == conversation_id, self.conversations.c.workspace_id == workspace_id)).values(updated_at=now))
         return self.get_asset(asset_id, workspace_id=workspace_id)
 
+    def add_assets_batch(
+        self,
+        conversation_id: str,
+        *,
+        assets: list[dict[str, Any]],
+        workspace_id: str = DEMO_WORKSPACE_ID,
+        created_by: str = DEMO_USER_ID,
+    ) -> list[dict[str, Any]]:
+        if not assets:
+            return []
+        now = time.time()
+        asset_ids = [_id("asset") for _ in assets]
+        with self.engine.begin() as connection:
+            row = connection.execute(
+                select(self.conversations)
+                .where(
+                    and_(
+                        self.conversations.c.id == conversation_id,
+                        self.conversations.c.workspace_id == workspace_id,
+                    )
+                )
+                .with_for_update()
+            ).first()
+            if not row:
+                raise KeyError(conversation_id)
+            conversation = self._dict(row)
+            if conversation.get("archived_at") is not None:
+                raise ValueError("已归档任务需要先恢复，才能添加素材")
+            if conversation["status"] == "waiting_approval":
+                raise ValueError("删除确认处理中，不能添加素材")
+            for asset_id, item in zip(asset_ids, assets):
+                connection.execute(
+                    insert(self.assets).values(
+                        id=asset_id,
+                        workspace_id=workspace_id,
+                        created_by=created_by,
+                        conversation_id=conversation_id,
+                        name=str(item["name"]),
+                        mime=str(item["mime"]),
+                        path=str(item["path"]),
+                        storage_backend=str(item.get("storage_backend") or "local"),
+                        size=int(item["size"]),
+                        meta=json.dumps(dict(item.get("meta") or {}), ensure_ascii=False),
+                        created_at=now,
+                    )
+                )
+            connection.execute(
+                update(self.conversations)
+                .where(
+                    and_(
+                        self.conversations.c.id == conversation_id,
+                        self.conversations.c.workspace_id == workspace_id,
+                    )
+                )
+                .values(updated_at=now)
+            )
+        return [
+            self.get_asset(asset_id, workspace_id=workspace_id)
+            for asset_id in asset_ids
+        ]
+
     def get_asset(self, asset_id: str, *, workspace_id: str = DEMO_WORKSPACE_ID) -> dict[str, Any]:
         with self.engine.connect() as connection:
             row = connection.execute(select(self.assets).where(and_(self.assets.c.id == asset_id, self.assets.c.workspace_id == workspace_id))).first()

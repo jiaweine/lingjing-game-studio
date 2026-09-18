@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from pydantic import BaseModel, Field
 
 from worldforge.security import Principal
+from .game_adapter_ingestion_api import build_game_adapter_ingestion_router
 
 
 class ConversationUpdate(BaseModel):
@@ -436,4 +437,11 @@ def build_control_router(
     ):
         return store.feedback_gate(conversation_id, workspace_id=principal.workspace_id)
 
+    router.include_router(
+        build_game_adapter_ingestion_router(
+            store=store,
+            storage=storage,
+            require_principal=require_principal,
+        )
+    )
     return router
