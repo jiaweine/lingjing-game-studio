@@ -328,3 +328,50 @@ def test_batch_asset_registration_is_atomic(tmp_path):
     assert store.list_assets(
         conversation["id"], workspace_id=DEMO_WORKSPACE_ID
     ) == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_evidence_rejects_duplicate_kind_before_second_network_request():
+    body = b"one"
+    digest = hashlib.sha256(body).hexdigest()
+    calls = 0
+
+    async def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            content=body,
+            headers={
+                "content-type": "text/plain",
+                "x-lingjing-sha256": digest,
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return httpx.AsyncClient(*args, **kwargs)
+
+    evidence = tuple(
+        {
+            "kind": "log",
+            "locator": (
+                "http://127.0.0.1:9030/v1/adapter/evidence/"
+                + f"{index:032x}"
+            ),
+            "sha256": digest,
+            "meta": {"mime": "text/plain"},
+        }
+        for index in (1, 2)
+    )
+    with pytest.raises(Exception, match="duplicate"):
+        await _fetch_evidence_bytes(
+            endpoint="http://127.0.0.1:9030",
+            token=None,
+            evidence=evidence,
+            requested=("logs",),
+            http_client_factory=factory,
+        )
+    assert calls == 1
