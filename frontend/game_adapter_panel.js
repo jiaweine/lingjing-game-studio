@@ -164,6 +164,24 @@ async function probeEngine(card) {
   }
 }
 
+function probeOutcomeLabel(outcome) {
+  return {
+    reproduced: "观察到复现条件",
+    passed: "观察到修复条件",
+    ambiguous: "Probe 冲突",
+    unknown: "Probe 未判定",
+  }[outcome] || "Probe 未判定";
+}
+
+function renderProbeSummary(evaluations = []) {
+  if (!evaluations.length) {
+    return "Probe contract: 当前 snapshot 没有已登记的 governed probe";
+  }
+  return evaluations.map(item => (
+    `Probe contract · ${engineEsc(item.probe_id || "")}: <strong>${engineEsc(probeOutcomeLabel(item.outcome))}</strong>`
+  )).join("<br>");
+}
+
 async function captureEngine(card) {
   const conversationId = engineConversationId();
   if (!conversationId) return engineToast("先选择一个任务");
@@ -188,9 +206,10 @@ async function captureEngine(card) {
     const result = await response.json();
     const assets = result.assets || [];
     const kinds = assets.map(asset => asset?.meta?.adapter_evidence_kind).filter(Boolean);
+    const evaluations = result.probe_evaluations || [];
     setEngineStatus(
       card,
-      `<strong>已导入 ${assets.length} 份引擎证据</strong> · ${engineEsc(kinds.join(" / ") || "evidence")}<br>${engineEsc(result.evidence_class || "external-engine-observation-unverified")} · Verifier: ${engineEsc(result.verifier_status || "not-run")}`,
+      `<strong>已导入 ${assets.length} 份引擎证据</strong> · ${engineEsc(kinds.join(" / ") || "evidence")}<br>${renderProbeSummary(evaluations)}<br>${engineEsc(result.evidence_class || "external-engine-observation-unverified")} · Task Verifier: ${engineEsc(result.verifier_status || "not-run")}`,
       "ok",
     );
     engineToast(`已导入 ${assets.length} 份引擎证据`);
