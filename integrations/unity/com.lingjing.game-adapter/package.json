@@ -1,8 +1,8 @@
 {
   "name": "com.lingjing.game-adapter",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "displayName": "Lingjing Game Adapter",
-  "description": "Editor-only loopback bridge for Lingjing GameAdapter v1 activation, read-only Unity evidence capture, and non-mutating dry-run conformance.",
+  "description": "Unity GameAdapter v1 bridge with bounded read-only evidence capture, structured runtime probe observations, and non-mutating conformance.",
   "unity": "2021.3",
   "author": {
     "name": "Lingjing"
@@ -15,5 +15,12 @@
     "debugging",
     "evidence",
     "agent"
+  ],
+  "samples": [
+    {
+      "displayName": "Boss Shield Bug Repro",
+      "description": "Deterministic fixture for validating Lingjing probe observations and independent Bug/Fix contract evaluation.",
+      "path": "Samples~/BossShieldBug"
+    }
   ]
 }

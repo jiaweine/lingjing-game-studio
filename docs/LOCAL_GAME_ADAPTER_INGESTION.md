@@ -78,15 +78,31 @@ verifier_status = not-run
 canonical_write_allowed = false
 ```
 
-Engine evidence does not become project truth merely because its bytes and digest are genuine. An independent Verifier still decides whether the evidence supports reproduction or fix verification.
+Engine evidence does not become project truth merely because its bytes and digest are genuine. Known structured probes may be evaluated against Lingjing-owned contracts, but that contract result is still an evaluation of external observation. The task-level Verifier still decides whether the evidence supports reproduction or fix verification.
+
+## Governed probe evaluation
+
+Unity package 0.3.0 can include bounded `LingjingProbeState` observations inside the snapshot. The project reports only observed state/value; it does not provide the acceptance rule.
+
+Lingjing evaluates only pre-registered contracts. The built-in demo contract is:
+
+```text
+probe_id: demo.boss_shield.damage_gate
+damage_applied_while_shielded + value > 0.01 -> reproduced
+damage_blocked_while_shielded + value ~= 0 -> passed
+otherwise -> unknown
+duplicate governed probe rows -> ambiguous
+```
+
+The result is stored as `engine.probe.evaluated` with `authority=contract-evaluation-only`. Unknown project-defined probe IDs receive no automatic verdict.
 
 ## Current limitation
 
-This path proves product-side ingestion for a local/self-hosted deployment. It does not yet provide:
+This path proves product-side ingestion for a local/self-hosted deployment and includes a checked-in deterministic Boss Shield source fixture. It does not yet provide:
 
 - an outbound desktop runner for hosted SaaS;
 - governed game-mutating reproduction actions;
-- a checked-in Unity Bug/Fix demo project;
-- an automatic verifier decision.
+- captured CI evidence from a licensed Unity Editor running the demo fixture;
+- automatic promotion of a probe-contract result into the task-level verifier decision.
 
 Those are separate milestones and must not be inferred from a successful connection or evidence import.

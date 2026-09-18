@@ -2,7 +2,7 @@
 
 This package is the first-party Unity activation and **read-only evidence** path for Lingjing GameAdapter v1. It runs an Editor-only loopback HTTP bridge so a Unity project can answer the existing GameAdapter contract, capture bounded engine observations, and return them through Frozen Kernel tickets without asking the user to implement a bridge from scratch.
 
-Current package version: `0.2.0`.
+Current package version: `0.3.0`.
 
 ## Install
 
@@ -14,7 +14,7 @@ https://github.com/jiaweine/lingjing-game-studio.git?path=/integrations/unity/co
 
 For development before the branch is merged, replace `#main` with the branch or commit you want to test.
 
-The package targets Unity `2021.3+` and only adds an Editor assembly.
+The package targets Unity `2021.3+`. It adds a small runtime `LingjingProbeState` observation component plus the Editor-only loopback bridge. The runtime component has no networking or authority; it only exposes bounded project observations to the Editor evidence snapshot.
 
 ## First connection
 
@@ -51,7 +51,7 @@ When a bearer token is configured, add `--token "..."` or set `LINGJING_GAME_ADA
 
 `--fetch-evidence` downloads only locators under the same configured adapter endpoint and recomputes SHA-256. Use `--require-screenshot` when your project/capture environment must prove that a camera frame is available.
 
-## Evidence available in 0.2.0
+## Evidence available in 0.3.0
 
 ### Unity Console log slice
 
@@ -70,6 +70,33 @@ Because the bridge remains non-mutating, a normal dry-run should usually have eq
 In Play Mode the provider prefers `Camera.main`; otherwise it uses the active Scene view camera. The provider performs a bounded read-only render with a maximum output of `1280×720` and returns PNG bytes.
 
 The PNG is a **camera frame**, not a guarantee that every GameView overlay, native window or platform compositor element is present.
+
+## Structured runtime probe observations
+
+Projects can add `LingjingProbeState` to a GameObject and report a bounded observation:
+
+- `probe_id`
+- `observed_state`
+- `observed_value`
+- a short redacted note
+- the source GameObject name
+
+The Editor snapshot captures at most 32 loaded-scene probes. Probe components **do not contain pass/fail rules**. They report observations only.
+
+Lingjing separately owns the governed contract registry. This separation prevents a Unity project from declaring both “what happened” and “therefore I passed verification.”
+
+### Boss Shield Bug Repro sample
+
+Package `0.3.0` includes the **Boss Shield Bug Repro** sample. After importing it:
+
+1. Run **Lingjing → Demo → Create Boss Shield Repro Scene**.
+2. Press Play with **Fixed Behavior** disabled.
+3. The deterministic attack applies 120 damage while the shield is active; the Boss cube turns red and probe `demo.boss_shield.damage_gate` reports `damage_applied_while_shielded`.
+4. Import evidence into the Lingjing task. The independent Lingjing contract reports **reproduced** for that external observation.
+5. Stop Play Mode, enable **Fixed Behavior**, press Play again and re-import evidence.
+6. The attack is blocked; the cube turns green and the same contract reports **passed**.
+
+These probe-contract outcomes remain evaluations of external engine observations. They do not set the whole task to “已验证” and do not change `verifier_status=not-run` for the task-level verifier.
 
 ## Evidence retrieval boundary
 
@@ -103,7 +130,8 @@ The package intentionally remains conservative:
 
 - binds only to `127.0.0.1`;
 - optional bearer-token protection;
-- Editor-only;
+- runtime probe component has no networking or mutation authority;
+- Editor bridge is loopback-only;
 - dry-run only;
 - captures read-only logs, snapshot and camera-frame evidence;
 - advertises `mutating_actions=false`;
@@ -111,7 +139,7 @@ The package intentionally remains conservative:
 - does not grant itself verifier status;
 - does not expose the bridge to the LAN or Internet.
 
-This slice improves **real project evidence acquisition**, but it is not yet a complete `Bug → automated reproduction actions → fix verification` Unity integration. Project-specific governed action handlers and a checked-in reproducible real-project/demo fixture remain follow-up work. Those handlers must continue to require Frozen Kernel tickets and independent verification; the Unity package must not become a side door around the authority model.
+This slice improves **real project evidence acquisition**, but it is not yet a complete `Bug → automated reproduction actions → fix verification` Unity integration. Project-specific governed mutating action handlers remain follow-up work. A deterministic Boss Shield demo fixture and independent probe contract are now included, but the repository CI still does not run a licensed Unity Editor, so this source fixture is not itself proof that Unity compiled or executed it in CI. Those handlers must continue to require Frozen Kernel tickets and independent verification; the Unity package must not become a side door around the authority model.
 
 ## Troubleshooting
 

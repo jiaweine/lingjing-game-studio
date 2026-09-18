@@ -23,6 +23,10 @@ from worldforge.integrations.game_adapter import (
 )
 from worldforge.security import Principal
 from worldforge.settings import settings
+from .engine_probe_verifier import (
+    EngineProbeVerificationError,
+    evaluate_probe_snapshot,
+)
 
 
 _MAX_EVIDENCE_ITEM_BYTES = 6 * 1024 * 1024
@@ -394,6 +398,16 @@ def build_game_adapter_ingestion_router(
                 raise GameAdapterError("adapter returned no retrievable evidence")
             if req.require_screenshot and not any(row["kind"] == "screenshot" for row in fetched):
                 raise GameAdapterError("当前 Unity 场景没有可采集的 screenshot")
+            probe_evaluations: list[dict[str, Any]] = []
+            snapshot_row = next(
+                (row for row in fetched if row["kind"] == "snapshot"),
+                None,
+            )
+            if snapshot_row is not None:
+                try:
+                    probe_evaluations = evaluate_probe_snapshot(snapshot_row["data"])
+                except EngineProbeVerificationError as exc:
+                    raise GameAdapterError(str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except GameAdapterError as exc:
@@ -425,6 +439,8 @@ def build_game_adapter_ingestion_router(
                     "play_mode": row["meta"].get("play_mode"),
                     "engine_byte_size": row["meta"].get("byte_size"),
                 }
+                if row["kind"] == "snapshot" and probe_evaluations:
+                    meta["probe_evaluations"] = probe_evaluations
                 pending_assets.append(
                     {
                         "name": name,
@@ -462,9 +478,23 @@ def build_game_adapter_ingestion_router(
                 "ticket_id": observation.ticket_id,
                 "evidence_class": observation.evidence_class,
                 "scope": scope,
+                "probe_evaluations": probe_evaluations,
             },
             workspace_id=principal.workspace_id,
         )
+        if probe_evaluations:
+            store.add_event(
+                conversation_id,
+                "engine.probe.evaluated",
+                {
+                    "ticket_id": observation.ticket_id,
+                    "adapter_id": observation.adapter_id,
+                    "engine": observation.engine,
+                    "evaluations": probe_evaluations,
+                    "authority": "contract-evaluation-only",
+                },
+                workspace_id=principal.workspace_id,
+            )
         store.add_audit(
             request_id=getattr(request.state, "request_id", "game-adapter-capture"),
             action="game_adapter.evidence.ingest",
@@ -479,6 +509,14 @@ def build_game_adapter_ingestion_router(
                 "ticket_id": observation.ticket_id,
                 "kinds": [row["kind"] for row in fetched],
                 "scope": scope,
+                "probe_outcomes": [
+                    {
+                        "probe_id": item["probe_id"],
+                        "contract_id": item["contract_id"],
+                        "outcome": item["outcome"],
+                    }
+                    for item in probe_evaluations
+                ],
             },
         )
         return {
@@ -486,6 +524,10 @@ def build_game_adapter_ingestion_router(
             "local_only": True,
             "evidence_class": observation.evidence_class,
             "verifier_status": observation.verifier_status,
+            "probe_verifier_status": (
+                "evaluated" if probe_evaluations else "not-applicable"
+            ),
+            "probe_evaluations": probe_evaluations,
             "canonical_write_allowed": observation.canonical_write_allowed,
             "before_snapshot_digest": observation.before_snapshot_digest,
             "after_snapshot_digest": observation.after_snapshot_digest,

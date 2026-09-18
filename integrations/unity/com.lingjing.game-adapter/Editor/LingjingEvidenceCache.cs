@@ -9,6 +9,7 @@ using System.Threading;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using Lingjing.GameAdapter;
 
 namespace Lingjing.GameAdapter.Editor
 {
@@ -40,6 +41,16 @@ namespace Lingjing.GameAdapter.Editor
         }
 
         [Serializable]
+        private sealed class ProbeObservation
+        {
+            public string probe_id;
+            public string observed_state;
+            public float observed_value;
+            public string note;
+            public string game_object;
+        }
+
+        [Serializable]
         private sealed class SceneSnapshot
         {
             public string active_scene;
@@ -50,6 +61,7 @@ namespace Lingjing.GameAdapter.Editor
             public bool is_paused;
             public string product_name;
             public string unity_version;
+            public ProbeObservation[] probes;
         }
 
         private sealed class LogEntry
@@ -73,6 +85,7 @@ namespace Lingjing.GameAdapter.Editor
         }
 
         private const int MaxLogEntries = 120;
+        private const int MaxProbeEntries = 32;
         private const int MaxEvidenceItems = 12;
         private const int MaxLogEvidenceChars = 64 * 1024;
         private const double SnapshotRefreshIntervalSeconds = 0.5;
@@ -358,6 +371,7 @@ namespace Lingjing.GameAdapter.Editor
                 is_paused = EditorApplication.isPaused,
                 product_name = Application.productName ?? string.Empty,
                 unity_version = Application.unityVersion ?? string.Empty,
+                probes = CaptureProbes(),
             };
             var json = JsonUtility.ToJson(snapshot);
             var digest = Sha256(json);
@@ -366,6 +380,51 @@ namespace Lingjing.GameAdapter.Editor
                 _snapshotJson = json;
                 _snapshotDigest = digest;
             }
+        }
+
+        private static ProbeObservation[] CaptureProbes()
+        {
+            var rows = new List<ProbeObservation>();
+            var probes = UnityEngine.Object.FindObjectsOfType<LingjingProbeState>(true);
+            Array.Sort(
+                probes,
+                (left, right) =>
+                {
+                    var byId = string.Compare(
+                        left != null ? left.ProbeId : string.Empty,
+                        right != null ? right.ProbeId : string.Empty,
+                        StringComparison.Ordinal
+                    );
+                    if (byId != 0) return byId;
+                    var leftId = left != null ? left.GetInstanceID() : 0;
+                    var rightId = right != null ? right.GetInstanceID() : 0;
+                    return leftId.CompareTo(rightId);
+                }
+            );
+            foreach (var probe in probes)
+            {
+                if (probe == null || rows.Count >= MaxProbeEntries) break;
+                if (!probe.gameObject.scene.IsValid() || !probe.gameObject.scene.isLoaded) continue;
+                var probeId = (probe.ProbeId ?? string.Empty).Trim();
+                if (string.IsNullOrEmpty(probeId)) continue;
+                rows.Add(
+                    new ProbeObservation
+                    {
+                        probe_id = Clamp(probeId, 160),
+                        observed_state = Clamp(probe.ObservedState ?? string.Empty, 240),
+                        observed_value = probe.ObservedValue,
+                        note = Redact(Clamp(probe.Note ?? string.Empty, 600)),
+                        game_object = Clamp(probe.gameObject.name ?? string.Empty, 160),
+                    }
+                );
+            }
+            return rows.ToArray();
+        }
+
+        private static string Clamp(string value, int maxLength)
+        {
+            var input = value ?? string.Empty;
+            return input.Length <= maxLength ? input : input.Substring(0, maxLength);
         }
 
         private static void OnLog(string condition, string stackTrace, LogType type)
