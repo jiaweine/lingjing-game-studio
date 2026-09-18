@@ -51,6 +51,9 @@ def test_unity_evidence_cache_is_bounded_main_thread_memory_only_and_redacts_cre
     assert "MaxEvidenceItems = 12" in evidence
     assert "EvidenceTtl = TimeSpan.FromMinutes(10)" in evidence
     assert "MaxLogEvidenceChars = 64 * 1024" in evidence
+    assert "SnapshotRefreshIntervalSeconds = 0.5" in evidence
+    assert "if (now >= _nextSnapshotRefreshAt)" in evidence
+    assert "request.Completed.Dispose();" in evidence
     assert "AuthorizationValue" in evidence
     assert "(?:[A-Za-z]+\\s+)?" in evidence
     assert '"authorization=[REDACTED]"' in evidence
