@@ -218,4 +218,12 @@ new MutationObserver(() => {
   syncEnginePanelState();
 }).observe(document.documentElement, {subtree: true, childList: true});
 
+const editAuthorityButton = document.getElementById("newTaskBtn");
+if (editAuthorityButton) {
+  new MutationObserver(syncEnginePanelState).observe(
+    editAuthorityButton,
+    {attributes: true, attributeFilter: ["disabled"]},
+  );
+}
+
 window.addEventListener("popstate", syncEnginePanelState);
