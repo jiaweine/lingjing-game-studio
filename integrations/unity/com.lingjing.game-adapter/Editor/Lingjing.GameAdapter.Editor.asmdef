@@ -1,7 +1,9 @@
 {
   "name": "Lingjing.GameAdapter.Editor",
   "rootNamespace": "Lingjing.GameAdapter.Editor",
-  "references": [],
+  "references": [
+    "Lingjing.GameAdapter"
+  ],
   "includePlatforms": [
     "Editor"
   ],
