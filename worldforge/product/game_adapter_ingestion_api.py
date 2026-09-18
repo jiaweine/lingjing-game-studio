@@ -63,6 +63,11 @@ def _local_bridge_enabled() -> bool:
 def _signing_secret() -> bytes | str:
     configured = os.getenv("LINGJING_GAME_ADAPTER_SIGNING_SECRET", "").strip()
     if configured:
+        if len(configured.encode("utf-8")) < 16:
+            raise HTTPException(
+                503,
+                "LINGJING_GAME_ADAPTER_SIGNING_SECRET 至少需要 16 bytes",
+            )
         return configured
     if settings.production:
         raise HTTPException(
@@ -181,6 +186,7 @@ async def _fetch_evidence_bytes(
     requested_set = set(requested)
     headers = {"authorization": f"Bearer {token}"} if token else {}
     rows: list[dict[str, Any]] = []
+    seen_result_kinds: set[str] = set()
     total = 0
     async with http_client_factory(timeout=15.0, follow_redirects=False) as client:
         for item in evidence:
@@ -188,6 +194,9 @@ async def _fetch_evidence_bytes(
             request_kind = _RESULT_KIND_TO_REQUEST.get(kind)
             if not request_kind or request_kind not in requested_set:
                 raise GameAdapterError("adapter returned unsolicited evidence kind")
+            if kind in seen_result_kinds:
+                raise GameAdapterError("adapter returned duplicate evidence kind")
+            seen_result_kinds.add(kind)
             expected_sha = str(item.get("sha256") or "").strip().lower()
             if len(expected_sha) != 64 or any(ch not in "0123456789abcdef" for ch in expected_sha):
                 raise GameAdapterError("adapter evidence is missing a valid sha256")
