@@ -96,6 +96,40 @@ duplicate governed probe rows -> ambiguous
 
 The result is stored as `engine.probe.evaluated` with `authority=contract-evaluation-only`. Unknown project-defined probe IDs receive no automatic verdict.
 
+## Project-execution context gate
+
+A persisted asset may raise the analyzer from “no real project execution context” to “real project execution context is available” only when it came through the governed GameAdapter path **and** was captured in Unity Play Mode.
+
+The gate requires all of:
+
+- `source_type=game-adapter`;
+- `evidence_class=external-engine-observation-unverified`;
+- `play_mode=play`;
+- a supported engine evidence kind (`log`, `snapshot`, or `screenshot`);
+- adapter identity;
+- Frozen Kernel ticket identity;
+- valid SHA-256;
+- non-empty persisted bytes and asset ID.
+
+Ordinary uploads, Edit Mode observations, missing ticket/digest metadata, or merely engine-looking filenames do not satisfy the gate.
+
+Passing this gate changes only the **verification posture**:
+
+```text
+no governed Play Mode engine evidence
+  -> actual_project_execution_available=false
+  -> Bug/Fix outcome ceiling: insufficient_evidence
+
+governed Play Mode engine evidence exists
+  -> actual_project_execution_available=true
+  -> Bug/Fix outcome: needs_verifier_decision
+  -> verified=false
+```
+
+It does not make the engine observation true, does not grant adapter verifier authority, and does not automatically close the issue.
+
+The capture-time `build`, `branch`, `commit`, and `environment` scope is persisted on each engine-backed asset so later baseline/fix comparisons cannot silently lose version identity.
+
 ## Current limitation
 
 This path proves product-side ingestion for a local/self-hosted deployment and includes a checked-in deterministic Boss Shield source fixture. It does not yet provide:
