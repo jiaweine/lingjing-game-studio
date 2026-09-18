@@ -512,16 +512,23 @@ function renderPending() {
 
 function renderAssets() {
   $("assetList").innerHTML = state.assets.length
-    ? state.assets.map(asset => `
-        <div class="asset-card">
-          <div class="asset-icon">${ICON[kindOf(asset)] || "＋"}</div>
-          <div>
-            <b>${esc(asset.name)}</b>
-            <small>${esc(kindLabel(asset))}<br />${fmtSize(asset.size || 0)}</small>
+    ? state.assets.map(asset => {
+        const engineBacked = asset?.meta?.source_type === "game-adapter";
+        const origin = engineBacked
+          ? `<span class="asset-origin engine">Unity 引擎证据 · 未验证</span>`
+          : "";
+        return `
+          <div class="asset-card" ${engineBacked ? 'data-engine-evidence="true"' : ""}>
+            <div class="asset-icon">${ICON[kindOf(asset)] || "＋"}</div>
+            <div>
+              <b>${esc(asset.name)}</b>
+              <small>${esc(kindLabel(asset))}<br />${fmtSize(asset.size || 0)}</small>
+              ${origin}
+            </div>
           </div>
-        </div>
-      `).join("")
-    : '<div class="empty-side">还没有上传素材。</div>';
+        `;
+      }).join("")
+    : '<div class="empty-side">还没有上传或导入素材。</div>';
 }
 
 function renderEvidence(rows = []) {
