@@ -195,7 +195,11 @@ async function captureEngine(card) {
     );
     engineToast(`已导入 ${assets.length} 份引擎证据`);
     window.dispatchEvent(new CustomEvent("lingjing:conversation-refresh", {
-      detail: {conversationId, source: "game-adapter"},
+      detail: {
+        conversationId,
+        source: "game-adapter",
+        assetIds: assets.map(asset => asset.id).filter(Boolean),
+      },
     }));
   } catch (error) {
     setEngineStatus(card, engineEsc(error.message || "引擎证据导入失败"), "error");
