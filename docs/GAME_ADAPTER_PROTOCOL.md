@@ -2,7 +2,7 @@
 
 The GameAdapter boundary lets a Unity, Unreal or custom-engine bridge execute an explicitly authorized action and return engine observations without becoming a source of canonical WorldForge truth.
 
-This repository contains the protocol, reference HTTP client, Frozen Kernel ticket gateway, durable replay-store implementation and synthetic conformance tests. It does **not** ship a Unity package, Unreal plugin, or evidence from a real game project.
+This repository contains the protocol, reference HTTP client, Frozen Kernel ticket gateway, durable replay-store implementation, synthetic conformance tests, and a conservative **Unity Editor package** under `integrations/unity/com.lingjing.game-adapter`. The Unity package removes the need to implement the transport contract before first connection and now includes bounded read-only Editor evidence capture for logs, scene state and camera-frame screenshots. It remains non-mutating and does **not** by itself prove that a real game bug was reproduced or fixed. The repository still does not ship an Unreal plugin or a checked-in real-project Bug/Fix proof fixture.
 
 ## Authority model
 
@@ -97,6 +97,14 @@ GET  /v1/adapter/capabilities
 POST /v1/adapter/execute
 ```
 
+Adapters may additionally expose adapter-owned evidence locators. The first-party Unity package uses:
+
+```text
+GET /v1/adapter/evidence/<id>
+```
+
+Those evidence URLs are still adapter observations. Fetching bytes and matching their SHA-256 does not grant verifier authority.
+
 The capabilities response declares engine identity and supported evidence/operation classes. Mutating execution is disabled unless the bridge explicitly declares `mutating_actions=true`. Dry-run is independently declared with `supports_dry_run`.
 
 A request contains:
@@ -106,7 +114,7 @@ A request contains:
   "action_id": "...",
   "action": {"kind": "..."},
   "scope": {"build_ref": "...", "branch_ref": "..."},
-  "evidence_requests": ["logs", "screenshot"],
+  "evidence_requests": ["logs", "snapshot", "screenshot"],
   "dry_run": true,
   "ticket": {
     "ticket_id": "...",
@@ -125,6 +133,36 @@ A request contains:
 The bridge receives the signed request envelope, but the Frozen Kernel gateway is the component that validates the ticket before dispatch. The ticket cannot be moved onto a modified request because action payload, `dry_run`, evidence requests and scope are all bound into the signed digests.
 
 For snapshot-capable adapters, a successful or dry-run result must return both before/after snapshot digests. The result also echoes the adapter id, action id and ticket id; all three are checked before evidence is accepted.
+
+## Unity package
+
+The first-party Unity package lives at:
+
+```text
+integrations/unity/com.lingjing.game-adapter
+```
+
+It can be added through Unity Package Manager using the repository Git URL with that package path. In Unity, open **Lingjing → Game Adapter Setup** to start the local bridge, optionally generate a bearer token, test `/v1/adapter/capabilities`, preview local evidence, copy the endpoint, and copy a matching conformance command.
+
+Version `0.2.0` remains intentionally conservative:
+
+- Editor-only;
+- binds only to `127.0.0.1`;
+- optional bearer token;
+- `supports_dry_run=true`;
+- `supports_logs=true`;
+- `supports_snapshot=true`;
+- `supports_screenshots=true`;
+- `mutating_actions=false`;
+- log evidence is bounded and common secret-shaped values are redacted;
+- scene/editor snapshot evidence is stable enough to produce before/after digests;
+- screenshot evidence is a bounded PNG camera frame, not a guarantee of every GameView overlay;
+- evidence bytes live only in a short-lived Editor memory cache and are fetched through the same loopback/auth boundary;
+- external observation only, never verifier truth.
+
+Unity APIs are touched on the Editor main thread. The HTTP worker queues evidence capture and waits for that main-thread work rather than calling Scene/Camera APIs directly from a background thread.
+
+This package is now a productized activation **and evidence acquisition** path, but it is still not a full project automation integration. Explicitly governed project action handlers and a reproducible checked-in real Unity Bug/Fix demo remain follow-up work.
 
 ## Conformance
 
@@ -146,20 +184,23 @@ python scripts/game_adapter_conformance.py \
   --endpoint http://127.0.0.1:9030
 ```
 
-Run a non-mutating live dry-run only when the bridge is prepared for it:
+Run a non-mutating live dry-run and verify that returned evidence bytes are retrievable from the same adapter origin:
 
 ```bash
 python scripts/game_adapter_conformance.py \
   --endpoint http://127.0.0.1:9030 \
   --execute-dry-run \
+  --fetch-evidence \
   --signing-secret "$LINGJING_GAME_ADAPTER_SIGNING_SECRET" \
   --build-ref build-1.4.7 \
   --branch-ref release \
   --require-conformance
 ```
 
-A successful live conformance result is labeled `external-adapter-contract-probe-not-project-verification`. It proves the bridge speaks the contract; it still does not prove a real game task succeeded.
+Add `--require-screenshot` when the capture environment must contain an available game/scene camera frame.
+
+The fetch probe rejects evidence locators outside the configured adapter `/v1/adapter/evidence/` prefix and recomputes SHA-256 locally. A successful live conformance result is still labeled `external-adapter-contract-probe-not-project-verification`. It proves the bridge speaks the contract and its evidence bytes match the accepted digests; it still does not prove a real game task succeeded.
 
 ## What remains external
 
-To claim real Unity/Unreal execution evidence, an actual engine-side bridge/plugin and a real project/capture environment must be supplied outside this repository. Those results then need to pass the same Frozen Kernel verifier/evidence gates as every other execution source.
+The repository now includes a Unity Editor bridge for first connection and read-only project evidence acquisition, but real Unity/Unreal **project verification** still requires task-specific reproduction semantics, explicitly governed project actions where needed, a real project/capture environment, and an independent Frozen Kernel verification decision. Unreal still requires an external bridge/plugin. None of those observations become verified facts until they pass the same Frozen Kernel verifier/evidence gates as every other execution source.
