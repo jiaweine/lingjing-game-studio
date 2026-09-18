@@ -46,6 +46,21 @@ def _kind(asset: dict[str, Any]) -> str:
     return kind or "file"
 
 
+def _task_verification_contract(
+    evidence_plan,
+    *,
+    raw_assets: list[dict[str, Any]],
+    compiled_assets: list[dict[str, Any]],
+):
+    engine_execution_asset_ids = engine_project_execution_asset_ids(raw_assets)
+    contract = build_verification_contract(
+        evidence_plan,
+        compiled_assets,
+        actual_project_execution_available=bool(engine_execution_asset_ids),
+    )
+    return contract, engine_execution_asset_ids
+
+
 class ProductAnalyzer(BaseProductAnalyzer):
     """Product analyzer with bounded long-horizon and multimodal context compilation.
 
@@ -148,11 +163,12 @@ class ProductAnalyzer(BaseProductAnalyzer):
         evidence_assessment = self.evidence_controller.assess(
             evidence_plan, semantic_result, multimodal_packet.assets
         )
-        engine_execution_asset_ids = engine_project_execution_asset_ids(raw_assets)
-        verification_contract = build_verification_contract(
-            evidence_plan,
-            multimodal_packet.assets,
-            actual_project_execution_available=bool(engine_execution_asset_ids),
+        verification_contract, engine_execution_asset_ids = (
+            _task_verification_contract(
+                evidence_plan,
+                raw_assets=raw_assets,
+                compiled_assets=multimodal_packet.assets,
+            )
         )
 
         semantic_ranges: dict[str, list[tuple[float, float]]] = {}
