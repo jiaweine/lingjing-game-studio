@@ -375,3 +375,18 @@ async def test_fetch_evidence_rejects_duplicate_kind_before_second_network_reque
             http_client_factory=factory,
         )
     assert calls == 1
+
+
+def test_asset_descriptor_rejects_fake_screenshot_and_invalid_snapshot():
+    from worldforge.product.game_adapter_ingestion_api import _asset_descriptor
+
+    with pytest.raises(Exception, match="PNG"):
+        _asset_descriptor(
+            "screenshot",
+            b"<html>not a png</html>",
+            {"width": 1280, "height": 720},
+        )
+    with pytest.raises(Exception, match="valid JSON"):
+        _asset_descriptor("snapshot", b"{broken", {})
+    with pytest.raises(Exception, match="JSON object"):
+        _asset_descriptor("snapshot", b"[1,2,3]", {})
