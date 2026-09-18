@@ -14,6 +14,7 @@ It is intentionally not a cloud-to-desktop tunnel.
 6. Click **导入引擎证据**.
 7. Lingjing issues a Frozen Kernel dry-run ticket, captures the requested read-only observations, independently downloads and SHA-verifies each evidence object, then registers all evidence assets as one batch.
 8. Imported assets are labeled **Unity 引擎证据 · 未验证**.
+9. The newly imported assets are staged into the next message context, so a subsequent **用此版本重新验证修复** run actually consumes them. Existing manually staged assets are preserved.
 
 The bearer token is request-transient. It is not written to task metadata, asset metadata, audit payloads or events.
 
