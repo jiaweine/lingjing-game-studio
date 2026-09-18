@@ -1468,8 +1468,18 @@ async function bootWorkspace() {
 window.addEventListener("lingjing:conversation-refresh", async event => {
   const conversationId = event?.detail?.conversationId || state.conversation?.id;
   if (!conversationId || conversationId !== state.conversation?.id) return;
+  const previousPendingIds = state.pending.map(asset => asset.id);
+  const importedIds = event?.detail?.assetIds || [];
   try {
     await openConversation(conversationId);
+    const pendingIds = [...new Set([...previousPendingIds, ...importedIds])];
+    state.pending = pendingIds
+      .map(id => state.assets.find(asset => asset.id === id))
+      .filter(Boolean);
+    renderPending();
+    if (importedIds.length) {
+      toast("引擎证据已加入下一轮任务上下文");
+    }
   } catch (error) {
     console.error(error);
     toast("证据已导入，但任务刷新失败");
