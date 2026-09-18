@@ -1458,6 +1458,17 @@ async function bootWorkspace() {
   }
 }
 
+window.addEventListener("lingjing:conversation-refresh", async event => {
+  const conversationId = event?.detail?.conversationId || state.conversation?.id;
+  if (!conversationId || conversationId !== state.conversation?.id) return;
+  try {
+    await openConversation(conversationId);
+  } catch (error) {
+    console.error(error);
+    toast("证据已导入，但任务刷新失败");
+  }
+});
+
 async function boot() {
   bindAuth();
   bindUI();
