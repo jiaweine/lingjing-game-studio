@@ -26,6 +26,42 @@ def _kind(asset: dict[str, Any]) -> str:
     return kind or "file"
 
 
+def engine_project_execution_asset_ids(
+    assets: list[dict[str, Any]],
+) -> tuple[str, ...]:
+    """Return engine-backed Play Mode assets eligible to prove project execution context.
+
+    This does not verify a Bug/Fix claim. It only answers whether the analyzer has
+    durable evidence that came through the governed GameAdapter execution path while
+    the engine was actually in Play Mode.
+    """
+    accepted: list[str] = []
+    allowed_kinds = {"log", "snapshot", "screenshot"}
+    for asset in assets:
+        meta = dict(asset.get("meta") or {})
+        if meta.get("source_type") != "game-adapter":
+            continue
+        if meta.get("evidence_class") != "external-engine-observation-unverified":
+            continue
+        if str(meta.get("play_mode") or "").strip().lower() != "play":
+            continue
+        if str(meta.get("adapter_evidence_kind") or "") not in allowed_kinds:
+            continue
+        if not str(meta.get("adapter_id") or "").strip():
+            continue
+        if not str(meta.get("ticket_id") or "").strip():
+            continue
+        sha = str(meta.get("sha256") or "").strip().lower()
+        if len(sha) != 64 or any(ch not in "0123456789abcdef" for ch in sha):
+            continue
+        if int(asset.get("size") or 0) <= 0:
+            continue
+        asset_id = str(asset.get("id") or "").strip()
+        if asset_id and asset_id not in accepted:
+            accepted.append(asset_id)
+    return tuple(accepted)
+
+
 @dataclass(frozen=True)
 class VerificationContract:
     claim_ceiling: str
@@ -79,7 +115,7 @@ def build_verification_contract(
 ) -> VerificationContract:
     modalities = tuple(sorted({_kind(asset) for asset in assets if _kind(asset) != "file"}))
     identity_fields = []
-    for key in ("build", "branch", "commit", "config"):
+    for key in ("build", "branch", "commit", "config", "environment"):
         if any((asset.get("meta", {}) or {}).get(key) for asset in assets):
             identity_fields.append(key)
 

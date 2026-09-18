@@ -70,6 +70,62 @@ def test_adapter_observation_is_never_canonical_or_verifier_authority():
     assert "source_type" not in evidence["meta"]
 
 
+def test_adapter_preserves_objective_evidence_metadata_but_discards_authority_claims():
+    from worldforge.integrations.game_adapter import RawAdapterEvidence, RawAdapterResult
+
+    gateway = FrozenKernelGameAdapterGateway("0123456789abcdef0123456789abcdef")
+    adapter = SyntheticContractAdapter()
+    request = _request(gateway, adapter, action_id="objective-metadata")
+
+    async def execute_with_metadata(_request):
+        adapter.calls += 1
+        digest = "a" * 64
+        return RawAdapterResult(
+            adapter_id=adapter._capabilities.adapter_id,
+            action_id=_request.action_id,
+            ticket_id=_request.ticket.ticket_id,
+            status="dry-run",
+            before_snapshot_digest=digest,
+            after_snapshot_digest=digest,
+            evidence=(
+                RawAdapterEvidence(
+                    kind="screenshot",
+                    locator="http://127.0.0.1:9030/v1/adapter/evidence/shot",
+                    sha256="b" * 64,
+                    metadata={
+                        "mime": "image/png",
+                        "byte_size": 12345,
+                        "width": 1280,
+                        "height": 720,
+                        "engine_object": "GameView/Camera.main",
+                        "scene": "BossArena",
+                        "play_mode": "play",
+                        "source_type": "verifier",
+                        "verified": True,
+                    },
+                ),
+            ),
+        )
+
+    adapter.execute = execute_with_metadata
+    observation = asyncio.run(gateway.execute(adapter, request, now=1001.0))
+    evidence = observation.evidence[0]
+
+    assert evidence["meta"] == {
+        "mime": "image/png",
+        "byte_size": 12345,
+        "width": 1280,
+        "height": 720,
+        "engine_object": "GameView/Camera.main",
+        "scene": "BossArena",
+        "play_mode": "play",
+    }
+    assert "source_type" not in evidence["meta"]
+    assert "verified" not in evidence["meta"]
+    assert evidence["provenance"]["source_type"] == "game-adapter"
+    assert evidence["provenance"]["verified"] is False
+
+
 def test_adapter_ticket_is_scope_bound_and_tampering_is_rejected_before_dispatch():
     gateway = FrozenKernelGameAdapterGateway("0123456789abcdef0123456789abcdef")
     adapter = SyntheticContractAdapter()
