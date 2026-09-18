@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 
-class EngineProbeVerificationError(ValueError):
+class EngineProbeVerificationError(Exception):
     pass
 
 
