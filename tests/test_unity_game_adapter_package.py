@@ -10,7 +10,7 @@ def test_unity_package_manifest_is_installable_editor_package():
     manifest = json.loads((PACKAGE / "package.json").read_text(encoding="utf-8"))
 
     assert manifest["name"] == "com.lingjing.game-adapter"
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.3.0"
     assert manifest["unity"] == "2021.3"
 
     assembly = json.loads(
@@ -20,6 +20,15 @@ def test_unity_package_manifest_is_installable_editor_package():
     )
     assert assembly["includePlatforms"] == ["Editor"]
     assert assembly["allowUnsafeCode"] is False
+    assert assembly["references"] == ["Lingjing.GameAdapter"]
+
+    runtime_assembly = json.loads(
+        (PACKAGE / "Runtime" / "Lingjing.GameAdapter.asmdef").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert runtime_assembly["includePlatforms"] == []
+    assert runtime_assembly["allowUnsafeCode"] is False
 
 
 def test_unity_bridge_remains_loopback_read_only_and_serves_evidence():
@@ -88,3 +97,47 @@ def test_unity_package_docs_do_not_claim_project_verification():
     assert "does **not** prove that a game bug has been reproduced" in readme
     assert "mutating_actions=false" in readme
     assert "127.0.0.1" in readme
+
+
+def test_unity_runtime_probe_reports_observation_without_self_verification():
+    probe = (PACKAGE / "Runtime" / "LingjingProbeState.cs").read_text(
+        encoding="utf-8"
+    )
+    evidence = (PACKAGE / "Editor" / "LingjingEvidenceCache.cs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "public sealed class LingjingProbeState" in probe
+    assert "public void SetObservation" in probe
+    assert "verified" not in probe.lower()
+    assert "MaxProbeEntries = 32" in evidence
+    assert "FindObjectsOfType<LingjingProbeState>(true)" in evidence
+    assert "probe_id" in evidence
+    assert "observed_state" in evidence
+    assert "observed_value" in evidence
+    assert "note = Redact(" in evidence
+
+
+def test_unity_package_contains_deterministic_boss_shield_repro_sample():
+    fixture = (
+        PACKAGE / "Samples~" / "BossShieldBug" / "BossShieldBugFixture.cs"
+    ).read_text(encoding="utf-8")
+    builder = (
+        PACKAGE
+        / "Samples~"
+        / "BossShieldBug"
+        / "Editor"
+        / "BossShieldDemoSceneBuilder.cs"
+    ).read_text(encoding="utf-8")
+    sample_readme = (
+        PACKAGE / "Samples~" / "BossShieldBug" / "README.md"
+    ).read_text(encoding="utf-8")
+
+    assert 'Configure("demo.boss_shield.damage_gate")' in fixture
+    assert '"damage_applied_while_shielded"' in fixture
+    assert '"damage_blocked_while_shielded"' in fixture
+    assert "attackDamage = 120f" in fixture
+    assert "FixedBehavior" in fixture
+    assert 'MenuItem("Lingjing/Demo/Create Boss Shield Repro Scene")' in builder
+    assert "BossShieldDemo.unity" in builder
+    assert "external engine observation" in sample_readme.lower()
