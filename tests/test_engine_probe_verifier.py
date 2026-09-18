@@ -81,3 +81,18 @@ def test_unknown_probe_is_not_self_authorizing():
 def test_probe_verifier_rejects_invalid_snapshot_shapes(payload):
     with pytest.raises(EngineProbeVerificationError):
         evaluate_probe_snapshot(payload)
+
+
+def test_probe_verifier_rejects_more_than_snapshot_bound():
+    raw = {
+        "probes": [
+            {
+                "probe_id": "demo.boss_shield.damage_gate",
+                "observed_state": "damage_applied_while_shielded",
+                "observed_value": 120,
+            }
+            for _ in range(33)
+        ]
+    }
+    with pytest.raises(EngineProbeVerificationError, match="too many probes"):
+        evaluate_probe_snapshot(json.dumps(raw).encode())
