@@ -75,6 +75,7 @@ namespace Lingjing.GameAdapter.Editor
         private const int MaxLogEntries = 120;
         private const int MaxEvidenceItems = 12;
         private const int MaxLogEvidenceChars = 64 * 1024;
+        private const double SnapshotRefreshIntervalSeconds = 0.5;
         private static readonly TimeSpan EvidenceTtl = TimeSpan.FromMinutes(10);
         private static readonly object LogSync = new object();
         private static readonly object EvidenceSync = new object();
@@ -91,6 +92,7 @@ namespace Lingjing.GameAdapter.Editor
         private static readonly int MainThreadId;
         private static string _snapshotJson = "{}";
         private static string _snapshotDigest = Sha256("{}");
+        private static double _nextSnapshotRefreshAt;
 
         static LingjingEvidenceCache()
         {
@@ -172,7 +174,12 @@ namespace Lingjing.GameAdapter.Editor
 
         private static void OnEditorUpdate()
         {
-            RefreshSnapshot();
+            var now = EditorApplication.timeSinceStartup;
+            if (now >= _nextSnapshotRefreshAt)
+            {
+                RefreshSnapshot();
+                _nextSnapshotRefreshAt = now + SnapshotRefreshIntervalSeconds;
+            }
             var processed = 0;
             while (processed < 4 && Requests.TryDequeue(out var request))
             {
