@@ -286,3 +286,45 @@ def test_local_bridge_can_be_disabled_fail_closed(tmp_path, monkeypatch):
     )
     assert response.status_code == 409
     assert "未启用本机 GameAdapter" in response.json()["detail"]
+
+
+def test_batch_asset_registration_is_atomic(tmp_path):
+    store = ConversationStore(
+        db_path=tmp_path / "batch.db",
+        asset_dir=tmp_path / "assets",
+    )
+    conversation = store.create_conversation(
+        title="Atomic engine evidence",
+        scene="regression",
+        workspace_id=DEMO_WORKSPACE_ID,
+        created_by=DEMO_USER_ID,
+    )
+
+    with pytest.raises(Exception):
+        store.add_assets_batch(
+            conversation["id"],
+            workspace_id=DEMO_WORKSPACE_ID,
+            created_by=DEMO_USER_ID,
+            assets=[
+                {
+                    "name": "good.log",
+                    "mime": "text/plain",
+                    "path": "good",
+                    "size": 4,
+                    "meta": {"kind": "text"},
+                    "storage_backend": "local",
+                },
+                {
+                    # Missing required name intentionally forces the same transaction to roll back.
+                    "mime": "application/json",
+                    "path": "bad",
+                    "size": 3,
+                    "meta": {"kind": "text"},
+                    "storage_backend": "local",
+                },
+            ],
+        )
+
+    assert store.list_assets(
+        conversation["id"], workspace_id=DEMO_WORKSPACE_ID
+    ) == []
