@@ -26,7 +26,12 @@ from worldforge.storage import LocalObjectStorage
 class FakeUnityAdapter:
     bodies = {
         "log": b"Boss phase 2 entered\n",
-        "snapshot": b'{"active_scene":"BossArena","is_playing":true}',
+        "snapshot": (
+            b'{"active_scene":"BossArena","is_playing":true,"probes":['
+            b'{"probe_id":"demo.boss_shield.damage_gate",'
+            b'"observed_state":"damage_applied_while_shielded",'
+            b'"observed_value":120.0,"note":"fixture","game_object":"Boss"}]}'
+        ),
         "screenshot": b"\x89PNG\r\n\x1a\nreal-unity-frame",
     }
 
@@ -213,6 +218,10 @@ def test_probe_and_capture_ingest_verified_bytes_without_persisting_token(tmp_pa
     assert payload["status"] == "ingested"
     assert payload["evidence_class"] == "external-engine-observation-unverified"
     assert payload["verifier_status"] == "not-run"
+    assert payload["probe_verifier_status"] == "evaluated"
+    assert payload["probe_evaluations"][0]["probe_id"] == "demo.boss_shield.damage_gate"
+    assert payload["probe_evaluations"][0]["outcome"] == "reproduced"
+    assert payload["probe_evaluations"][0]["authority"] == "contract-evaluation-only"
     assert payload["canonical_write_allowed"] is False
     assert len(payload["assets"]) == 3
 
@@ -241,6 +250,12 @@ def test_probe_and_capture_ingest_verified_bytes_without_persisting_token(tmp_pa
         conversation["id"], workspace_id=DEMO_WORKSPACE_ID
     )
     assert any(event["type"] == "engine.evidence.ingested" for event in events)
+    assert any(event["type"] == "engine.probe.evaluated" for event in events)
+    snapshot_asset = next(
+        asset for asset in assets
+        if asset["meta"]["adapter_evidence_kind"] == "snapshot"
+    )
+    assert snapshot_asset["meta"]["probe_evaluations"][0]["outcome"] == "reproduced"
 
 
 @pytest.mark.asyncio
